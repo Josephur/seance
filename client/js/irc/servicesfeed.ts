@@ -4,10 +4,15 @@
  * notices are. A snoop line in the snoop channel (a connect, a join, a
  * kill) and an audit line in the report channel (a command somebody made
  * services run) are parsed by the services profile and appended to the
- * notice log as `snoop` / `audit` entries — for the Opers rollup, credited
- * to the person who typed the command rather than to the bot, and for the
- * kept feed. Nothing is routed and nothing is re-rendered: the channel
- * shows the lines as the ordinary channel messages they are.
+ * notice log as `snoop` / `audit` entries. An audit line is for the Opers
+ * rollup, credited to the person who typed the command rather than to the
+ * bot; a snoop line is a quiet source for the investigation cards only
+ * (the kept feed: who connected from where, who joined what) and counts
+ * for nothing on the Opers tab — a connect is not an oper's action (rubin,
+ * 2026-10-11). Nothing is routed and nothing is re-rendered: the channel
+ * shows the lines as the ordinary channel messages they are, except that
+ * the nicks a snoop line names render as nicks ({@link snoopNicks}), so
+ * the oper can open a nick's menu — Investigate — straight from the feed.
  *
  * Only lines from the configured bots count, in the configured channels;
  * a user chatting in the snoop channel is chat. Kept free of store/DOM
@@ -123,16 +128,49 @@ export function servicesEntry(
 }
 
 /**
- * Called from the PRIVMSG handler for every live channel message, before
- * it is shown: keeps the line when it is a services line in a configured
- * channel. Never changes the message.
+ * The fields of a snoop line that name a nick: the user a connect, quit,
+ * nick change (both names), join, part, auth, umode or oper-up is about,
+ * the kicked and the kicker, the killed and the killer, a channel mode's
+ * setter. A server in one of those places (`by irc.example.org`) has a
+ * dot in it, which no nick can.
  */
-export function noteServicesLine(client: IrcClient, msg: IrcMessage): void {
+const SNOOP_NICK_FIELDS = ["nick", "newNick", "kicker", "killer", "setter"];
+
+/** The nicks a snoop entry names, each once, in the line's order; none for any other entry. */
+export function snoopNicks(entry: LoggedNotice | undefined): string[] {
+	const nicks: string[] = [];
+
+	if (entry?.type !== "snoop") {
+		return nicks;
+	}
+
+	for (const field of SNOOP_NICK_FIELDS) {
+		const value = entry.snotice.fields[field] ?? "";
+
+		if (value !== "" && !value.includes(".") && !nicks.includes(value)) {
+			nicks.push(value);
+		}
+	}
+
+	return nicks;
+}
+
+/**
+ * Called from the PRIVMSG handler for every channel message, before it is
+ * shown: recognises a services line in a configured channel and hands the
+ * entry back so the handler can mark the nicks a snoop line names. A live
+ * line is also kept in the notice log; a replayed one (a chathistory page
+ * after a reload, a reconnect's catch-up) is not — the log has those
+ * lines — but its nicks are clickable all the same, since the scrollback
+ * is exactly where an oper looks them up. Never changes the message
+ * itself.
+ */
+export function noteServicesLine(client: IrcClient, msg: IrcMessage): LoggedNotice | undefined {
 	const services = client.services;
 	const profile = servicesProfileFor(services);
 
-	if (!services || !profile || client.replaying || msg.command !== "PRIVMSG") {
-		return;
+	if (!services || !profile || msg.command !== "PRIVMSG") {
+		return undefined;
 	}
 
 	const target = msg.params[0] ?? "";
@@ -142,19 +180,21 @@ export function noteServicesLine(client: IrcClient, msg: IrcMessage): void {
 	};
 
 	if (!where.inSnoop && !where.inReport) {
-		return;
+		return undefined;
 	}
 
 	const chan = client.findChannel(target);
 
 	if (!chan || chan.type !== ChanType.CHANNEL || !fromConfiguredBot(client, msg, services.bots)) {
-		return;
+		return undefined;
 	}
 
 	const text = stripFormatting(msg.params[msg.params.length - 1] ?? "");
 	const entry = servicesEntry(profile, where, text, client.timeOf(msg).getTime());
 
-	if (entry) {
+	if (entry && !client.replaying) {
 		client.noticeLog.append(entry);
 	}
+
+	return entry;
 }

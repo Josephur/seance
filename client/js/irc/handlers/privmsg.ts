@@ -11,7 +11,7 @@ import type {IrcMessage} from "../message";
 import {settleEcho} from "../pending";
 import {isRoutineReplayNotice} from "../persistence";
 import {privilegesModified} from "../oper";
-import {noteServicesLine} from "../servicesfeed";
+import {noteServicesLine, snoopNicks} from "../servicesfeed";
 import {handleServerNotice, handleWallops} from "../snotice";
 import {EDIT_TAG, REPLY_TAG, trailingLine} from "../wire";
 import type {Handler} from "../types";
@@ -61,7 +61,18 @@ export function splitStatusTarget(
 	return {target};
 }
 
-function handleMessage(client: IrcClient, msg: IrcMessage, baseType: MessageType): void {
+/** What the services feed knew about the line before it is shown (../servicesfeed.ts). */
+interface FeedNote {
+	/** The nicks a snoop line names: rendered as nicks whether or not they are in the channel. */
+	nicks: string[];
+}
+
+function handleMessage(
+	client: IrcClient,
+	msg: IrcMessage,
+	baseType: MessageType,
+	feed?: FeedNote
+): void {
 	const source = msg.source;
 	let nick = source?.name ?? "";
 	const fromServer = !source || source.user === undefined;
@@ -145,7 +156,11 @@ function handleMessage(client: IrcClient, msg: IrcMessage, baseType: MessageType
 		}
 	}
 
-	if (!highlight && !self) {
+	if (feed) {
+		// A snoop line that names us (our own connect, say) is the bot's
+		// report, not a word to us: no highlight, no mention.
+		highlight = false;
+	} else if (!highlight && !self) {
 		highlight = client.isHighlight(text);
 	} else if (highlight && client.isHighlightException(text)) {
 		// The query auto-highlight is not derived from the text, so
@@ -161,6 +176,12 @@ function handleMessage(client: IrcClient, msg: IrcMessage, baseType: MessageType
 	while ((match = nickRegExp.exec(text))) {
 		if (chan.findUser(match[1])) {
 			users.push(match[1]);
+		}
+	}
+
+	for (const named of feed?.nicks ?? []) {
+		if (!users.includes(named)) {
+			users.push(named);
 		}
 	}
 
@@ -301,9 +322,15 @@ function handleCtcpRequest(
 
 const privmsg: Handler = (client, msg) => {
 	// A services bot's line in its snoop or report channel is kept for the
-	// oper panel (../servicesfeed.ts); the channel still shows it as is.
-	noteServicesLine(client, msg);
-	handleMessage(client, msg, MessageType.MESSAGE);
+	// oper tools (../servicesfeed.ts); the channel still shows it as is,
+	// with the nicks a snoop line names clickable.
+	const kept = noteServicesLine(client, msg);
+	handleMessage(
+		client,
+		msg,
+		MessageType.MESSAGE,
+		kept?.type === "snoop" ? {nicks: snoopNicks(kept)} : undefined
+	);
 };
 
 const notice: Handler = (client, msg) => {

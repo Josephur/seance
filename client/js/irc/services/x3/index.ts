@@ -120,7 +120,25 @@ const SNOOP_RULES: Record<string, SnoopRule[]> = {
 		},
 	],
 	AUTH: [{keyword: "auth", re: /^(\S+) as (\S+)$/, map: (m) => ({nick: m[1], account: m[2]})}],
-	UMODE: [{keyword: "umode", re: /^(\S+) (\S+)$/, map: (m) => ({nick: m[1], modes: m[2]})}],
+	UMODE: [
+		{
+			// AfterNET's X3 appends the cloaked host and the cloaked IP after
+			// the modes when `+x` is among them (x3-services.md §3). Kept as
+			// `cloak` / `cloakIp`, never `host` / `ip`: a cloak is not a place.
+			keyword: "umode",
+			re: /^(\S+) (\S+)(?: (\S+) (\S+))?$/,
+			map(m) {
+				const fields: Fields = {nick: m[1], modes: m[2]};
+
+				if (m[3] !== undefined) {
+					fields.cloak = m[3];
+					fields.cloakIp = m[4];
+				}
+
+				return fields;
+			},
+		},
+	],
 	OPER: [
 		{
 			keyword: "oper",

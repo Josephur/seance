@@ -39,6 +39,17 @@ const SNOOP = {
 	modeNoArgs: `[21:14:14] ${B}MODE${B} #seance +m by alice`,
 };
 
+// The shape of AfterNET's own feed (2026-10-11; the values made up): for a
+// connecting user the UMODE line comes first and, with `+x` among the
+// modes, carries the cloaked host and the cloaked IP after them; the NICK
+// line has the empty `()` of a user not authed and the server's mixed case.
+const AFTERNET = {
+	umodeCloak: `[17:07:07] ${B}UMODE${B} clonebot7 +xzCc AN-1A2B3C4D.example.net ABCDEF.123456.7890AB.CDEF01.IP`,
+	connect: `[17:07:07] ${B}NICK${B} clonebot7 probe@host12.example.net () [192.0.2.10] on Hub.Example.Org`,
+	umodeCloak2: `[17:10:12] ${B}UMODE${B} probe9 +xCc AN-5E6F7A8B.example.net 0F1E2D.3C4B5A.697887.7A6B5C.IP`,
+	connect2: `[17:10:12] ${B}NICK${B} probe9 probe9@host34.example.net () [198.51.100.23] on Hub.Example.Org`,
+};
+
 describe("X3 services profile (irc/services/x3)", function () {
 	it("is registered under its id with the usual names", function () {
 		expect(servicesProfileById("x3")).to.equal(x3);
@@ -141,6 +152,54 @@ describe("X3 services profile (irc/services/x3)", function () {
 				channel: "#seance",
 				modes: "+m",
 				setter: "alice",
+			});
+		});
+
+		it("takes AfterNET's UMODE with the cloak pair after the modes, as cloak and cloakIp", function () {
+			expect(parseSnoop(strip(AFTERNET.umodeCloak))).to.deep.equal({
+				keyword: "umode",
+				fields: {
+					nick: "clonebot7",
+					modes: "+xzCc",
+					cloak: "AN-1A2B3C4D.example.net",
+					cloakIp: "ABCDEF.123456.7890AB.CDEF01.IP",
+				},
+			});
+			expect(parseSnoop(strip(AFTERNET.umodeCloak2))).to.deep.equal({
+				keyword: "umode",
+				fields: {
+					nick: "probe9",
+					modes: "+xCc",
+					cloak: "AN-5E6F7A8B.example.net",
+					cloakIp: "0F1E2D.3C4B5A.697887.7A6B5C.IP",
+				},
+			});
+
+			// Never as a host or an IP: a cloak is not a place the cards compare.
+			const fields = parseSnoop(strip(AFTERNET.umodeCloak))!.fields;
+			expect(fields).to.not.have.any.keys("host", "ip");
+
+			// Three words after the nick is neither form.
+			expect(parseSnoop("[17:07:07] UMODE clonebot7 +x a b c")).to.equal(undefined);
+		});
+
+		it("takes AfterNET's connect lines: not authed, a mixed-case server", function () {
+			expect(parseSnoop(strip(AFTERNET.connect))).to.deep.equal({
+				keyword: "connect",
+				fields: {
+					nick: "clonebot7",
+					ident: "probe",
+					host: "host12.example.net",
+					account: "",
+					ip: "192.0.2.10",
+					server: "Hub.Example.Org",
+				},
+			});
+			expect(parseSnoop(strip(AFTERNET.connect2))?.fields).to.include({
+				nick: "probe9",
+				ident: "probe9",
+				ip: "198.51.100.23",
+				server: "Hub.Example.Org",
 			});
 		});
 

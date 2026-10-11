@@ -13,6 +13,7 @@ import {
 	servicesBan,
 } from "../../client/js/irc/services";
 import {sendQuiet, takeQuietLabel} from "../../client/js/irc/quiet";
+import {snoopNicks} from "../../client/js/irc/servicesfeed";
 import {parseBanReply, X3_DEFAULTS} from "../../client/js/irc/services/x3";
 import type {Transport} from "../../client/js/irc/types";
 import type {TransportEvent, TransportState} from "../../client/js/irc/transport";
@@ -577,6 +578,127 @@ describe("services support: the feed (irc/servicesfeed.ts)", function () {
 		);
 		await flush();
 		expect(logged(client)).to.deep.equal([]);
+	});
+
+	it("renders the nicks a snoop line names as nicks, in the channel or not, and never as a highlight", async function () {
+		const {client, transport} = setup();
+		client.setServices(X3);
+		const snoopy = join(client, transport, "#mrsnoopy"); // opr, O3 and alice are in it
+		const o3 = (text: string) => `:O3!O3@services.test PRIVMSG #mrsnoopy :${text}`;
+
+		transport.lines(
+			o3(
+				`[17:07:07] ${B}UMODE${B} clonebot7 +xzCc AN-1A2B3C4D.example.net ABCDEF.123456.7890AB.CDEF01.IP`
+			),
+			o3(
+				`[17:07:07] ${B}NICK${B} clonebot7 probe@host12.example.net () [192.0.2.10] on Hub.Example.Org`
+			),
+			o3(`[21:14:02] ${B}NICK${B} change alice -> alice_away`),
+			o3(`[21:14:03] ${B}JOIN${B} #example by clonebot7`),
+			o3(`[21:14:06] ${B}KICK${B} troll from #seance by bob`),
+			o3(`[21:14:06] ${B}KICK${B} troll from #seance by irc.afternet.org`),
+			o3(
+				`[21:14:08] ${B}KILL${B} troll (~t@203.0.113.7, on irc.afternet.org) by O3 (Excessive connections from a single host.)`
+			),
+			o3(`[21:14:10] ${B}AUTH${B} carol as carol`),
+			o3(`[21:14:12] ${B}OPER${B} rubin!~r@h.example [203.0.113.5] on irc.afternet.org`),
+			o3(`[21:14:13] ${B}MODE${B} #seance +o-v alice bob by ChanServ`),
+			o3(`[21:14:14] ${B}MODE${B} #seance +m by irc.afternet.org`),
+			// Our own connect, as the feed reports it: not a word to us; nor is
+			// a line that names nobody clickable and has our nick in it.
+			o3(`[21:14:07] ${B}NICK${B} opr ~o@host.example () [203.0.113.10] on irc.afternet.org`),
+			o3(`[21:14:15] ${B}MODE${B} #seance +b opr!*@* by irc.afternet.org`),
+			// The bot chatting, naming us: a highlight as any message is.
+			o3("opr: look at this")
+		);
+		await flush();
+
+		const shown = messages(snoopy);
+		expect(shown.map((m) => [...m.users].sort())).to.deep.equal([
+			["clonebot7"],
+			["clonebot7"],
+			["alice", "alice_away"],
+			["clonebot7"],
+			["bob", "troll"],
+			["troll"],
+			["O3", "troll"],
+			["carol"],
+			["rubin"],
+			["ChanServ", "alice"],
+			[],
+			["opr"],
+			["opr"],
+			["opr"],
+		]);
+		expect(shown.map((m) => m.highlight)).to.deep.equal([
+			...Array<boolean>(13).fill(false),
+			true,
+		]);
+
+		// The nicks it adds are a rendering matter: the channel's unread is
+		// what any message in it brings, and no highlight is counted.
+		const counts = dispatch
+			.getCalls()
+			.filter((call) => call.args[0] === "msg")
+			.map((call) => call.args[1] as {chan: number; unread: number; highlight: number})
+			.filter((p) => p.chan === snoopy)
+			.map((p) => [p.unread, p.highlight]);
+		expect(counts.map((c) => c[0])).to.deep.equal(Array.from({length: 14}, (_, i) => i + 1));
+		expect(counts.map((c) => c[1])).to.deep.equal([...Array<number>(13).fill(0), 1]);
+		expect(logged(client).map((e) => e.snotice.kind)).to.have.length(13);
+	});
+
+	it("marks the nicks of a replayed snoop line too, without growing the notice log", async function () {
+		// A chathistory page after a reload, or a reconnect's catch-up: the
+		// log already has those lines, the scrollback still needs its nicks.
+		const {client, transport} = setup();
+		client.setServices(X3);
+		const snoopy = join(client, transport, "#mrsnoopy");
+
+		transport.lines(
+			":irc.test BATCH +hist1 chathistory #mrsnoopy",
+			`@batch=hist1;time=2026-10-10T21:14:07.000Z;msgid=m1 :O3!O3@services.test PRIVMSG #mrsnoopy :[21:14:07] ${B}NICK${B} clonebot7 probe@host12.example.net () [192.0.2.10] on Hub.Example.Org`,
+			`@batch=hist1;time=2026-10-10T21:14:08.000Z;msgid=m2 :O3!O3@services.test PRIVMSG #mrsnoopy :[21:14:08] ${B}NICK${B} opr ~o@host.example () [203.0.113.10] on irc.afternet.org`,
+			":irc.test BATCH -hist1"
+		);
+		await flush();
+
+		// A replay lands as one `more` page, not as live `msg` events.
+		const pages = dispatch
+			.getCalls()
+			.filter((call) => call.args[0] === "more")
+			.map((call) => call.args[1] as {chan: number; messages: SharedMsg[]})
+			.filter((p) => p.chan === snoopy);
+		expect(pages).to.have.length(1);
+		const shown = pages[0].messages;
+		expect(shown.map((m) => m.users)).to.deep.equal([["clonebot7"], ["opr"]]);
+		expect(shown.map((m) => m.highlight)).to.deep.equal([false, false]);
+		expect(messages(snoopy), "no live msg for a replayed line").to.deep.equal([]);
+		expect(logged(client), "nothing appended from a replay").to.deep.equal([]);
+	});
+
+	it("snoopNicks: every nick a line names, once each, never a server, nothing for other entries", function () {
+		const entry = (kind: string, fields: Record<string, string>): LoggedNotice => ({
+			time: 0,
+			type: "snoop",
+			text: "",
+			snotice: {kind, category: "SERVICES", fields, route: "network"},
+		});
+		expect(snoopNicks(undefined)).to.deep.equal([]);
+		expect(snoopNicks({...entry("x3.audit.glines", {nick: "a"}), type: "audit"})).to.deep.equal(
+			[]
+		);
+		expect(snoopNicks(entry("x3.snoop.nick", {nick: "a", newNick: "b"}))).to.deep.equal([
+			"a",
+			"b",
+		]);
+		expect(
+			snoopNicks(entry("x3.snoop.kick", {nick: "a", channel: "#c", kicker: "a"}))
+		).to.deep.equal(["a"]);
+		expect(
+			snoopNicks(entry("x3.snoop.kill", {nick: "a", killer: "irc.example.org"}))
+		).to.deep.equal(["a"]);
+		expect(snoopNicks(entry("x3.snoop.mode", {channel: "#c", setter: ""}))).to.deep.equal([]);
 	});
 
 	it("takes the report channel's lines from a channel that is both, snoop first", async function () {
