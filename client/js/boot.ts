@@ -109,6 +109,12 @@ export async function boot(): Promise<void> {
 	installThemeSceneHooks();
 	installInputModality(document.documentElement, hasVirtualKeyboard() ? "touch" : "pointer");
 	installViewportHooks();
+	// iOS has read #status-bar-tint's colour by now; style.css lowers it
+	// under the page so its later colours do not show as a band.
+	window.setTimeout(
+		() => document.documentElement.setAttribute("data-status-bar-read", ""),
+		3000
+	);
 
 	store.commit("appLoaded");
 
