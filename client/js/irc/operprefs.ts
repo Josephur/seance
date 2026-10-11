@@ -2,7 +2,9 @@
  * Per-network oper preferences, in localStorage under `thelounge.oper`:
  * where each kind of server notice goes when the oper changed it from the
  * profile's default (for good, or for a while — "show here for 3 days"),
- * and the snomask they chose (re-applied after every oper-up).
+ * the snomask they chose (re-applied after every oper-up), and whether the
+ * connection was opered last time — so a registration that brings no modes
+ * (a held bouncer session attached, evilnet/nefarious2#121) asks for them.
  *
  * Preferences, not logs: the settings backup carries the key
  * (helpers/settingsBackup.ts). Kept free of store/DOM imports (mocha);
@@ -28,6 +30,8 @@ export interface OperPrefs {
 	routes?: Record<string, Route>;
 	/** The snomask to apply after oper-up (decimal). */
 	snomask?: number;
+	/** Opered when the last connection ended. */
+	wasOper?: boolean;
 	/**
 	 * Kind → a route in force until a time, over `routes`. Absent in prefs
 	 * written before it existed, which load as if it were empty.
@@ -211,6 +215,20 @@ export function setSnomaskPref(uuid: string, snomask: number | undefined): void 
 			delete prefs.snomask;
 		} else {
 			prefs.snomask = snomask;
+		}
+	});
+}
+
+export function setWasOper(uuid: string, wasOper: boolean): void {
+	if (Boolean(getOperPrefs(uuid).wasOper) === wasOper) {
+		return;
+	}
+
+	update(uuid, (prefs) => {
+		if (wasOper) {
+			prefs.wasOper = true;
+		} else {
+			delete prefs.wasOper;
 		}
 	});
 }
