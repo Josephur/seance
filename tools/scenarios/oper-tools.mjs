@@ -12,8 +12,11 @@
 // support: the edit form's section is absent before opering and there
 // after, picking X3 prefills the five fields, the liveness line says the
 // bots are not online (the dev rig has no X3), and the Opers tab says
-// which channels are missing with Join on the report one only — the feed
-// and the O3 ban path need X3 and are unit-tested. The cards (step 3) and
+// the report channel is missing with Join — the O3 ban path needs X3 and
+// is unit-tested. The snoop channel: a helper named O3 posts lines in
+// AfterNET's shape into it, the nicks and the #chan they name open their
+// menus and Investigate, a line naming us is no highlight, and the Opers
+// tab counts none of it (2026-10-11). The cards (step 3) and
 // the alert builder (step 4): the channel card's facts become criteria
 // rows with the wide ones off and the command assembled live, Add alert
 // reports O3's absence, Cancel closes it; the Alerts tab offers "New O3
@@ -37,7 +40,7 @@ const PORT = process.env.SEANCE_PORT ?? "8000";
 export const url = `http://localhost:${PORT}/?host=localhost&port=8443&tls=true&nick=${ME}&join=%23seance`;
 
 /** A helper client on the dev ircd: joins the channel, runs `onReady`. */
-function helper(nick, onReady = () => {}, realname = `Oper scenario ${nick}`) {
+function helper(nick, onReady = () => {}, realname = `Oper scenario ${nick}`, channel = CHANNEL) {
 	const ws = new WebSocket(IRCD, ["text.ircv3.net"]);
 	let ready = () => {};
 	let gone = () => {};
@@ -59,7 +62,7 @@ function helper(nick, onReady = () => {}, realname = `Oper scenario ${nick}`) {
 		const params = (line.startsWith("@") ? line.slice(line.indexOf(" ") + 1) : line).split(" ");
 
 		if (params[1] === "001") {
-			send(`JOIN ${CHANNEL}`);
+			send(`JOIN ${channel}`);
 		} else if (params[1] === "JOIN" && params[0].startsWith(`:${nick}!`)) {
 			onReady(send);
 			ready();
@@ -109,8 +112,8 @@ async function type(page, text) {
 }
 
 /** A real right click at the element's centre: what opens a context menu. */
-async function rightClick(page, selector) {
-	const r = await page.rect(selector);
+async function rightClick(page, selector, index = 0) {
+	const r = await page.rect(selector, index);
 
 	if (!r) {
 		throw new Error(`nothing to right-click at ${selector}`);
@@ -369,19 +372,19 @@ export default async function run(page) {
 	// Opers: the helper's oper-up is a row by oper, and "Opers coming up" by kind.
 	await openPanel();
 
-	// Services support without the channels: one grey line each, Join on the report one.
+	// Services support without the report channel: one grey line with Join.
+	// The snoop channel is no business of this tab (rubin, 2026-10-11): no
+	// line for it, whether or not the client is in it.
 	const missing = await page.evaluate(
 		`Array.from(document.querySelectorAll(".oper-activity-missing")).map((p) => ({text: p.querySelector("span").textContent.trim(), join: !!p.querySelector("button")}))`
 	);
 	page.check(
-		`the Opers tab says which channels are missing (${missing.map((m) => m.text).join(" | ")})`,
-		missing.length === 2 &&
+		`the Opers tab says the report channel is missing, with Join (${missing
+			.map((m) => m.text)
+			.join(" | ")})`,
+		missing.length === 1 &&
 			missing[0].text === "Not in #operserv: what services did for opers isn't counted." &&
-			missing[1].text === "Not in #mrsnoopy: connects and joins aren't kept."
-	);
-	page.check(
-		"Join is offered for the report channel only",
-		missing.length === 2 && missing[0].join === true && missing[1].join === false
+			missing[0].join === true
 	);
 	const operRow = `Array.from(document.querySelectorAll(".oper-activity .oper-rollup-row")).find((li) => li.querySelector('.oper-row-name .user[data-name="opfriend"]'))`;
 	await page.waitFor(`!!${operRow}`, {label: "the oper-up row for opfriend", timeout: 10000});
@@ -565,6 +568,205 @@ export default async function run(page) {
 		label: "opdrive gone from the user list",
 	});
 
+	// --------------------------------------- the snoop channel (2026-10-11)
+	// The dev rig has no X3, so a helper named like the configured oper bot
+	// (O3) stands in: it joins the configured snoop channel and posts lines
+	// in AfterNET's shape (the values made up) — two UMODE lines with the
+	// cloak pair after the modes, two connects, a JOIN, and our own connect.
+	// The nicks they name render as nicks whether or not they are in the
+	// channel, so the nick menu and Investigate open from the feed; the
+	// #chan in the JOIN line opens the channel menu; a line naming us is no
+	// highlight; and the Opers tab counts none of it.
+	const snoopChannel = "#mrsnoopy";
+	const overlay = "#oper-investigate-overlay";
+	const closeCard = async () => {
+		await page.click(`${overlay} .settings-modal-close`);
+		await page.waitFor(`!document.querySelector("${overlay}.opened")`, {
+			label: "the card closed",
+		});
+		await page.sleep(400); // the overlay fades for 0.2 s and would take the click
+	};
+	const openChannel = async (name) => {
+		if (MOBILE) {
+			await page.click("#viewport .lt");
+			await page.sleep(400);
+		}
+		await page.click(`.channel-list-item[data-name="${name}"]`);
+		await page.waitFor(
+			`!!document.querySelector('.channel-list-item[data-name="${name}"].active')`,
+			{
+				label: `${name} open`,
+			}
+		);
+		await page.sleep(300);
+	};
+
+	// Not yet in the snoop channel: the user card says so under Seen before.
+	await type(page, "/investigate opvictim");
+	await page.waitFor(`!!document.querySelector("${overlay}.opened .oper-investigate-user")`, {
+		label: "the user card for opvictim",
+	});
+	const seenNote = await page.evaluate(
+		`document.querySelector("${overlay} .oper-investigate-user .oper-activity-missing")?.textContent.replace(/\\s+/g, " ").trim() ?? ""`
+	);
+	page.check(
+		`the user card says the snoop channel is missing ("${seenNote}")`,
+		seenNote === `Not in ${snoopChannel}: earlier sessions aren't kept.`
+	);
+	await closeCard();
+
+	const o3 = helper("O3", () => {}, "Oper Services", snoopChannel);
+	await o3.ready;
+	await type(page, `/join ${snoopChannel}`);
+	await page.waitFor(
+		`!!document.querySelector('.channel-list-item[data-name="${snoopChannel}"].active')`,
+		{label: "the snoop channel open", timeout: 10000}
+	);
+	await page.sleep(800);
+	const B = "\x02";
+	const snoopLines = [
+		`[17:07:07] ${B}UMODE${B} clonebot7 +xzCc AN-1A2B3C4D.example.net ABCDEF.123456.7890AB.CDEF01.IP`,
+		`[17:07:07] ${B}NICK${B} clonebot7 probe@host12.example.net () [192.0.2.10] on Hub.Example.Org`,
+		`[17:10:12] ${B}UMODE${B} probe9 +xCc AN-5E6F7A8B.example.net 0F1E2D.3C4B5A.697887.7A6B5C.IP`,
+		`[17:10:12] ${B}NICK${B} probe9 probe9@host34.example.net () [198.51.100.23] on Hub.Example.Org`,
+		`[17:10:40] ${B}JOIN${B} #example by probe9`,
+		`[17:11:00] ${B}NICK${B} ${ME} ${ME}@host.example.net () [203.0.113.9] on Hub.Example.Org`,
+	];
+	for (const line of snoopLines) {
+		o3.send(`PRIVMSG ${snoopChannel} :${line}`);
+		await page.sleep(2500); // the rig's fake lag: a burst would be excess flood
+	}
+	const snoopMsgs = `Array.from(document.querySelectorAll("#chat .msg[data-type='message']")).filter((m) => /clonebot7|probe9|Hub\\.Example\\.Org/.test(m.textContent))`;
+	await page.waitFor(`${snoopMsgs}.length >= ${snoopLines.length}`, {
+		label: "the snoop lines in the channel",
+		timeout: 20000,
+	});
+	const rendered = await page.evaluate(`${snoopMsgs}.map((m) => ({
+		nicks: Array.from(m.querySelectorAll(".content .user")).map((u) => u.dataset.name),
+		channels: Array.from(m.querySelectorAll(".content .inline-channel")).map((c) => c.textContent.trim()),
+		highlight: m.classList.contains("highlight"),
+	}))`);
+	page.check(
+		`the nicks the snoop lines name render as nicks (${rendered
+			.map((r) => r.nicks.join("+") || "-")
+			.join(" | ")})`,
+		rendered.length === snoopLines.length &&
+			rendered[0].nicks.includes("clonebot7") &&
+			rendered[1].nicks.includes("clonebot7") &&
+			rendered[2].nicks.includes("probe9") &&
+			rendered[3].nicks.includes("probe9") &&
+			rendered[4].nicks.includes("probe9")
+	);
+	page.check(
+		`the #chan in the JOIN line is a channel (${rendered[4].channels.join(",")})`,
+		rendered[4].channels.includes("#example")
+	);
+	page.check(
+		`our own connect in the feed is a nick and no highlight (${rendered[5].nicks.join(
+			","
+		)}, highlight=${rendered[5].highlight})`,
+		rendered[5].nicks.includes(ME) && rendered[5].highlight === false
+	);
+	page.check(
+		"no snoop line is a highlight",
+		rendered.every((r) => r.highlight === false)
+	);
+	await page.screenshot("14-snoop-channel", {selector: "#chat"});
+
+	// The nick menu from the connect line (a tap on a nick opens it), and
+	// Investigate on it: the user card for a nick that is in no channel of
+	// ours, its lookups failing gracefully against the rig.
+	await page.click(`#chat .msg .content .user[data-name="clonebot7"]`, 1);
+	await page.waitFor(`!!document.querySelector("#context-menu .context-menu-oper-investigate")`, {
+		label: "Investigate in the snoop nick's menu",
+	});
+	const nickMenu = await page.evaluate(
+		`Array.from(document.querySelectorAll("#context-menu li")).map((li) => li.textContent.trim()).filter(Boolean)`
+	);
+	page.check(
+		`the menu is clonebot7's (${nickMenu.slice(0, 3).join(" | ")})`,
+		nickMenu[0] === "clonebot7" && nickMenu.includes("Investigate")
+	);
+	await page.screenshot("14b-snoop-nick-menu");
+	await page.click("#context-menu .context-menu-oper-investigate");
+	await page.waitFor(`!!document.querySelector("${overlay}.opened .oper-investigate-user")`, {
+		label: "the user card from the snoop line",
+	});
+	await page.waitFor(
+		`!/asking…/.test(document.querySelector("${overlay} .oper-investigate-user")?.textContent ?? "")`,
+		{label: "the card's sources settled (the nick is not on the rig)", timeout: 30000}
+	);
+	const snoopCard = await page.evaluate(`(() => {
+		const root = document.querySelector("${overlay}");
+		return {
+			title: root.querySelector(".settings-modal-header h1").textContent.replace(/\\s+/g, " ").trim(),
+			missing: root.querySelectorAll(".oper-investigate-user .oper-activity-missing").length,
+		};
+	})()`);
+	page.check(
+		`the user card is clonebot7's (${snoopCard.title})`,
+		/^clonebot7/.test(snoopCard.title)
+	);
+	page.check("in the snoop channel now: no 'Not in' line on the card", snoopCard.missing === 0);
+	await page.screenshot("14c-snoop-user-card", {selector: `${overlay} .oper-investigate`});
+	await closeCard();
+
+	// The channel menu from the JOIN line's #chan, and Investigate on it.
+	const exampleIndex = await page.evaluate(
+		`Array.from(document.querySelectorAll("#chat .msg .content .inline-channel")).findIndex((c) => c.textContent.trim() === "#example")`
+	);
+	page.check("the #chan in the JOIN line is found", exampleIndex >= 0);
+	await rightClick(page, `#chat .msg .content .inline-channel`, exampleIndex);
+	await page.waitFor(`!!document.querySelector("#context-menu .context-menu-oper-investigate")`, {
+		label: "Investigate in the snoop channel's menu",
+	});
+	await page.screenshot("14d-snoop-channel-menu");
+	await page.click("#context-menu .context-menu-oper-investigate");
+	await page.waitFor(
+		`!!document.querySelector("${overlay}.opened .oper-investigate") && /#example/.test(document.querySelector("${overlay} .settings-modal-header h1")?.textContent ?? "")`,
+		{label: "the channel card for #example"}
+	);
+	await closeCard();
+
+	// The Opers tab: nothing of the snoop channel — no "Not in" line and no
+	// row counting its lines, the "Everything else" timeline included.
+	await openPanel();
+	page.check(
+		"no 'Not in #mrsnoopy' line on the Opers tab",
+		(await page.evaluate(`document.querySelectorAll(".oper-missing-snoop").length`)) === 0
+	);
+	await page.click(`.oper-activity-view button:nth-child(2)`);
+	const otherRow = `Array.from(document.querySelectorAll(".oper-activity .oper-rollup-row")).find((li) => li.querySelector(".oper-row-name")?.textContent.trim() === "Everything else")`;
+	await page.waitFor(`!!${otherRow}`, {label: "the Everything else row (the connect notices)"});
+	await page.evaluate(`${otherRow}.querySelector(".oper-row").click()`);
+	await page.waitFor(`!!${otherRow}.querySelector(".oper-timeline")`, {
+		label: "its timeline open",
+	});
+	const panelText = await page.evaluate(
+		`document.querySelector(".oper-activity").textContent.replace(/\\s+/g, " ")`
+	);
+	page.check(
+		"the snoop lines count in no row and no timeline",
+		!/clonebot7|probe9|#example|Hub\.Example\.Org|UMODE/.test(panelText)
+	);
+	// The footer's "From the N notices kept" is the rows' total: the snoop
+	// lines are not among the N either.
+	const totals = await page.evaluate(`(() => {
+		const rows = Array.from(document.querySelectorAll(".oper-activity .oper-rollup-row .oper-row-count")).map((el) => parseInt(el.textContent, 10) || 0);
+		const foot = /From the (\\d+) notices? kept/.exec(document.querySelector(".oper-activity-foot")?.textContent ?? "");
+		return {rows: rows.reduce((a, b) => a + b, 0), kept: foot ? Number(foot[1]) : -1};
+	})()`);
+	page.check(
+		`the kept count is the rows' total (${totals.kept} kept, rows ${totals.rows})`,
+		totals.kept > 0 && totals.kept === totals.rows
+	);
+	await page.screenshot("14e-panel-opers-by-kind", {selector: ".oper-modal"});
+	await page.click(`.oper-activity-view button:nth-child(1)`);
+	await closePanel();
+	o3.quit();
+	await o3.closed;
+	await openChannel(CHANNEL);
+
 	// ------------------------------------ the investigation cards (step 3)
 	// Two more helpers from the rig's address sharing a realname with none
 	// of the others but each other: with opvictim and the oper that is four
@@ -576,7 +778,6 @@ export default async function run(page) {
 	const bot3 = helper("opbot3", () => {}, "irc client");
 	await Promise.all([bot2.ready, bot3.ready]);
 	await page.sleep(1500); // the connect notices land in the log
-	const overlay = "#oper-investigate-overlay";
 	const cardFacts = `(() => {
 		const root = document.querySelector("${overlay}");
 		return {
@@ -861,9 +1062,12 @@ export default async function run(page) {
 	// have: the dialog says "via O3", offers no CIDR, and reports the
 	// server's "no such nick" in plain words instead of waiting 10 s.
 	await page.click("#context-menu .context-menu-oper-gline");
+	// The compare card's lookups (CHECK, WHOIS, three STATS) are still being
+	// charged fake lag when this is asked: the USERIP behind the suggestions
+	// can take ten seconds and more to come back.
 	await page.waitFor(
 		`!!document.querySelector("#oper-action-dialog .oper-action-suggestions .oper-chip")`,
-		{label: "mask suggestions (via O3)", timeout: 10000}
+		{label: "mask suggestions (via O3)", timeout: 25000}
 	);
 	const viaTitle = await page.evaluate(
 		`document.querySelector("#oper-action-dialog .oper-action-title").textContent.trim()`

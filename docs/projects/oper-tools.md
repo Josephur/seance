@@ -532,13 +532,17 @@ through O3, and the grey lines when a channel is missing. Wire facts:
   rollup (`helpers/operActivity.ts`, now with `ActivityOptions {serviceNicks}`) credits an audit line to the person who typed it, a
   snoop OPER to that nick as an oper-up, a kill by a bot and a MODE set by
   a bot to the services row, and files every other snoop keyword under
-  "Everything else". "Alerts in services" is a new coarse kind. The tier-2
-  labels read in the singular ("1 oper-up", "1 G-line", "2 channel modes").
+  "Everything else" _(the snoop rules went on 2026-10-11: a snoop entry now
+  counts nowhere on the tab, see below)_. "Alerts in services" is a new
+  coarse kind. The tier-2 labels read in the singular ("1 oper-up", "1
+  G-line", "2 channel modes").
 - **Graceful degradation** (`OperActivity.vue`): with services set, one
   grey line per configured channel the client is not in — "Not in
   #operserv: what services did for opers isn't counted." with a Join
   button, "Not in #mrsnoopy: connects and joins aren't kept." without one.
-  Nothing without the setting.
+  Nothing without the setting. _(Since 2026-10-11 the snoop channel is no
+  longer this tab's: no line for it and nothing counted from it — see the
+  entry below.)_
 - **Bans through O3** (`ActionDialog.vue`, `services:ban` →
   `irc/services.ts` `servicesBan`): with X3 set, a G-line or shun goes out
   as `PRIVMSG O3 :gline <mask> <duration> <reason>`; the title and button
@@ -756,6 +760,71 @@ over X3's alert lookups (`irc/services/x3/alerts.ts`, on the
   checks no query window was opened for a bot, and on the Alerts tab the
   New button and the folded list saying O3 is not online; desktop and
   phone.
+
+**The snoop channel: a source and a place to click, not oper actions
+(2026-10-11).** Rubin, on seeing the Opers tab fill with the snoop feed:
+"When the snoop channel is defined in the network tab, you parse the
+content there correctly, and let me right click on nicks and channels to
+do investigations. We can leave the stream in the oper stuff for
+investigate, but it doesn't need to show up as 'everything else' content,
+since it isn't 'oper actions', which is what that panel is."
+
+- **The Opers tab never counts a snoop line.** `helpers/operActivity.ts`
+  `isCounted(entry)` is false for `type: "snoop"`: `actorOf` is undefined
+  for one, `rollupByKind` filters them before grouping, and the rules that
+  credited a snoop OPER as an oper-up and a bot's kill or mode to the
+  services row are gone (`coarseKindOf` takes the entry alone now; the
+  `ActivityOptions {serviceNicks}` stay for the audit lines and WALLOPS by
+  a bot). `OperActivity.vue` lost its "Not in #mrsnoopy: connects and joins
+  aren't kept." line — the "Not in #operserv" line with Join stays
+  (`missingReport`). The cards keep saying when the snoop channel is
+  missing: the channel card under Last hour here as before, and now the
+  user card under Seen before ("Not in #mrsnoopy: earlier sessions aren't
+  kept.", `UserModel.snoopMissing`, set with the channel card's rule in
+  `startUser`).
+- **AfterNET's lines parse.** Its X3 appends the cloaked host and the
+  cloaked IP after the modes of a `UMODE` line when `+x` is among them,
+  which the e-testnet copy the reference was read from does not; the rule
+  accepts the optional pair as `cloak` / `cloakIp` — never `host` / `ip`,
+  which `commonality.ts` and `verdict.ts` read from the connect, quit, kill,
+  oper and auth lines and would take for a place. The format is in
+  `x3-services.md` §3 and `test/irc/services/x3.ts` holds the shape with
+  made-up values (two UMODEs, two connects with the empty `()` of a user
+  not authed and a mixed-case server). Every other keyword's rule was run
+  against the reference's shapes again; nothing else fell through.
+- **The nicks a snoop line names are nicks.** `noteServicesLine` returns
+  the entry it recognised — appended to the notice log for a live line
+  only; a replayed one (a chathistory page after a reload, a reconnect's
+  catch-up) is parsed and marked the same, since the scrollback is where an
+  oper looks a nick up, but the log already has it — `snoopNicks(entry)`
+  lists the `nick`, `newNick`,
+  `kicker`, `killer` and `setter` fields that are not a server (a dot),
+  each once, and the PRIVMSG handler passes them to `handleMessage` as a
+  `FeedNote {nicks}` that are added to the message's `users` when not
+  already there — so `findNames` renders them as `Username.vue` whether or
+  not they are in the channel, and the nick menu (Investigate first when
+  opered; `ContextMenu.vue` already stood in `{nick, modes: []}` for a nick
+  outside the user list, and `operUserItems` needs only the nick) opens
+  from the feed; the `#chan` in a JOIN, CREATE, PART, KICK or MODE line was
+  already an `InlineChannel` with `operChannelItems`. A recognised snoop
+  line is never a highlight: our own connect in the feed is the bot's
+  report, not a word to us, so it raises no mention and the channel's
+  unread moves as for any message in it. Audit lines are untouched.
+- Tests: `test/irc/services/x3.ts` (the AfterNET shapes), `test/irc/services.ts`
+  (the `users` of every keyword's line, the own-connect line without a
+  highlight against the bot's chat with one, the unread and highlight
+  counts, `snoopNicks`), `test/helpers/operActivity.ts` (every keyword
+  counts nowhere, by oper and by kind; the audit rollup without them),
+  `test/irc/investigate.ts` (the user card's `snoopMissing`). Browser:
+  `tools/scenarios/oper-tools.mjs` stands a helper named `O3` in for the
+  bot (the rig has no X3): it joins the configured snoop channel and posts
+  the made-up AfterNET lines; the scenario checks the user card's "Not in
+  #mrsnoopy" line before joining, the nicks rendered as nicks, the menu and
+  Investigate from the connect line's nick (the card for a nick in no
+  channel of ours, its lookups failing gracefully), the menu and
+  Investigate from the JOIN line's `#chan`, no highlight on the line naming
+  us, and the Opers tab with no "Not in #mrsnoopy" line and none of it in
+  any row or the "Everything else" timeline — desktop and phone.
 
 ## Revised plan (rubin and Claude, 2026-10-10)
 

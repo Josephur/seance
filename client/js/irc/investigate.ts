@@ -162,6 +162,8 @@ export interface UserModel {
 	verdict: string;
 	lastQuitHostmask?: string;
 	hostmasks?: string[];
+	/** The snoop channel "seen before" would draw on, when one is configured and not joined. */
+	snoopMissing?: string;
 }
 
 export type InvestigationModel = ChannelModel | UserModel;
@@ -999,6 +1001,11 @@ export class Investigation {
 		const nick = this.target;
 		const nefarious = this.client.profile.id === "nefarious2";
 		const opered = this.client.oper.level !== "none" && this.client.oper.level !== "service";
+		const snoop = this.client.services?.bots.snoop.trim() ?? "";
+
+		if (snoop && this.client.findChannel(snoop)?.state !== ChanState.JOINED) {
+			this.userModel.snoopMissing = snoop;
+		}
 
 		if (nefarious) {
 			this.serverTask("check", `CHECK ${nick}`, {end: ["291", "292"]}, (reply) =>

@@ -22,20 +22,17 @@
 			</div>
 		</div>
 
-		<!-- Services support, without the channels: what the feed would add
-		     (docs/projects/oper-tools.md, "Graceful degradation"). Join is
-		     offered for the report channel only. -->
-		<p
-			v-for="m in missingChannels"
-			:key="m.channel"
-			:class="['oper-muted', 'oper-activity-missing', 'oper-missing-' + m.role]"
-		>
-			<span>{{ m.text }}</span>
+		<!-- Services support, without the report channel: what the audit
+		     lines would add (docs/projects/oper-tools.md, "Graceful
+		     degradation"), with Join. The snoop channel is not this tab's
+		     business: its lines count for nothing here (the cards say when
+		     it is missing). -->
+		<p v-if="missingReport" class="oper-muted oper-activity-missing oper-missing-report">
+			<span>Not in {{ missingReport }}: what services did for opers isn't counted.</span>
 			<button
-				v-if="m.role === 'report'"
 				type="button"
 				class="btn btn-small oper-join-channel"
-				@click="join(m.channel)"
+				@click="join(missingReport)"
 			>
 				Join
 			</button>
@@ -314,6 +311,7 @@ import useNow from "../../js/hooks/use-now";
 import {
 	actorOf as actorOfEntry,
 	countLabel,
+	isCounted,
 	periodStart,
 	rollupByKind,
 	rollupByOper,
@@ -365,45 +363,21 @@ export default defineComponent({
 			serviceNicks: serviceNicksOf(props.network.services),
 		}));
 		const byOper = computed(() => rollupByOper(recent.value, since.value, opts.value));
-		const byKind = computed(() => rollupByKind(recent.value, since.value, opts.value));
+		const byKind = computed(() => rollupByKind(recent.value, since.value));
 		const rows = computed(() => (view.value === "oper" ? byOper.value : byKind.value));
 		const actorOf = (entry: LoggedNotice) => actorOfEntry(entry, opts.value);
 
-		/** The configured services channels this client is not in, and what each would add. */
-		const missingChannels = computed(() => {
-			const services = props.network.services;
+		/** The configured report channel when this client is not in it (its audit lines are what the tab counts). */
+		const missingReport = computed(() => {
+			const report = props.network.services?.bots.report ?? "";
+			const joined = props.network.channels.some(
+				(c) =>
+					c.type === ChanType.CHANNEL &&
+					c.state === ChanState.JOINED &&
+					c.name.toLowerCase() === report.toLowerCase()
+			);
 
-			if (!services) {
-				return [];
-			}
-
-			const joined = (name: string) =>
-				props.network.channels.some(
-					(c) =>
-						c.type === ChanType.CHANNEL &&
-						c.state === ChanState.JOINED &&
-						c.name.toLowerCase() === name.toLowerCase()
-				);
-			const out: {role: "report" | "snoop"; channel: string; text: string}[] = [];
-			const {report, snoop} = services.bots;
-
-			if (report && !joined(report)) {
-				out.push({
-					role: "report",
-					channel: report,
-					text: `Not in ${report}: what services did for opers isn't counted.`,
-				});
-			}
-
-			if (snoop && !joined(snoop)) {
-				out.push({
-					role: "snoop",
-					channel: snoop,
-					text: `Not in ${snoop}: connects and joins aren't kept.`,
-				});
-			}
-
-			return out;
+			return report && !joined ? report : "";
 		});
 
 		const join = (channel: string) => {
@@ -427,7 +401,9 @@ export default defineComponent({
 
 		const onNotices = (data: {network: string; entries: LoggedNotice[]}) => {
 			if (data.network === props.network.uuid) {
-				recent.value = data.entries;
+				// The snoop channel's lines are the cards' source, not oper actions:
+				// not in the rollups, not in the footer's count.
+				recent.value = data.entries.filter(isCounted);
 			}
 		};
 
@@ -471,7 +447,7 @@ export default defineComponent({
 			toggle,
 			actorOf,
 			countLabel,
-			missingChannels,
+			missingReport,
 			join,
 			clock,
 			seconds,

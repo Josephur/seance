@@ -639,6 +639,9 @@ describe("the user investigation (irc/investigate.ts)", function () {
 		await flush();
 
 		let model = inv.model as UserModel;
+		expect(model.snoopMissing, "the snoop channel is configured and not joined").to.equal(
+			"#mrsnoopy"
+		);
 		expect(model.user.ip).to.equal("203.0.113.7");
 		expect(model.user.host).to.equal("203-0-113-7.example.net");
 		expect(model.user.ident).to.equal("r8821");

@@ -9,10 +9,12 @@
  *
  * The services feed (irc/servicesfeed.ts) joins in through the same
  * tables: an audit line is credited to the person who typed the command
- * (the bot is the messenger); a snoop OPER line is an oper coming up; a
- * kill or a channel mode by a services bot is the services row's — and
- * which nicks are bots is the network's setting, passed in as
- * {@link ActivityOptions}. Vue-free so mocha covers it
+ * (the bot is the messenger) — and which nicks are bots is the network's
+ * setting, passed in as {@link ActivityOptions}, so a WALLOPS or an audit
+ * line by one lands on the services row. The snoop channel's lines
+ * (connects, joins, kills, oper-ups as X3 saw them) count for nothing
+ * here: they are the investigation cards' source, not oper actions
+ * (rubin, 2026-10-11). Vue-free so mocha covers it
  * (test/helpers/operActivity.ts).
  */
 
@@ -97,9 +99,9 @@ export function countLabel(coarse: CoarseKind, count: number): string {
 }
 
 /**
- * Notice kind → coarse kind. Anything missing is `other`; the services
- * feed's kinds (`x3.audit.<coarse>`, `x3.snoop.<keyword>`) are decided in
- * {@link coarseKindOf}, since some depend on who did it.
+ * Notice kind → coarse kind. Anything missing is `other`; the audit
+ * feed's kinds (`x3.audit.<coarse>`) carry their coarse kind in the name
+ * and are decided in {@link coarseKindOf}.
  */
 export const KIND_COARSE: Record<string, CoarseKind> = {
 	"ban.add": "glines",
@@ -160,44 +162,30 @@ export function isServiceActor(nick: string, serviceNicks: string[] = []): boole
 
 const COARSE_IDS = new Set<string>(COARSE_KINDS.map((k) => k.id));
 
-/** `x3.audit.glines` → `glines`; `x3.snoop.oper` → `oper`; else undefined. */
-function servicesKind(kind: string): {feed: "audit" | "snoop" | "log"; rest: string} | undefined {
-	const m = /^[a-z0-9]+\.(audit|snoop|log)\.(.+)$/.exec(kind);
-	return m ? {feed: m[1] as "audit" | "snoop" | "log", rest: m[2]} : undefined;
+/** `x3.audit.glines` → `glines`; a module log line (`x3.log.info`) and anything else undefined. */
+function auditKind(kind: string): CoarseKind | undefined {
+	const m = /^[a-z0-9]+\.audit\.(.+)$/.exec(kind);
+	return m && COARSE_IDS.has(m[1]) ? (m[1] as CoarseKind) : undefined;
 }
 
-export function coarseKindOf(entry: LoggedNotice, opts: ActivityOptions = NONE): CoarseKind {
+/**
+ * Whether the rollup sees the entry at all: a snoop line is the cards'
+ * source and no oper's action, so it is in no row and no timeline.
+ */
+export function isCounted(entry: LoggedNotice): boolean {
+	return entry.type !== "snoop";
+}
+
+export function coarseKindOf(entry: LoggedNotice): CoarseKind {
 	if (entry.type === "wallops") {
 		return "wallops";
 	}
 
-	if (entry.type === "audit" || entry.type === "snoop") {
-		const sk = servicesKind(entry.snotice.kind);
+	if (entry.type === "audit") {
+		return auditKind(entry.snotice.kind) ?? "other";
+	}
 
-		if (!sk) {
-			return "other";
-		}
-
-		if (sk.feed === "audit") {
-			return COARSE_IDS.has(sk.rest) ? (sk.rest as CoarseKind) : "other";
-		}
-
-		if (sk.feed === "snoop") {
-			const fields = entry.snotice.fields;
-
-			if (sk.rest === "oper") {
-				return "opers";
-			}
-
-			if (sk.rest === "kill") {
-				return "kills";
-			}
-
-			if (sk.rest === "mode" && isServiceActor(fields.setter ?? "", opts.serviceNicks)) {
-				return "modes";
-			}
-		}
-
+	if (entry.type === "snoop") {
 		return "other";
 	}
 
@@ -250,37 +238,6 @@ function named(name: string, serviceNicks: string[] | undefined): Actor {
 	return isServiceActor(name, serviceNicks) ? {type: "service", name} : {type: "nick", name};
 }
 
-/** Who did a services-feed entry, or undefined when it is not an action. */
-function servicesActorOf(entry: LoggedNotice, opts: ActivityOptions): Actor | undefined {
-	const sk = servicesKind(entry.snotice.kind);
-	const fields = entry.snotice.fields;
-
-	if (!sk) {
-		return undefined;
-	}
-
-	if (sk.feed === "audit") {
-		// The bot is the messenger; the person who typed the command did it.
-		return entry.from ? named(entry.from, opts.serviceNicks) : undefined;
-	}
-
-	if (sk.feed === "snoop") {
-		if (sk.rest === "oper" && fields.nick) {
-			return named(fields.nick, opts.serviceNicks);
-		}
-
-		if (sk.rest === "kill" && fields.killer) {
-			return named(fields.killer, opts.serviceNicks);
-		}
-
-		if (sk.rest === "mode" && isServiceActor(fields.setter ?? "", opts.serviceNicks)) {
-			return {type: "service", name: fields.setter};
-		}
-	}
-
-	return undefined;
-}
-
 /** Who did it, or undefined when the entry is not an action at all. */
 export function actorOf(entry: LoggedNotice, opts: ActivityOptions = NONE): Actor | undefined {
 	if (entry.type === "wallops") {
@@ -294,8 +251,14 @@ export function actorOf(entry: LoggedNotice, opts: ActivityOptions = NONE): Acto
 		return named(from, opts.serviceNicks);
 	}
 
-	if (entry.type === "audit" || entry.type === "snoop") {
-		return servicesActorOf(entry, opts);
+	if (entry.type === "audit") {
+		// The bot is the messenger; the person who typed the command did it.
+		// A module log line (`x3.log.<severity>`) has nobody behind it.
+		return entry.from ? named(entry.from, opts.serviceNicks) : undefined;
+	}
+
+	if (!isCounted(entry)) {
+		return undefined;
 	}
 
 	const fields = ACTION_FIELDS[entry.snotice.kind];
@@ -350,11 +313,11 @@ const ORDER = new Map(COARSE_KINDS.map((k, i) => [k.id, i]));
 const LABEL = new Map(COARSE_KINDS.map((k) => [k.id, k.label]));
 
 /** Group entries (any order) by coarse kind, in the display order, newest first inside. */
-function groupByKind(entries: LoggedNotice[], opts: ActivityOptions): KindGroup[] {
+function groupByKind(entries: LoggedNotice[]): KindGroup[] {
 	const groups = new Map<CoarseKind, KindGroup>();
 
 	for (const entry of entries) {
-		const coarse = coarseKindOf(entry, opts);
+		const coarse = coarseKindOf(entry);
 		let group = groups.get(coarse);
 
 		if (!group) {
@@ -433,7 +396,7 @@ export function rollupByOper(
 		count: row.entries.length,
 		last: Math.max(...row.entries.map((e) => e.time)),
 		hot: false,
-		groups: groupByKind(row.entries, opts),
+		groups: groupByKind(row.entries),
 	}));
 
 	const rank = (row: ActorRow) =>
@@ -456,10 +419,6 @@ export function rollupByOper(
 }
 
 /** By kind: a row per coarse kind with an entry since `since`, `other` last. */
-export function rollupByKind(
-	entries: LoggedNotice[],
-	since: number,
-	opts: ActivityOptions = NONE
-): KindGroup[] {
-	return groupByKind(inPeriod(entries, since), opts);
+export function rollupByKind(entries: LoggedNotice[], since: number): KindGroup[] {
+	return groupByKind(inPeriod(entries, since).filter(isCounted));
 }

@@ -193,6 +193,9 @@
 		</p>
 
 		<h3 class="oper-report-section-title">Seen before</h3>
+		<p v-if="model.snoopMissing" class="oper-muted oper-activity-missing">
+			Not in {{ model.snoopMissing }}: earlier sessions aren't kept.
+		</p>
 		<ul v-if="model.seen.length" class="oper-seen">
 			<li v-for="s in model.seen" :key="s.nick">
 				<span class="oper-muted">{{ when(s.time) }} · </span>

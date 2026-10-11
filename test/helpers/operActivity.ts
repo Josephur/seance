@@ -6,6 +6,7 @@ import {
 	COARSE_KINDS,
 	countLabel,
 	inPeriod,
+	isCounted,
 	isOperAction,
 	KIND_COARSE,
 	periodStart,
@@ -228,12 +229,12 @@ describe("oper activity rollup (helpers/operActivity.ts)", function () {
 				type: "nick",
 				name: "Rubin",
 			});
-			expect(coarseKindOf(audit("glines", "Rubin"), bots)).to.equal("glines");
-			expect(coarseKindOf(audit("modes", "n"), bots)).to.equal("modes");
-			expect(coarseKindOf(audit("alerts", "n"), bots)).to.equal("alerts");
-			expect(coarseKindOf(audit("opers", "n"), bots)).to.equal("opers");
-			expect(coarseKindOf(audit("other", "n"), bots)).to.equal("other");
-			expect(coarseKindOf(audit("nonsense", "n"), bots)).to.equal("other");
+			expect(coarseKindOf(audit("glines", "Rubin"))).to.equal("glines");
+			expect(coarseKindOf(audit("modes", "n"))).to.equal("modes");
+			expect(coarseKindOf(audit("alerts", "n"))).to.equal("alerts");
+			expect(coarseKindOf(audit("opers", "n"))).to.equal("opers");
+			expect(coarseKindOf(audit("other", "n"))).to.equal("other");
+			expect(coarseKindOf(audit("nonsense", "n"))).to.equal("other");
 			expect(isOperAction(audit("other", "n"), bots)).to.equal(true);
 
 			// A module log line has no human behind it.
@@ -247,89 +248,78 @@ describe("oper activity rollup (helpers/operActivity.ts)", function () {
 				},
 			};
 			expect(actorOf(log, bots)).to.equal(undefined);
-			expect(coarseKindOf(log, bots)).to.equal("other");
+			expect(coarseKindOf(log)).to.equal("other");
 		});
 
-		it("takes a snoop OPER as an oper coming up, and a bot's kill or mode as the services'", function () {
-			expect(
-				actorOf(snoop("oper", {nick: "rubin", ident: "~r", host: "h"}), bots)
-			).to.deep.equal({type: "nick", name: "rubin"});
-			expect(coarseKindOf(snoop("oper", {nick: "rubin"}), bots)).to.equal("opers");
-
-			expect(actorOf(snoop("kill", {nick: "troll", killer: "O3"}), bots)).to.deep.equal({
-				type: "service",
-				name: "O3",
-			});
-			expect(coarseKindOf(snoop("kill", {nick: "troll", killer: "O3"}), bots)).to.equal(
-				"kills"
-			);
-
-			const byBot = snoop("mode", {channel: "#a", modes: "+o x", setter: "ChanServ"});
-			expect(actorOf(byBot, bots)).to.deep.equal({type: "service", name: "ChanServ"});
-			expect(coarseKindOf(byBot, bots)).to.equal("modes");
-
-			// A user's mode, and everything else in the feed, is plumbing.
-			const byUser = snoop("mode", {channel: "#a", modes: "+m", setter: "alice"});
-			expect(actorOf(byUser, bots)).to.equal(undefined);
-			expect(coarseKindOf(byUser, bots)).to.equal("other");
-
-			for (const [keyword, fields] of [
+		it("counts a snoop line nowhere: not an action, not a kind, not everything else", function () {
+			// The snoop channel is the cards' source and a place to click,
+			// never oper actions (rubin, 2026-10-11) — whatever the keyword,
+			// an oper-up and a bot's kill or mode included.
+			const lines: [string, Record<string, string>][] = [
+				["oper", {nick: "rubin", ident: "~r", host: "h"}],
+				["kill", {nick: "troll", killer: "O3"}],
+				["mode", {channel: "#a", modes: "+o x", setter: "ChanServ"}],
+				["mode", {channel: "#a", modes: "+m", setter: "alice"}],
 				["connect", {nick: "x", ip: "1.2.3.4"}],
 				["join", {channel: "#a", nick: "x"}],
 				["part", {channel: "#a", nick: "x"}],
 				["quit", {nick: "x"}],
 				["nick", {nick: "x", newNick: "y"}],
 				["auth", {nick: "x", account: "x"}],
-				["umode", {nick: "x", modes: "+i"}],
-			] as [string, Record<string, string>][]) {
+				["umode", {nick: "x", modes: "+x", cloak: "AN-1A2B3C4D.example.net"}],
+			];
+
+			for (const [keyword, fields] of lines) {
+				expect(isCounted(snoop(keyword, fields)), keyword).to.equal(false);
 				expect(actorOf(snoop(keyword, fields), bots), keyword).to.equal(undefined);
-				expect(coarseKindOf(snoop(keyword, fields), bots), keyword).to.equal("other");
+				expect(actorOf(snoop(keyword, fields)), keyword).to.equal(undefined);
+				expect(isOperAction(snoop(keyword, fields), bots), keyword).to.equal(false);
 			}
 
-			// Without the setting, nobody is a service.
-			expect(actorOf(snoop("kill", {nick: "troll", killer: "O3"}))).to.deep.equal({
-				type: "nick",
-				name: "O3",
-			});
-			expect(coarseKindOf(byBot)).to.equal("other");
+			const entries = lines.map(([keyword, fields], i) => snoop(keyword, fields, i));
+			expect(rollupByOper(entries, T0 - MIN, bots)).to.deep.equal([]);
+			expect(rollupByKind(entries, T0 - MIN)).to.deep.equal([]);
+
+			// The notices and the audit lines count as before.
+			expect(isCounted(snotice("client.connect", {nick: "x"}))).to.equal(true);
+			expect(isCounted(audit("glines", "Rubin"))).to.equal(true);
+			expect(isCounted(wallops("alice"))).to.equal(true);
 		});
 
-		it("rolls the feed up with the notices: humans, then the services row", function () {
+		it("rolls the audit lines up with the notices: humans, then the services row", function () {
 			const entries = [
 				snotice("ban.add", {oper: "alice", mask: "a"}, 0),
 				audit("glines", "alice", 1),
 				audit("glines", "Rubin", 2),
-				snoop("oper", {nick: "Rubin"}, 3),
-				snoop("kill", {nick: "troll", killer: "O3"}, 4),
-				snoop("mode", {channel: "#a", modes: "+o x", setter: "ChanServ"}, 5),
+				audit("opers", "Rubin", 3),
+				snoop("oper", {nick: "Rubin"}, 4),
+				snoop("kill", {nick: "troll", killer: "O3"}, 5),
 				snoop("join", {channel: "#a", nick: "x"}, 6),
 				snotice("hack.mode", {nick: "ChanServ", channel: "#a"}, 7),
+				snotice("client.connect", {nick: "x"}, 8),
 			];
 
 			const rows = rollupByOper(entries, T0 - MIN, bots);
 			expect(rows.map((r) => [r.key, r.count])).to.deep.equal([
 				["nick:alice", 2],
 				["nick:rubin", 2],
-				["services", 3],
+				["services", 1],
 			]);
 			expect(rows[1].groups.map((g) => [g.coarse, g.count])).to.deep.equal([
 				["glines", 1],
 				["opers", 1],
 			]);
 			expect(rows[2].actor).to.deep.equal({type: "service", name: "services"});
-			expect(rows[2].groups.map((g) => [g.coarse, g.count])).to.deep.equal([
-				["kills", 1],
-				["modes", 2],
-			]);
+			expect(rows[2].groups.map((g) => [g.coarse, g.count])).to.deep.equal([["modes", 1]]);
 
-			const kinds = rollupByKind(entries, T0 - MIN, bots);
+			const kinds = rollupByKind(entries, T0 - MIN);
 			expect(kinds.map((g) => [g.coarse, g.count])).to.deep.equal([
 				["glines", 3],
-				["kills", 1],
-				["modes", 2],
+				["modes", 1],
 				["opers", 1],
 				["other", 1],
 			]);
+			expect(kinds[3].entries.map((e) => e.snotice.kind)).to.deep.equal(["client.connect"]);
 		});
 	});
 
