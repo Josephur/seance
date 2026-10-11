@@ -34,6 +34,35 @@ export function openOperAction(request: OperActionRequest): void {
 	eventbus.emit("oper:action", request);
 }
 
+/** What the investigation card (components/Oper/InvestigateCard.vue) is opened with. */
+export interface InvestigateRequest {
+	network: string;
+	kind: "channel" | "user";
+	/** The channel name or the nick. */
+	target: string;
+}
+
+export function openInvestigation(request: InvestigateRequest): void {
+	eventbus.emit("oper:investigate", request);
+}
+
+/** The entry an opered network adds to a channel's menu (the sidebar row, an inline `#chan`). */
+export function operChannelItems(network: ClientNetwork, channel: string): ContextMenuItem[] {
+	if (!isOperOn(network)) {
+		return [];
+	}
+
+	return [
+		{
+			label: "Investigate",
+			type: "item",
+			class: "oper-investigate",
+			action: () =>
+				openInvestigation({network: network.uuid, kind: "channel", target: channel}),
+		},
+	];
+}
+
 /** Opered (local, global or admin) on this network. */
 export function isOperOn(network: Pick<ClientNetwork, "oper"> | undefined): boolean {
 	const level = network?.oper?.level;
@@ -114,7 +143,14 @@ export function operUserItems(
 		return [];
 	}
 
-	const items: ContextMenuItem[] = [];
+	const items: ContextMenuItem[] = [
+		{
+			label: "Investigate",
+			type: "item",
+			class: "oper-investigate",
+			action: () => openInvestigation({network: network.uuid, kind: "user", target: nick}),
+		},
+	];
 
 	if (hasPriv(network, "CHECK")) {
 		items.push({

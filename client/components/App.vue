@@ -13,6 +13,7 @@
 		<ContextMenu ref="contextMenu" />
 		<ConfirmDialog ref="confirmDialog" />
 		<UploadPreview />
+		<InvestigateCard />
 		<OperActionDialog />
 		<PushPrompt />
 		<InstallGuide />
@@ -35,6 +36,7 @@ import ContextMenu from "./ContextMenu.vue";
 import ConfirmDialog from "./ConfirmDialog.vue";
 import UploadPreview from "./UploadPreview.vue";
 import OperActionDialog from "./Oper/ActionDialog.vue";
+import InvestigateCard from "./Oper/InvestigateCard.vue";
 import Mentions from "./Mentions.vue";
 import PushPrompt from "./PushPrompt.vue";
 import InstallGuide from "./InstallGuide.vue";
@@ -67,6 +69,7 @@ export default defineComponent({
 		ConfirmDialog,
 		UploadPreview,
 		OperActionDialog,
+		InvestigateCard,
 		Mentions,
 		PushPrompt,
 		InstallGuide,

@@ -7,7 +7,7 @@ import {switchToChannel} from "../router";
 import {TypedStore} from "../store";
 import useCloseChannel from "../hooks/use-close-channel";
 import {ChanType} from "../../../shared/types/chan";
-import {isOperOn, operUserItems} from "./operMenu";
+import {isOperOn, operChannelItems, operUserItems} from "./operMenu";
 
 type BaseContextMenuItem = {
 	label: string;
@@ -136,6 +136,7 @@ export function generateChannelContextMenu(
 
 	// Add menu items for channels
 	if (channel.type === ChanType.CHANNEL) {
+		items.push(...operChannelItems(network, channel.name));
 		items.push({
 			label: "Edit topic",
 			type: "item",
@@ -280,6 +281,7 @@ export function generateInlineChannelContextMenu(
 				class: "chan",
 				link: `/chan-${channel.id}`,
 			},
+			...operChannelItems(network, chan),
 		];
 	}
 
@@ -290,6 +292,7 @@ export function generateInlineChannelContextMenu(
 			class: "join",
 			action: join,
 		},
+		...operChannelItems(network, chan),
 	];
 }
 
