@@ -8,7 +8,12 @@
 // folded away still switching CONNEXIT) and Me (the status line, the
 // privileges); the badge on a notice opens the route menu and the Alerts
 // tab shows the change; a G-line and a KILL from a nick's menu work and say
-// so; and the notices come back after a reload (IndexedDB).
+// so; and the notices come back after a reload (IndexedDB). Services
+// support: the edit form's section is absent before opering and there
+// after, picking X3 prefills the five fields, the liveness line says the
+// bots are not online (the dev rig has no X3), and the Opers tab says
+// which channels are missing with Join on the report one only — the feed
+// and the O3 ban path need X3 and are unit-tested.
 //
 //   corepack yarn build && python3 -m http.server -d public 8000 &
 //   tools/nefarious-dev/run.sh -d      # local.conf grants the ban privileges
@@ -131,6 +136,35 @@ export default async function run(page) {
 		(await page.evaluate(`document.querySelectorAll('${shield}').length`)) === 0
 	);
 
+	// ---------------------------- the edit form: no Services support before opering
+	const uuid = await page.evaluate(
+		`JSON.parse(localStorage.getItem("thelounge.networks") ?? "[]")[0]?.uuid ?? ""`
+	);
+	page.check(`the network is saved (${uuid})`, uuid !== "");
+	const openEditForm = async () => {
+		await page.evaluate(`location.hash = "#/settings/networks/${uuid}"`);
+		await page.waitFor(`!!document.querySelector("#connect form #connect\\\\:nick")`, {
+			label: "the network's edit form",
+			timeout: 10000,
+		});
+		await page.sleep(400);
+	};
+	const closeSettings = async () => {
+		await page.click(".settings-modal-done");
+		await page.waitFor(
+			`document.querySelector("#input") && !document.querySelector("#settings")`,
+			{
+				label: "back in the channel",
+			}
+		);
+	};
+	await openEditForm();
+	page.check(
+		"no Services support section before opering",
+		(await page.evaluate(`document.querySelectorAll("#label-services").length`)) === 0
+	);
+	await closeSettings();
+
 	// ---------------------------------------------------------------- oper up
 	await type(page, "/oper seanceop seance");
 	await page.waitFor(`!!document.querySelector('${shield}')`, {
@@ -138,6 +172,48 @@ export default async function run(page) {
 		timeout: 15000,
 	});
 	await page.sleep(1500); // PRIVS, the snomask, the features
+
+	// ---------------------------------- Services support, once opered: pick X3
+	await openEditForm();
+	await page.waitFor(`!!document.querySelector("#label-services")`, {
+		label: "the Services support section",
+	});
+	await page.evaluate(`(() => {
+		const select = document.querySelector("#connect\\\\:servicesPackage");
+		select.value = "x3";
+		select.dispatchEvent(new Event("change", {bubbles: true}));
+	})()`);
+	await page.waitFor(`!!document.querySelector("#connect\\\\:services-snoop")`, {
+		label: "the role fields",
+	});
+	const roles = await page.evaluate(
+		`["oper", "account", "channel", "report", "snoop"].map((r) => document.querySelector("#connect\\\\:services-" + r).value)`
+	);
+	page.check(
+		`picking X3 prefills the five fields (${roles.join(", ")})`,
+		roles.join(",") === "O3,AuthServ,ChanServ,#operserv,#mrsnoopy"
+	);
+	const checkLine = `document.querySelector("#connect .services-check")?.textContent.trim() ?? ""`;
+	await page.waitFor(`/aren't online \\(no such nick\\)/.test(${checkLine})`, {
+		label: "the liveness line, in plain words",
+		timeout: 20000,
+	});
+	const liveness = await page.evaluate(checkLine);
+	page.check(
+		`the dev rig has no X3: "${liveness}"`,
+		liveness === "O3, AuthServ and ChanServ aren't online (no such nick)."
+	);
+	await page.evaluate(
+		`document.querySelector("#label-services").scrollIntoView({block: "start"})`
+	);
+	await page.sleep(200);
+	await page.screenshot("1b-services-form", {selector: MOBILE ? "#settings" : "#connect form"});
+	await page.evaluate(`document.querySelector("#connect form").requestSubmit()`);
+	await page.waitFor(
+		`(JSON.parse(localStorage.getItem("thelounge.networks") ?? "[]")[0]?.services?.package ?? "") === "x3"`,
+		{label: "the services block saved"}
+	);
+	await closeSettings();
 	if (!MOBILE) {
 		await page.screenshot("1-sidebar-shield", {selector: "#sidebar"});
 	}
@@ -259,6 +335,21 @@ export default async function run(page) {
 
 	// Opers: the helper's oper-up is a row by oper, and "Opers coming up" by kind.
 	await openPanel();
+
+	// Services support without the channels: one grey line each, Join on the report one.
+	const missing = await page.evaluate(
+		`Array.from(document.querySelectorAll(".oper-activity-missing")).map((p) => ({text: p.querySelector("span").textContent.trim(), join: !!p.querySelector("button")}))`
+	);
+	page.check(
+		`the Opers tab says which channels are missing (${missing.map((m) => m.text).join(" | ")})`,
+		missing.length === 2 &&
+			missing[0].text === "Not in #operserv: what services did for opers isn't counted." &&
+			missing[1].text === "Not in #mrsnoopy: connects and joins aren't kept."
+	);
+	page.check(
+		"Join is offered for the report channel only",
+		missing.length === 2 && missing[0].join === true && missing[1].join === false
+	);
 	const operRow = `Array.from(document.querySelectorAll(".oper-activity .oper-rollup-row")).find((li) => li.querySelector('.oper-row-name .user[data-name="opfriend"]'))`;
 	await page.waitFor(`!!${operRow}`, {label: "the oper-up row for opfriend", timeout: 10000});
 	const operRowText = await page.evaluate(
@@ -275,7 +366,7 @@ export default async function run(page) {
 	const tier2 = await page.evaluate(
 		`${operRow}.querySelector(".oper-tier2 .oper-row-name").textContent.trim()`
 	);
-	page.check(`tier 2 reads "${tier2}"`, /^1 Opers coming up$/.test(tier2));
+	page.check(`tier 2 reads "${tier2}"`, /^1 oper-up$/.test(tier2));
 	await page.evaluate(`${operRow}.querySelector(".oper-tier2 .oper-row").click()`);
 	await page.waitFor(`!!${operRow}.querySelector(".oper-timeline button.snotice-badge")`, {
 		label: "the notices themselves, with their badge",
@@ -411,6 +502,12 @@ export default async function run(page) {
 		(await page.evaluate(lobbyBadge)) === badgeBefore
 	);
 	routine.quit();
+	// opdrive sorts above opvictim: a click placed before its QUIT redraws
+	// the list lands on the wrong row.
+	await routine.closed;
+	await page.waitFor(`!document.querySelector('.userlist .user[data-name="opdrive"]')`, {
+		label: "opdrive gone from the user list",
+	});
 
 	// ------------------------------------------ G-line from a nick's menu
 	await openUserList(page);
@@ -419,6 +516,63 @@ export default async function run(page) {
 		label: "the oper entries in the nick menu",
 	});
 	await page.screenshot("7-nick-menu");
+
+	// With X3 set, the G-line goes through O3 — which the dev rig does not
+	// have: the dialog says "via O3", offers no CIDR, and reports the
+	// server's "no such nick" in plain words instead of waiting 10 s.
+	await page.click("#context-menu .context-menu-oper-gline");
+	await page.waitFor(
+		`!!document.querySelector("#oper-action-dialog .oper-action-suggestions .oper-chip")`,
+		{label: "mask suggestions (via O3)", timeout: 10000}
+	);
+	const viaTitle = await page.evaluate(
+		`document.querySelector("#oper-action-dialog .oper-action-title").textContent.trim()`
+	);
+	page.check(`the dialog says "${viaTitle}"`, viaTitle === "G-line opvictim via O3");
+	const viaChips = await page.evaluate(
+		`Array.from(document.querySelectorAll("#oper-action-dialog .oper-action-suggestions .oper-chip")).map((b) => b.textContent.trim())`
+	);
+	page.check(
+		`no CIDR mask is offered via O3 (${viaChips.join(", ")})`,
+		viaChips.length > 0 && viaChips.every((m) => !/\/\d+$/.test(m))
+	);
+	page.check(
+		"no scope and no force via O3",
+		(await page.evaluate(
+			`document.querySelectorAll("#oper-action-scope, #oper-action-dialog .oper-action-check").length`
+		)) === 0
+	);
+	await page.fill("#oper-action-reason", "oper-tools scenario");
+	await page.click(`#oper-action-dialog button[type="submit"]`);
+	await page.waitFor(
+		`/O3 is not online/.test(document.querySelector("#oper-action-dialog .oper-action-error")?.textContent ?? "")`,
+		{label: "O3's absence reported in the dialog", timeout: 10000}
+	);
+	await page.screenshot("7b-gline-via-o3", {selector: "#oper-action-dialog"});
+	await page.click("#oper-action-dialog .btn-cancel");
+	await page.waitFor(`!document.querySelector("#oper-action-dialog")`, {
+		label: "the dialog closes",
+	});
+
+	// Services support back to None, so the server path below is what is tested.
+	await openEditForm();
+	await page.evaluate(`(() => {
+		const select = document.querySelector("#connect\\\\:servicesPackage");
+		select.value = "";
+		select.dispatchEvent(new Event("change", {bubbles: true}));
+	})()`);
+	await page.evaluate(`document.querySelector("#connect form").requestSubmit()`);
+	await page.waitFor(
+		`JSON.parse(localStorage.getItem("thelounge.networks") ?? "[]")[0]?.services === undefined`,
+		{label: "the services block removed"}
+	);
+	await closeSettings();
+
+	await openUserList(page);
+	await page.click(`.userlist .user[data-name="opvictim"]`);
+	await page.waitFor(`!!document.querySelector("#context-menu .context-menu-oper-gline")`, {
+		label: "the nick menu again",
+	});
 	await page.click("#context-menu .context-menu-oper-gline");
 	await page.waitFor(
 		`!!document.querySelector("#oper-action-dialog .oper-action-suggestions .oper-chip")`,
@@ -426,6 +580,14 @@ export default async function run(page) {
 			label: "mask suggestions from USERIP/USERHOST",
 			timeout: 10000,
 		}
+	);
+	page.check(
+		"the dialog is the server's again",
+		!/via O3/.test(
+			await page.evaluate(
+				`document.querySelector("#oper-action-dialog .oper-action-title").textContent`
+			)
+		)
 	);
 	// The ident@IP mask: `*@<ip>` would ban every client of the dev rig.
 	await page.evaluate(

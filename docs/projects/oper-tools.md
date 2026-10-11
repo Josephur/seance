@@ -491,6 +491,76 @@ Me).
   switches CONNEXIT on; a temporary route's revert point is the permanent
   choice at the time it was made, and a second temporary keeps the first's.
 
+**Step 2 of the revised plan (2026-10-10): services support.** A
+per-network setting, the X3 parsers, the feed into the Opers rollup, bans
+through O3, and the grey lines when a channel is missing. Wire facts:
+`docs/resources/x3-services.md`.
+
+- **The setting** (`SavedNetwork.services`, `network.services`;
+  `saved-networks.ts` `asServices`; in the settings backup with the rest of
+  the record; live on `IrcClient.services` the moment the form saves):
+  `{package: "x3", bots: {oper, account, channel, report, snoop}}`, None
+  when absent. `NetworkForm.vue` grows a **Services support** section at
+  the bottom, shown only once the network is connected and opered: a
+  package select (None / X3), the five role fields, the help line, and a
+  liveness line — one labeled WHOIS per bot (`irc/services.ts`
+  `checkServices`; a 311 is online, a 310/313 "service" or one of X3's
+  default realnames looks like X3) worded by `describeServiceCheck`:
+  "✓ O3, AuthServ and ChanServ are online and look like X3.", "AuthServ
+  isn't online (no such nick).", "Couldn't check: the network is not
+  connected." Picking X3 fills the empty fields only.
+- **The X3 profile** (`irc/services/x3/index.ts`, the interface in
+  `irc/services/types.ts`, the registry `irc/services/index.ts`): the
+  snoop regex and every keyword's fields (the connect form of NICK is
+  keyword `connect`, the nick change `nick`); the audit regex with the
+  command lowercased and a coarse kind (gline / ungline / block / refreshg /
+  shun / sblock / unshun and a TRACE with a ban action → glines, TRACE kill
+  → kills, ChanServ's channel commands → modes, god → opers, addalert /
+  delalert → alerts, rehash / die / restart → rehash, else other); the
+  module log line; `banCommand` with `x3Duration` (`1d12h`) and
+  `parseBanReply` (issued / invalid / "would be smooth" / invalid time span
+  / access denied). Fixtures in `test/irc/services/x3.ts` are the
+  reference's lines verbatim.
+- **The feed** (`irc/servicesfeed.ts`, from the PRIVMSG handler): a line
+  from any of the three bots in the snoop channel that parses as a snoop
+  line, or in the report channel that parses as an audit or module-log
+  line, is appended to the notice log as a `snoop` / `audit` entry
+  (`x3.snoop.<keyword>`, `x3.audit.<coarse>`, `x3.log.<severity>`,
+  category `SERVICES`, an audit entry's `from` the human). Not routed, not
+  re-rendered, not restored into the lobby: the channel shows the line as
+  it is; the entries exist for the Opers rollup and the kept feed. The
+  rollup (`helpers/operActivity.ts`, now with `ActivityOptions {serviceNicks}`) credits an audit line to the person who typed it, a
+  snoop OPER to that nick as an oper-up, a kill by a bot and a MODE set by
+  a bot to the services row, and files every other snoop keyword under
+  "Everything else". "Alerts in services" is a new coarse kind. The tier-2
+  labels read in the singular ("1 oper-up", "1 G-line", "2 channel modes").
+- **Graceful degradation** (`OperActivity.vue`): with services set, one
+  grey line per configured channel the client is not in — "Not in
+  #operserv: what services did for opers isn't counted." with a Join
+  button, "Not in #mrsnoopy: connects and joins aren't kept." without one.
+  Nothing without the setting.
+- **Bans through O3** (`ActionDialog.vue`, `services:ban` →
+  `irc/services.ts` `servicesBan`): with X3 set, a G-line or shun goes out
+  as `PRIVMSG O3 :gline <mask> <duration> <reason>`; the title and button
+  say "via O3"; no CIDR among the suggestions (O3 rejects it), no scope, no
+  force; the answer is O3's own NOTICE, matched by nick and shape
+  (`awaitServiceReply`, 10 s) and shown in its words, "O3 did not answer."
+  on silence. KILL and Z-line stay on the server. The PRIVMSG's echo opens
+  O3's query window, as a `/msg` would, so the exchange is visible there.
+- Different from the plan: the cards asking O3 and AuthServ for what the
+  server does not know are step 3's (the channel and user cards); the
+  Alerts tab does not yet list the services kinds (they are not routed);
+  the module-log line is kept as an `audit` entry of kind `x3.log.<severity>`
+  with no human behind it.
+- Tests: `test/irc/services/x3.ts`, `test/irc/services.ts`,
+  `test/irc/saved-networks.ts`, `test/helpers/operActivity.ts`. The dev
+  rig has no X3, so `tools/scenarios/oper-tools.mjs` checks the form (not
+  there before opering, there after), the prefill, the liveness line
+  reporting the bots as not online and the two "Not in …" lines with Join
+  on the report one only; the feed and the O3 path are unit-tested. A
+  scenario against the AfterNET e-testnet (`tools/scenarios/oper-services.mjs`)
+  waits for a session with it running.
+
 ## Revised plan (rubin and Claude, 2026-10-10)
 
 The phase-1 panel was tried on AfterNET and found busy and overwhelming:
