@@ -545,8 +545,9 @@ through O3, and the grey lines when a channel is missing. Wire facts:
   say "via O3"; no CIDR among the suggestions (O3 rejects it), no scope, no
   force; the answer is O3's own NOTICE, matched by nick and shape
   (`awaitServiceReply`, 10 s) and shown in its words, "O3 did not answer."
-  on silence. KILL and Z-line stay on the server. The PRIVMSG's echo opens
-  O3's query window, as a `/msg` would, so the exchange is visible there.
+  on silence. KILL and Z-line stay on the server. The PRIVMSG goes out
+  quiet (step 4's fix: its echo opens no query window); O3's reply is
+  shown where a notice lands, since it is the confirmation.
 - Different from the plan: the cards asking O3 and AuthServ for what the
   server does not know are step 3's (the channel and user cards); the
   Alerts tab does not yet list the services kinds (they are not routed);
@@ -658,8 +659,103 @@ FakeTransport.
   sidebar row's menu with three helpers from the rig's address (the
   common facts: not authed, the /24, the server), the stacked user card
   from a nick in it, the user card from the nick menu (the facts grid,
-  "seen before" finding the helper's own connect notice, the verdict),
+  "seen before" finding the other helper from the same address — and,
+  since step 4's fix, never the user's own connect notice — the verdict),
   and Compare with the matching rows tinted — desktop and phone.
+
+**Step 4 of the revised plan (2026-10-11): the alert builder, and two
+fixes to step 3.** O3's `addalert` as a form (`Oper/AlertBuilder.vue`, an
+overlay in the cards' frame, mounted in `App.vue`), the form logic
+Vue-free in `helpers/alertBuilder.ts`, the wire side in `irc/alerts.ts`
+over X3's alert lookups (`irc/services/x3/alerts.ts`, on the
+`ServicesLookups` interface: `alerts`, `tracePrint`, `addAlert`,
+`delAlert`).
+
+- **The fixes.** _Seen before_ no longer lists the user themself:
+  `seenBefore` drops a feed entry under the user's own nick (by the
+  network's casemapping) from their own IP — or, without one, their own
+  host — so their own connect, quit and auth lines are not sightings; an
+  earlier session of the nick from another address still is, and the
+  verdict says "the nick was seen from …" rather than "the same as". _Quiet
+  lookups_: every PRIVMSG to a bot went out plain, so with `echo-message`
+  its echo opened the bot's query window and the answers piled up there.
+  `irc/quiet.ts` sends them with `@label=svc<n>` and `IrcClient.handleMessage`
+  drops the echo carrying it (a line, an `ACK`, or a labeled batch) before
+  any handler sees it; a NOTICE a `collectServiceReply` consumes (every card
+  lookup, every builder lookup) is shown in no window, while one nobody
+  waits for is shown as before, and `awaitServiceReply` takes a `quiet`
+  option the ban path leaves off — O3's reply to a G-line is the
+  confirmation. A `401` for a missing bot is still shown (and forgets the
+  label). Without `labeled-response` the line goes out plain and its echo
+  shows, as before.
+- **Ways in.** The card's "Alert on this…" (`oper:alert-builder` with the
+  facts, the channel or the nick); "New O3 alert…" on the Alerts tab and
+  Edit on one of "Your O3 alerts" there — both only with
+  `network.services.package === "x3"`. The fold lists `stats alerts`
+  (name, reaction, owner, expiry, criteria, last fired) as `name · reaction · by owner · expires in N d` rows with Edit and Delete; Delete asks once
+  inline, then `delalert <name>`, the verdict in O3's words under the
+  list; the list reloads on the builder's `oper:alerts-changed`.
+- **The form.** Name (`<chan>-bots` from a channel card, `<nick>-alert`
+  from a user card, else empty; letters, digits and dashes; read-only on
+  Edit), Reaction (notice by default; every reaction with its keyword and
+  the O3 level it needs — notice/noticeuser/msguser 800, gline/shun/
+  tempshun/kill 900, mark/version/svsjoin/svspart 999; svsjoin and svspart
+  bring a `chantarget` row along; an option is greyed with "needs O3 level
+  N" only when the oper's level is known and too low), Expires (today / 3
+  days / 1 week / 1 month / never → `expire 1d 3d 1w 1M`, none for never;
+  1 week by default; Edit picks the shortest option that still reaches the
+  stored date). "Match users who…": one row per criterion — a switch, the
+  criterion in words with O3's keyword as the tooltip, the value in
+  monospace, ✕ — and "+ add" over the criteria not yet in the form
+  (channel, authed, info, ident, ip, nickage, last, server, nick, host,
+  version, account, clones, numchannels, modes, marked, regex,
+  chantarget). The card's facts become rows (`authed`, the realname as
+  `info`, the ident glob as `ident`, the /24 or an exact IP as `ip`, the
+  server, the version; the connect age has no criterion); a **wide** row —
+  an IP range, a nick age or `last` window, a server, two clones or
+  fewer, `authed no` alone among the rows that are on — is tagged in
+  amber and arrives switched off. Reason (`bot group in #chan, see <me>`
+  / `see <me>`). The exact command, live: `addalert <name> <reaction> expire <dur> <criteria…> reason <reason>`, `info` and `version` values
+  with spaces as `?` globs, the reason last.
+- **The count line.** `trace print` with the criteria that are on, 600 ms
+  after the last edit while the form is open (one in flight at a time,
+  re-run when edited meanwhile), worded "Matches N users right now · none
+  are opers" with the nicks under it (20, then "+N more"), amber past 25
+  with "that's a lot; check the criteria", "Nothing matches right now."
+  for none; the opers from the TRACE output's flags when it has any (X3
+  2.0 prints none) and otherwise from one `WHO a,b,c %nf,<token>` on the
+  server, the line omitted when the server cannot be asked. O3's complaint
+  about a criterion is shown in its words.
+- **The footer.** Add alert sends the command and waits for O3 (`Added alert named …` = success, shown and the form closes after 1.5 s; `Unknown alert reaction …`, `An alert named … already exists.` + `Unable to add alert.`, a criteria error + the same, `Access denied.` in O3's
+  words; "O3 is not online (no such nick)." on a 401; "O3 did not
+  answer." after 10 s); on Edit the button reads Replace alert and sends
+  `delalert <name>` then `addalert …`, both verdicts reported (the add is
+  skipped when the delete could not be asked). Copy command; Cancel.
+  Nothing reaches O3 until Add; without X3 set, the command can be copied
+  and not sent.
+- **The oper's level** comes from AuthServ `accountinfo <own account>`
+  (`Opserv level: N`, printed for staff), asked once per connection when
+  the builder opens and the connection is logged in (`irc/alerts.ts`
+  `operLevel`); unknown otherwise, and then no reaction is greyed.
+- Phone layout: the builder is the page, the name/reaction/expiry stack,
+  a row wraps its value under the label.
+- Tests: `test/helpers/alertBuilder.ts` (rows from facts with the wide
+  flags, the wide rule, command assembly with the quoting and the reason
+  last, the parse-back round trip, the expiry mapping, the defaults, the
+  count line), `test/irc/alerts.ts` (STATS ALERTS and TRACE PRINT from
+  §7's formats verbatim, addalert's success and its two-line failures,
+  delalert, replace as delete-then-add, the WHOX for the opers, the level
+  from AuthServ — all quiet), `test/irc/services.ts` (the quiet echo as a
+  line, an ACK and a batch; a consumed NOTICE shown nowhere, an unsolicited
+  one shown; the plain line without labels), `test/helpers/verdict.ts`
+  (the user's own lines left out, the earlier session kept, the verdict's
+  wording). Browser: `tools/scenarios/oper-tools.mjs` opens the builder
+  from the channel card — the facts as rows with the wide ones off, the
+  defaults, the command assembled live and following a switch, the count
+  line and Add alert both reporting O3's absence (the 401 path), Cancel —
+  checks no query window was opened for a bot, and on the Alerts tab the
+  New button and the folded list saying O3 is not online; desktop and
+  phone.
 
 ## Revised plan (rubin and Claude, 2026-10-10)
 
@@ -788,11 +884,13 @@ replies.
 **Build order** (each usable on its own, on top of PR #99):
 
 1. The panel restructure: Opers, Alerts, Me, tap-the-badge routing. Needs
-   no X3.
+   no X3. — done 2026-10-10.
 2. Services support: the setting, the snoop and audit parsers, bans
-   through O3.
-3. The channel and user cards.
-4. The alert builder.
+   through O3. — done 2026-10-10.
+3. The channel and user cards. — done 2026-10-10.
+4. The alert builder. — done 2026-10-11.
+
+All four are in "Built" above; what follows is what comes next.
 
 The phase-2/3 list that stood here before (Bans, Users, Network and
 Server tabs; burst alerts; help and completion; raw console; channel
@@ -848,3 +946,10 @@ single question; a multiple-choice prompt is not a conversation.
 - **The X3 lines are per-network config.** X3 does not tag an override in
   words; which channel a line went to is the only signal, which is why the
   report and snoop channels are fields rather than detected.
+- **The builder's "none are opers" costs a WHO.** X3 2.0's `trace print`
+  prints no flags, so the opers among the matches come from one WHOX on
+  the server (the first 20 nicks) after every count. If O3 ever marks
+  opers in its output (or `trace print` is given a flags column), the
+  WHO goes. Also unanswered: whether the oper's O3 level should be read
+  from `accountinfo` on open (as now, once per connection) or offered as
+  a field in Services support.

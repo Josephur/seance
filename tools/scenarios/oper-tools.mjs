@@ -13,7 +13,11 @@
 // after, picking X3 prefills the five fields, the liveness line says the
 // bots are not online (the dev rig has no X3), and the Opers tab says
 // which channels are missing with Join on the report one only — the feed
-// and the O3 ban path need X3 and are unit-tested.
+// and the O3 ban path need X3 and are unit-tested. The cards (step 3) and
+// the alert builder (step 4): the channel card's facts become criteria
+// rows with the wide ones off and the command assembled live, Add alert
+// reports O3's absence, Cancel closes it; the Alerts tab offers "New O3
+// alert…" and the folded list says O3 is not online.
 //
 //   corepack yarn build && python3 -m http.server -d public 8000 &
 //   tools/nefarious-dev/run.sh -d      # local.conf grants the ban privileges
@@ -325,7 +329,6 @@ export default async function run(page) {
 
 	// ------------------------------------------- an important notice: active
 	const lobbyBadge = `document.querySelector('.channel-list-item[data-type="lobby"] .badge')?.textContent.trim() ?? ""`;
-	const badgeBefore = await page.evaluate(lobbyBadge);
 	const friend = helper("opfriend", (send) => send("OPER seanceop seance"));
 	await friend.ready;
 	await page.waitFor(`${msgs("snotice")}.some((m) => m.textContent.includes("opfriend"))`, {
@@ -426,6 +429,26 @@ export default async function run(page) {
 		lines.includes("Bans added or removed") && lines.includes("Every connect and quit")
 	);
 	await page.screenshot("5b-panel-alerts", {selector: ".oper-modal"});
+
+	// With X3 set (the form above): the O3 alerts section with its New
+	// button, and the folded list asking O3 — which the dev rig lacks.
+	page.check(
+		"the Alerts tab offers a new O3 alert",
+		/^New O3 alert/.test(
+			(
+				await page.evaluate(`document.querySelector(".oper-o3-new")?.textContent ?? ""`)
+			).trim()
+		)
+	);
+	await page.evaluate(`document.querySelector(".oper-o3-fold").open = true`);
+	await page.waitFor(
+		`/not online/.test(document.querySelector(".oper-o3-fold .oper-o3-note")?.textContent ?? "")`,
+		{label: "the O3 alerts list reporting O3's absence", timeout: 10000}
+	);
+	await page.evaluate(`document.querySelector(".oper-o3").scrollIntoView({block: "start"})`);
+	await page.sleep(200);
+	await page.screenshot("5d-panel-o3-alerts", {selector: ".oper-modal"});
+	await page.evaluate(`document.querySelector(".oper-o3-fold").open = false`);
 	await page.evaluate(`document.querySelector(".oper-raw").open = true`);
 	await page.waitFor(`!!document.querySelector("#oper .oper-bits")`, {label: "the raw mask"});
 	const readMask = `Number(document.querySelector(".oper-mask-readout code")?.textContent)`;
@@ -518,6 +541,9 @@ export default async function run(page) {
 	await closePanel();
 
 	// --------------------------------------- a routine notice: network window
+	// The baseline is taken now: the O3 alerts fold above drew the server's
+	// 401 for O3 into the lobby, which counts as unread as any error does.
+	const badgeBeforeRoutine = await page.evaluate(lobbyBadge);
 	const routine = helper("opdrive");
 	await routine.ready;
 	await page.sleep(1500);
@@ -528,8 +554,8 @@ export default async function run(page) {
 		)) === 0
 	);
 	page.check(
-		`the lobby's unread did not move (${badgeBefore})`,
-		(await page.evaluate(lobbyBadge)) === badgeBefore
+		`the lobby's unread did not move (${badgeBeforeRoutine})`,
+		(await page.evaluate(lobbyBadge)) === badgeBeforeRoutine
 	);
 	routine.quit();
 	// opdrive sorts above opvictim: a click placed before its QUIT redraws
@@ -624,11 +650,98 @@ export default async function run(page) {
 	);
 	await page.screenshot("10-channel-card", {selector: `${overlay} .oper-investigate`});
 
-	// Alert on this…: the builder is step 4, so for now a word that it is coming.
+	// Alert on this…: the builder opens with the common facts as rows — the
+	// server and the /24 are wide and arrive off, "not authed" on — the name
+	// and reason defaulted from the channel, the command assembled live; the
+	// count line and Add alert both report O3's absence (no X3 on the rig).
+	const builder = "#oper-alert-overlay";
 	await page.click(`${overlay} .oper-common-actions .btn`);
+	await page.waitFor(`!!document.querySelector("${builder}.opened .oper-alert-row")`, {
+		label: "the alert builder with its rows",
+	});
+	const builderState = await page.evaluate(`(() => {
+		const root = document.querySelector("${builder}");
+		return {
+			title: root.querySelector(".settings-modal-header h1").textContent.replace(/\\s+/g, " ").trim(),
+			name: root.querySelector("#oper-alert-name").value,
+			reaction: root.querySelector("#oper-alert-reaction").value,
+			expires: root.querySelector("#oper-alert-expires").value,
+			rows: Array.from(root.querySelectorAll(".oper-alert-row")).map((r) => ({
+				key: r.dataset.key,
+				on: r.querySelector(".oper-alert-switch").checked,
+				wide: !!r.querySelector(".oper-wide"),
+				value: r.querySelector(".oper-alert-value").value,
+			})),
+			reason: root.querySelector("#oper-alert-reason").value,
+			command: root.querySelector(".oper-alert-command").textContent.trim(),
+		};
+	})()`);
+	const rowOf = (key) => builderState.rows.find((r) => r.key === key);
+	page.check(
+		`the builder is titled for the channel (${builderState.title})`,
+		/^Alert on #seance/.test(builderState.title)
+	);
+	page.check(
+		`the name, reaction and expiry default (${builderState.name}, ${builderState.reaction}, ${builderState.expires})`,
+		builderState.name === "seance-bots" &&
+			builderState.reaction === "notice" &&
+			builderState.expires === "1w"
+	);
+	page.check(
+		`the common facts are rows, the wide ones off (${builderState.rows
+			.map((r) => `${r.key}${r.wide ? "*" : ""}=${r.value}:${r.on ? "on" : "off"}`)
+			.join(" ")})`,
+		rowOf("authed")?.on === true &&
+			rowOf("authed")?.value === "no" &&
+			rowOf("server")?.wide === true &&
+			rowOf("server")?.on === false &&
+			rowOf("ip")?.wide === true &&
+			rowOf("ip")?.on === false &&
+			/^172\.17\.0\.0\/24$/.test(rowOf("ip")?.value ?? "")
+	);
+	page.check(
+		`the command is assembled live, reason last (${builderState.command})`,
+		builderState.command.startsWith("addalert seance-bots notice expire 1w authed no") &&
+			!/ server | ip /.test(builderState.command) &&
+			builderState.command.endsWith(`reason bot group in ${CHANNEL}, see ${ME}`) &&
+			builderState.reason === `bot group in ${CHANNEL}, see ${ME}`
+	);
 	await page.waitFor(
-		`/coming next/.test(document.querySelector("${overlay} .oper-toast")?.textContent ?? "")`,
-		{label: "the 'coming next' toast"}
+		`/not online/.test(document.querySelector("${builder} .oper-alert-matches")?.textContent ?? "")`,
+		{label: "the count line reporting O3's absence", timeout: 10000}
+	);
+	await page.screenshot("10b-alert-builder", {selector: `${builder} .oper-alert-builder`});
+
+	// Switching the server row on puts it into the command; off takes it out.
+	await page.evaluate(
+		`document.querySelector('${builder} .oper-alert-row[data-key="server"] .oper-alert-switch').click()`
+	);
+	await page.waitFor(
+		`/ server irc\\.seance\\.test/.test(document.querySelector("${builder} .oper-alert-command").textContent)`,
+		{label: "the server criterion in the command once switched on"}
+	);
+	await page.evaluate(
+		`document.querySelector('${builder} .oper-alert-row[data-key="server"] .oper-alert-switch').click()`
+	);
+
+	// Add alert: O3 is not on the rig, so the 401 path, in the footer.
+	await page.click(`${builder} .oper-alert-submit`);
+	await page.waitFor(
+		`/O3 is not online/.test(document.querySelector("${builder} .oper-alert-error")?.textContent ?? "")`,
+		{label: "Add alert reporting O3's absence", timeout: 10000}
+	);
+	await page.screenshot("10c-alert-builder-result", {selector: `${builder} .oper-alert-builder`});
+	await page.click(`${builder} .btn-cancel`);
+	await page.waitFor(`!document.querySelector("${builder}.opened")`, {
+		label: "Cancel closes the builder",
+	});
+	await page.sleep(400); // the overlay fades
+	// The quiet lookups: no query window opened for O3, ChanServ or AuthServ.
+	page.check(
+		"no query window was opened for a bot",
+		(await page.evaluate(
+			`Array.from(document.querySelectorAll('.channel-list-item[data-type="query"]')).map((el) => el.dataset.name).filter((n) => /^(O3|ChanServ|AuthServ)$/i.test(n ?? "")).length`
+		)) === 0
 	);
 
 	// A nick in the list opens the user card on top; closing it comes back.
@@ -677,9 +790,14 @@ export default async function run(page) {
 			userCard.facts.some((f) => /^Connected=\d/.test(f)) &&
 			userCard.facts.some((f) => /^Channels=only #seance$/.test(f))
 	);
+	// Seen before: the other helper from the same address, never opbot3's
+	// own connect notice.
 	page.check(
-		`seen before finds opbot3's own connect notice (${userCard.seen.join(" | ")})`,
-		userCard.seen.some((s) => /opbot3 from 172\.17\.0\.1 \(this IP\)/.test(s))
+		`seen before finds opbot2 from the same IP and not opbot3 themself (${userCard.seen.join(
+			" | "
+		)})`,
+		userCard.seen.some((s) => /\bopbot2 from 172\.17\.0\.1 \(this IP\)/.test(s)) &&
+			!userCard.seen.some((s) => /\bopbot3 /.test(s))
 	);
 	page.check(
 		`the verdict names what matched (${userCard.verdict})`,
