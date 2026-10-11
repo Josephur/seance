@@ -11,7 +11,14 @@ import eventbus from "../eventbus";
 import {operRequest} from "./operRequest";
 import type {ContextMenuItem} from "./contextMenu";
 import type {ClientNetwork} from "../types";
+import type {Route, SnoticeInfo} from "../../../shared/types/oper";
 import type {BanType} from "../irc/profiles/nefarious/bans";
+import type {NoticeKind} from "../irc/profiles/types";
+import {profileById} from "../irc/profiles";
+import {allNoticeKinds, findNoticeKind} from "../irc/snotice";
+import {routeFor, setRoute, setTemporaryRoute, temporaryRouteFor} from "../irc/operprefs";
+import {categoryBadge, wallopsBadge} from "./operFormat";
+import {HERE_DURATIONS, reconcileMask, untilText} from "./operAlerts";
 
 /** What the kill/ban dialog (components/Oper/ActionDialog.vue) is opened with. */
 export interface OperActionRequest {
@@ -28,7 +35,7 @@ export function openOperAction(request: OperActionRequest): void {
 }
 
 /** Opered (local, global or admin) on this network. */
-export function isOperOn(network: ClientNetwork | undefined): boolean {
+export function isOperOn(network: Pick<ClientNetwork, "oper"> | undefined): boolean {
 	const level = network?.oper?.level;
 	return level === "local" || level === "global" || level === "admin";
 }
@@ -207,4 +214,203 @@ export function openOperTargetMenu(
 	value: string
 ): void {
 	eventbus.emit("contextmenu:items", {event, items: operTargetItems(network, chan, kind, value)});
+}
+
+// --- Where a kind of notice shows (the Alerts tab and the badge on a notice).
+
+/**
+ * Clear or set the server bits the changed kinds travel on, so a family
+ * routed Off is quiet on the wire too (helpers/operAlerts.ts
+ * `reconcileMask`). Nothing happens without a known mask, or on a profile
+ * without one. Returns the mask sent, if one was.
+ */
+export function reconcileSnomask(
+	network: Pick<ClientNetwork, "uuid" | "oper">,
+	changedKinds: string[],
+	now = Date.now()
+): number | undefined {
+	const mask = network.oper?.snomask;
+	const profile = profileById(network.oper?.profile);
+	const model = profile.snomask;
+
+	if (mask === undefined || !model || !isOperOn(network)) {
+		return undefined;
+	}
+
+	const kinds = allNoticeKinds(profile);
+	const isOff = (kind: string) =>
+		routeFor(
+			network.uuid,
+			kind,
+			kinds.find((k) => k.kind === kind)?.route ?? "network",
+			now
+		) === "off";
+	const next = reconcileMask(mask, model, kinds, isOff, changedKinds);
+
+	if (next === mask) {
+		return undefined;
+	}
+
+	socket.emit("oper:snomask", {network: network.uuid, mask: next});
+	return next;
+}
+
+/**
+ * Route `kinds` to `route` — until `until` (epoch ms) when given, else
+ * for good (stored only where it differs from the kind's default) — then
+ * square the snomask with it and tell the Alerts tab (`oper:routes`).
+ */
+export function applyNoticeRoute(
+	network: Pick<ClientNetwork, "uuid" | "oper">,
+	kinds: NoticeKind[],
+	route: Route,
+	until?: number
+): void {
+	for (const kind of kinds) {
+		if (until !== undefined) {
+			setTemporaryRoute(network.uuid, kind.kind, route, until);
+		} else {
+			setRoute(network.uuid, kind.kind, route === kind.route ? undefined : route);
+		}
+	}
+
+	reconcileSnomask(
+		network,
+		kinds.map((k) => k.kind)
+	);
+	eventbus.emit("oper:routes", {network: network.uuid});
+}
+
+/** The "Here" choices as menu items: for today, 3 days, a week, for good. */
+export function hereItems(
+	cls: string,
+	pick: (until: number | undefined) => void,
+	now = Date.now()
+): ContextMenuItem[] {
+	return HERE_DURATIONS.map((d) => ({
+		label: `Show here ${d.label}`,
+		type: "item",
+		class: cls,
+		action: () => pick(d.until(now)),
+	}));
+}
+
+/** The kind a notice is, from the profile, or a stand-in for one nobody lists. */
+function kindOf(network: Pick<ClientNetwork, "oper">, info: SnoticeInfo): NoticeKind {
+	return (
+		findNoticeKind(info.kind, network.oper?.profile) ?? {
+			kind: info.kind,
+			label: info.kind,
+			category: info.category,
+			route: info.route ?? "network",
+		}
+	);
+}
+
+/**
+ * The menu a notice's badge opens: the kind by name, where it shows (the
+ * current place marked; Here asks how long), and a way to stop the server
+ * sending the family at all — the snomask bit, or `-w` for WALLOPS.
+ */
+export function noticeRouteItems(
+	network: ClientNetwork,
+	info: SnoticeInfo,
+	now = Date.now()
+): ContextMenuItem[] {
+	const kind = kindOf(network, info);
+	const current = routeFor(network.uuid, kind.kind, kind.route, now);
+	const temporary = temporaryRouteFor(network.uuid, kind.kind, now);
+	const mark = (route: Route, cls: string) =>
+		`${cls}${current === route ? " oper-route-current" : ""}`;
+	// A temporary Here is said in the header (the duration it was chosen
+	// for is not kept); a permanent one marks "until I change it".
+	const header = temporary
+		? `${kind.label} — here ${untilText(temporary.until, now)}`
+		: kind.label;
+	const here = hereItems("oper-route-active", (until) =>
+		applyNoticeRoute(network, [kind], "active", until)
+	);
+	const last = here[here.length - 1];
+
+	if (current === "active" && !temporary && "class" in last) {
+		last.class += " oper-route-current";
+	}
+
+	const items: ContextMenuItem[] = [
+		{label: header, type: "item", class: "oper-route-kind"},
+		{type: "divider"},
+		...here,
+		{
+			label: "Show in the network window",
+			type: "item",
+			class: mark("network", "oper-route-network"),
+			action: () => applyNoticeRoute(network, [kind], "network"),
+		},
+		{
+			label: "Show nowhere",
+			type: "item",
+			class: mark("off", "oper-route-off"),
+			action: () => applyNoticeRoute(network, [kind], "off"),
+		},
+	];
+
+	const lobby = network.channels[0]?.id;
+	const umodes = network.oper?.umodes ?? "";
+
+	if (info.category === "WALLOPS") {
+		const letter = info.kind === "desynch" ? "g" : "w";
+		const label = info.kind === "desynch" ? "desync reports" : "WALLOPS";
+
+		if (umodes.includes(letter) && lobby !== undefined) {
+			items.push(
+				{type: "divider"},
+				{
+					label: `Stop receiving ${label} (-${letter})`,
+					type: "item",
+					class: "oper-route-stop",
+					action: () => input(lobby, `/umode -${letter}`),
+				}
+			);
+		}
+
+		return items;
+	}
+
+	const model = profileById(network.oper?.profile).snomask;
+	const bit = model?.bits.find((b) => b.name === info.category);
+	const mask = network.oper?.snomask;
+
+	if (bit && mask !== undefined && (mask & bit.bit) !== 0 && isOperOn(network)) {
+		items.push(
+			{type: "divider"},
+			{
+				label: `Stop receiving ${bit.label.toLowerCase()} notices`,
+				type: "item",
+				class: "oper-route-stop",
+				action: () =>
+					socket.emit("oper:snomask", {network: network.uuid, mask: mask & ~bit.bit}),
+			}
+		);
+	}
+
+	return items;
+}
+
+/** Open {@link noticeRouteItems} at `event` (a click on a notice's badge). */
+export function openNoticeRouteMenu(
+	event: MouseEvent,
+	network: ClientNetwork,
+	info: SnoticeInfo
+): void {
+	eventbus.emit("contextmenu:items", {event, items: noticeRouteItems(network, info)});
+}
+
+/** The badge a logged notice or a message carries: its text and colour family. */
+export function noticeBadge(
+	info: SnoticeInfo,
+	type: "snotice" | "wallops"
+): {label: string; family: string} {
+	return type === "wallops"
+		? {label: wallopsBadge(info.kind), family: "wallops"}
+		: categoryBadge(info.category);
 }

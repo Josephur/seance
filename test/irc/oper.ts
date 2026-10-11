@@ -12,7 +12,18 @@ import {
 	MAX_ENTRIES,
 	useNoticeLogBackend,
 } from "../../client/js/irc/noticelog";
-import {setRoute, setSnomaskPref, useOperPrefsBackend} from "../../client/js/irc/operprefs";
+import {
+	getOperPrefs,
+	OPER_PREFS_KEY,
+	resetRoutes,
+	routeFor,
+	setRoute,
+	setSnomaskPref,
+	setTemporaryRoute,
+	sweepTemporaryRoutes,
+	temporaryRouteFor,
+	useOperPrefsBackend,
+} from "../../client/js/irc/operprefs";
 import {applyModeString, levelOf, parseFeature, parsePrivs} from "../../client/js/irc/oper";
 import {parseLine} from "../../client/js/irc/message";
 import {request, REQUEST_TIMEOUT_MS} from "../../client/js/irc/request";
@@ -481,6 +492,80 @@ describe("oper tools: oper state (irc/oper.ts)", function () {
 			text: "Server notice mask: 983039 (0xeffff)",
 			showInActive: true,
 		});
+	});
+});
+
+describe("oper tools: temporary routes (irc/operprefs.ts)", function () {
+	beforeEach(installSpy);
+	afterEach(removeSpy);
+
+	const now = Date.UTC(2026, 9, 10, 21, 0, 0);
+	const HOUR = 3600_000;
+
+	it("a temporary route is honoured until it lapses, then what stood before comes back", function () {
+		setRoute("n1", "client.connect", "off");
+		setTemporaryRoute("n1", "client.connect", "active", now + HOUR);
+
+		expect(routeFor("n1", "client.connect", "network", now)).to.equal("active");
+		expect(temporaryRouteFor("n1", "client.connect", now)).to.deep.equal({
+			route: "active",
+			until: now + HOUR,
+			revert: "off",
+		});
+		expect(getOperPrefs("n1").routes).to.deep.equal({"client.connect": "off"});
+
+		// Lapsed: reverted on the way past, and the stored temporary is gone.
+		expect(routeFor("n1", "client.connect", "network", now + HOUR)).to.equal("off");
+		expect(getOperPrefs("n1").temporary).to.equal(undefined);
+		expect(temporaryRouteFor("n1", "client.connect", now + HOUR)).to.equal(undefined);
+	});
+
+	it("reverts to the default when nothing was chosen before, and a second temporary keeps the first's return", function () {
+		setTemporaryRoute("n1", "oper.up", "off", now + HOUR);
+		setTemporaryRoute("n1", "oper.up", "active", now + 2 * HOUR);
+		expect(getOperPrefs("n1").temporary!["oper.up"].revert).to.equal(undefined);
+		expect(routeFor("n1", "oper.up", "network", now)).to.equal("active");
+
+		expect(sweepTemporaryRoutes("n1", now + 3 * HOUR)).to.equal(true);
+		expect(sweepTemporaryRoutes("n1", now + 3 * HOUR)).to.equal(false);
+		expect(getOperPrefs("n1")).to.deep.equal({});
+		expect(routeFor("n1", "oper.up", "network", now + 3 * HOUR)).to.equal("network");
+	});
+
+	it("a choice made for good ends the temporary one; reset clears both", function () {
+		setTemporaryRoute("n1", "oper.up", "off", now + HOUR);
+		setRoute("n1", "oper.up", "network");
+		expect(getOperPrefs("n1")).to.deep.equal({routes: {"oper.up": "network"}});
+
+		setTemporaryRoute("n1", "oper.up", "off", now + HOUR);
+		resetRoutes("n1");
+		expect(getOperPrefs("n1")).to.deep.equal({});
+	});
+
+	it("loads prefs written before temporary routes existed", function () {
+		prefsStore.set(
+			OPER_PREFS_KEY,
+			JSON.stringify({n1: {routes: {"oper.up": "off"}, snomask: 5645}})
+		);
+		expect(routeFor("n1", "oper.up", "active", now)).to.equal("off");
+		expect(temporaryRouteFor("n1", "oper.up", now)).to.equal(undefined);
+		expect(sweepTemporaryRoutes("n1", now)).to.equal(false);
+		expect(getOperPrefs("n1")).to.deep.equal({routes: {"oper.up": "off"}, snomask: 5645});
+	});
+
+	it("the IRC layer routes by it: a kind shown here for a while is promoted, then not", function () {
+		const {client, transport} = setup();
+		const line =
+			":irc.test NOTICE * :*** Notice -- Client connecting: bob (b@h) [1.2.3.4] {Users} [Bob] <ABAAC>";
+
+		setTemporaryRoute(client.uuid, "client.connect", "active", Date.now() + HOUR);
+		transport.line(line);
+		expect(messages(client.lobby.id)[0].showInActive).to.equal(true);
+
+		setTemporaryRoute(client.uuid, "client.connect", "active", Date.now() - 1);
+		transport.line(line);
+		expect(messages(client.lobby.id)[1].showInActive).to.equal(undefined);
+		expect(getOperPrefs(client.uuid).temporary).to.equal(undefined);
 	});
 });
 

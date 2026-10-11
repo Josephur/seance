@@ -64,6 +64,22 @@ export interface NoticeKind {
 	template?: string;
 }
 
+/**
+ * One line of the oper panel's Alerts tab: a few notice kinds an oper
+ * thinks of as one thing ("Bans added or removed"), routed together with
+ * one Here / Network / Off control. A profile that declares none gets one
+ * line per kind (helpers/operAlerts.ts).
+ */
+export interface AlertLine {
+	id: string;
+	label: string;
+	/** A few words under the label ("someone connected into a ban"). */
+	hint?: string;
+	/** `actions` is "Oper actions", `network` is "The network". */
+	section: "actions" | "network";
+	kinds: string[];
+}
+
 /** A server notice, classified. */
 export interface SnoticeEvent {
 	kind: string;
@@ -86,6 +102,11 @@ export interface ServerProfile {
 	snomask?: SnomaskModel;
 	/** Every notice kind the classifier can produce, with its default route. */
 	noticeKinds: NoticeKind[];
+	/**
+	 * The Alerts tab's lines, in order. Kinds in none of them are listed
+	 * one per line under "Everything else".
+	 */
+	alertLines?: AlertLine[];
 	/**
 	 * Classify the text of a server notice — without the `*** Notice -- `
 	 * prefix — into a kind with fields; undefined when unrecognised.

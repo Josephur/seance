@@ -4,6 +4,7 @@
  */
 
 import type {ServerProfile} from "../types";
+import {ALERT_LINES} from "./alerts";
 import {checkReport} from "./check";
 import {classifyNotice, NOTICE_KINDS} from "./notices";
 import {NEFARIOUS_SNOMASK} from "./snomask";
@@ -14,6 +15,7 @@ export const nefarious: ServerProfile = {
 	name: "nefarious2",
 	snomask: NEFARIOUS_SNOMASK,
 	noticeKinds: NOTICE_KINDS,
+	alertLines: ALERT_LINES,
 	classifyNotice,
 	stats: STATS_ENTRIES,
 	statsReport,
