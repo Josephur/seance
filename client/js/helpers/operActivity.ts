@@ -6,7 +6,14 @@
  * opening straight to its timeline. Only what somebody did counts as an
  * action: the network running itself (connects, bursts, log lines) is
  * "everything else" in the by-kind view and never credited to an oper.
- * Vue-free so mocha covers it (test/helpers/operActivity.ts).
+ *
+ * The services feed (irc/servicesfeed.ts) joins in through the same
+ * tables: an audit line is credited to the person who typed the command
+ * (the bot is the messenger); a snoop OPER line is an oper coming up; a
+ * kill or a channel mode by a services bot is the services row's — and
+ * which nicks are bots is the network's setting, passed in as
+ * {@link ActivityOptions}. Vue-free so mocha covers it
+ * (test/helpers/operActivity.ts).
  */
 
 import type {LoggedNotice} from "../irc/noticelog";
@@ -38,28 +45,61 @@ export type CoarseKind =
 	| "kills"
 	| "modes"
 	| "opers"
+	| "alerts"
 	| "jupes"
 	| "links"
 	| "rehash"
 	| "wallops"
 	| "other";
 
-/** The coarse kinds in display order: what an oper cares about most first. */
-export const COARSE_KINDS: {id: CoarseKind; label: string}[] = [
-	{id: "glines", label: "G-lines"},
-	{id: "kills", label: "Kills"},
-	{id: "modes", label: "Channel modes via OPMODE and services"},
-	{id: "opers", label: "Opers coming up"},
-	{id: "jupes", label: "Jupes"},
-	{id: "links", label: "Server links and splits"},
-	{id: "rehash", label: "Rehashes and restarts"},
-	{id: "wallops", label: "WALLOPS"},
-	{id: "other", label: "Everything else"},
+/**
+ * The coarse kinds in display order: what an oper cares about most first.
+ * `label` heads the by-kind row; `one`/`many` count under an oper's row
+ * ("1 G-line", "12 G-lines").
+ */
+export const COARSE_KINDS: {id: CoarseKind; label: string; one: string; many: string}[] = [
+	{id: "glines", label: "G-lines", one: "G-line", many: "G-lines"},
+	{id: "kills", label: "Kills", one: "kill", many: "kills"},
+	{
+		id: "modes",
+		label: "Channel modes via OPMODE and services",
+		one: "channel mode",
+		many: "channel modes",
+	},
+	{id: "opers", label: "Opers coming up", one: "oper-up", many: "oper-ups"},
+	{id: "alerts", label: "Alerts in services", one: "alert change", many: "alert changes"},
+	{id: "jupes", label: "Jupes", one: "jupe", many: "jupes"},
+	{
+		id: "links",
+		label: "Server links and splits",
+		one: "server link or split",
+		many: "server links and splits",
+	},
+	{
+		id: "rehash",
+		label: "Rehashes and restarts",
+		one: "rehash or restart",
+		many: "rehashes and restarts",
+	},
+	{id: "wallops", label: "WALLOPS", one: "WALLOPS", many: "WALLOPS"},
+	{id: "other", label: "Everything else", one: "other action", many: "other actions"},
 ];
 
+/** `1 G-line`, `12 G-lines`: a count with its kind, singular where it is one. */
+export function countLabel(coarse: CoarseKind, count: number): string {
+	const kind = COARSE_KINDS.find((k) => k.id === coarse);
+
+	if (!kind) {
+		return `${count} ${coarse}`;
+	}
+
+	return `${count} ${count === 1 ? kind.one : kind.many}`;
+}
+
 /**
- * Notice kind → coarse kind. Anything missing is `other`; a step that adds
- * kinds (the X3 feeds) extends this table.
+ * Notice kind → coarse kind. Anything missing is `other`; the services
+ * feed's kinds (`x3.audit.<coarse>`, `x3.snoop.<keyword>`) are decided in
+ * {@link coarseKindOf}, since some depend on who did it.
  */
 export const KIND_COARSE: Record<string, CoarseKind> = {
 	"ban.add": "glines",
@@ -104,9 +144,61 @@ export const KIND_COARSE: Record<string, CoarseKind> = {
 	desynch: "wallops",
 };
 
-export function coarseKindOf(entry: LoggedNotice): CoarseKind {
+/** What the rollup needs to know about the network. */
+export interface ActivityOptions {
+	/** The services bots' nicks (the network's setting); nobody is a service without it. */
+	serviceNicks?: string[];
+}
+
+const NONE: ActivityOptions = {};
+
+/** Whether `nick` is one of the network's services bots (O3, ChanServ…). */
+export function isServiceActor(nick: string, serviceNicks: string[] = []): boolean {
+	const wanted = nick.toLowerCase();
+	return serviceNicks.some((bot) => bot.toLowerCase() === wanted);
+}
+
+const COARSE_IDS = new Set<string>(COARSE_KINDS.map((k) => k.id));
+
+/** `x3.audit.glines` → `glines`; `x3.snoop.oper` → `oper`; else undefined. */
+function servicesKind(kind: string): {feed: "audit" | "snoop" | "log"; rest: string} | undefined {
+	const m = /^[a-z0-9]+\.(audit|snoop|log)\.(.+)$/.exec(kind);
+	return m ? {feed: m[1] as "audit" | "snoop" | "log", rest: m[2]} : undefined;
+}
+
+export function coarseKindOf(entry: LoggedNotice, opts: ActivityOptions = NONE): CoarseKind {
 	if (entry.type === "wallops") {
 		return "wallops";
+	}
+
+	if (entry.type === "audit" || entry.type === "snoop") {
+		const sk = servicesKind(entry.snotice.kind);
+
+		if (!sk) {
+			return "other";
+		}
+
+		if (sk.feed === "audit") {
+			return COARSE_IDS.has(sk.rest) ? (sk.rest as CoarseKind) : "other";
+		}
+
+		if (sk.feed === "snoop") {
+			const fields = entry.snotice.fields;
+
+			if (sk.rest === "oper") {
+				return "opers";
+			}
+
+			if (sk.rest === "kill") {
+				return "kills";
+			}
+
+			if (sk.rest === "mode" && isServiceActor(fields.setter ?? "", opts.serviceNicks)) {
+				return "modes";
+			}
+		}
+
+		return "other";
 	}
 
 	return KIND_COARSE[entry.snotice.kind] ?? "other";
@@ -154,19 +246,43 @@ export type Actor =
 	| {type: "service"; name: string}
 	| {type: "server"; name: string};
 
-/**
- * Whether `nick` is one of the network's services bots (O3, ChanServ…),
- * whose actions get a row of their own. Not known yet: the services
- * setting (build order step 2, `network.services?.bots`) will feed this.
- * Until then nobody is a service.
- */
-export function isServiceActor(nick: string): boolean {
-	void nick;
-	return false;
+function named(name: string, serviceNicks: string[] | undefined): Actor {
+	return isServiceActor(name, serviceNicks) ? {type: "service", name} : {type: "nick", name};
+}
+
+/** Who did a services-feed entry, or undefined when it is not an action. */
+function servicesActorOf(entry: LoggedNotice, opts: ActivityOptions): Actor | undefined {
+	const sk = servicesKind(entry.snotice.kind);
+	const fields = entry.snotice.fields;
+
+	if (!sk) {
+		return undefined;
+	}
+
+	if (sk.feed === "audit") {
+		// The bot is the messenger; the person who typed the command did it.
+		return entry.from ? named(entry.from, opts.serviceNicks) : undefined;
+	}
+
+	if (sk.feed === "snoop") {
+		if (sk.rest === "oper" && fields.nick) {
+			return named(fields.nick, opts.serviceNicks);
+		}
+
+		if (sk.rest === "kill" && fields.killer) {
+			return named(fields.killer, opts.serviceNicks);
+		}
+
+		if (sk.rest === "mode" && isServiceActor(fields.setter ?? "", opts.serviceNicks)) {
+			return {type: "service", name: fields.setter};
+		}
+	}
+
+	return undefined;
 }
 
 /** Who did it, or undefined when the entry is not an action at all. */
-export function actorOf(entry: LoggedNotice): Actor | undefined {
+export function actorOf(entry: LoggedNotice, opts: ActivityOptions = NONE): Actor | undefined {
 	if (entry.type === "wallops") {
 		const from = entry.from ?? "";
 		const kind = entry.snotice.kind;
@@ -175,7 +291,11 @@ export function actorOf(entry: LoggedNotice): Actor | undefined {
 			return {type: "server", name: from || "server"};
 		}
 
-		return isServiceActor(from) ? {type: "service", name: from} : {type: "nick", name: from};
+		return named(from, opts.serviceNicks);
+	}
+
+	if (entry.type === "audit" || entry.type === "snoop") {
+		return servicesActorOf(entry, opts);
 	}
 
 	const fields = ACTION_FIELDS[entry.snotice.kind];
@@ -188,9 +308,7 @@ export function actorOf(entry: LoggedNotice): Actor | undefined {
 		const value = entry.snotice.fields[field];
 
 		if (value) {
-			return isServiceActor(value)
-				? {type: "service", name: value}
-				: {type: "nick", name: value};
+			return named(value, opts.serviceNicks);
 		}
 	}
 
@@ -198,8 +316,8 @@ export function actorOf(entry: LoggedNotice): Actor | undefined {
 	return {type: "server", name: server};
 }
 
-export function isOperAction(entry: LoggedNotice): boolean {
-	return actorOf(entry) !== undefined;
+export function isOperAction(entry: LoggedNotice, opts: ActivityOptions = NONE): boolean {
+	return actorOf(entry, opts) !== undefined;
 }
 
 /** The entries of one coarse kind, newest first. */
@@ -232,11 +350,11 @@ const ORDER = new Map(COARSE_KINDS.map((k, i) => [k.id, i]));
 const LABEL = new Map(COARSE_KINDS.map((k) => [k.id, k.label]));
 
 /** Group entries (any order) by coarse kind, in the display order, newest first inside. */
-function groupByKind(entries: LoggedNotice[]): KindGroup[] {
+function groupByKind(entries: LoggedNotice[], opts: ActivityOptions): KindGroup[] {
 	const groups = new Map<CoarseKind, KindGroup>();
 
 	for (const entry of entries) {
-		const coarse = coarseKindOf(entry);
+		const coarse = coarseKindOf(entry, opts);
 		let group = groups.get(coarse);
 
 		if (!group) {
@@ -276,11 +394,15 @@ function median(values: number[]): number {
  * By oper: a row per actor with an action since `since`, busiest first
  * (then by name), the services and servers rows last.
  */
-export function rollupByOper(entries: LoggedNotice[], since: number): ActorRow[] {
+export function rollupByOper(
+	entries: LoggedNotice[],
+	since: number,
+	opts: ActivityOptions = NONE
+): ActorRow[] {
 	const rows = new Map<string, {actor: Actor; entries: LoggedNotice[]}>();
 
 	for (const entry of inPeriod(entries, since)) {
-		const actor = actorOf(entry);
+		const actor = actorOf(entry, opts);
 
 		if (!actor) {
 			continue;
@@ -311,7 +433,7 @@ export function rollupByOper(entries: LoggedNotice[], since: number): ActorRow[]
 		count: row.entries.length,
 		last: Math.max(...row.entries.map((e) => e.time)),
 		hot: false,
-		groups: groupByKind(row.entries),
+		groups: groupByKind(row.entries, opts),
 	}));
 
 	const rank = (row: ActorRow) =>
@@ -334,6 +456,10 @@ export function rollupByOper(entries: LoggedNotice[], since: number): ActorRow[]
 }
 
 /** By kind: a row per coarse kind with an entry since `since`, `other` last. */
-export function rollupByKind(entries: LoggedNotice[], since: number): KindGroup[] {
-	return groupByKind(inPeriod(entries, since));
+export function rollupByKind(
+	entries: LoggedNotice[],
+	since: number,
+	opts: ActivityOptions = NONE
+): KindGroup[] {
+	return groupByKind(inPeriod(entries, since), opts);
 }

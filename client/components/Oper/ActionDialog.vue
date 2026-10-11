@@ -43,6 +43,8 @@
 						:placeholder="
 							banType === 'zline'
 								? '203.0.113.7 or 203.0.113.0/24'
+								: viaServices
+								? 'user@host or *@ip (no CIDR)'
 								: 'user@host, *@ip, $Rrealname'
 						"
 					/>
@@ -69,7 +71,7 @@
 						{{ preview.text }}
 					</p>
 
-					<label v-if="maskCheck.needsForce" class="oper-action-check">
+					<label v-if="maskCheck.needsForce && !viaServices" class="oper-action-check">
 						<input v-model="force" type="checkbox" :disabled="!canForce" />
 						Force this wide mask
 						<span v-if="!canForce" class="oper-muted"
@@ -100,7 +102,7 @@
 								placeholder="e.g. 2d12h (7d at most)"
 							/>
 						</div>
-						<div v-if="scopes.length > 1" class="oper-action-field">
+						<div v-if="scopes.length > 1 && !viaServices" class="oper-action-field">
 							<label class="oper-action-label" for="oper-action-scope"
 								>Applies to</label
 							>
@@ -247,7 +249,7 @@
 import {computed, defineComponent, nextTick, onMounted, onUnmounted, ref, watch} from "vue";
 import eventbus from "../../js/eventbus";
 import {useStore} from "../../js/store";
-import {operRequest} from "../../js/helpers/operRequest";
+import {operRequest, servicesBan} from "../../js/helpers/operRequest";
 import {hasPriv, type OperActionRequest, userIp} from "../../js/helpers/operMenu";
 import {
 	BAN_MAX_SECONDS,
@@ -287,6 +289,12 @@ const NAMES: Record<BanType, string> = {gline: "G-line", shun: "Shun", zline: "Z
  * IP, USERHOST's real host), checked against the server's width rules before
  * sending, the users it matches previewed with CHECK, and the result
  * confirmed by listing it back — nefarious2 answers a ban with silence.
+ *
+ * On a network whose services support names an oper service (X3's O3), a
+ * G-line or shun goes through that bot instead (`services:ban`,
+ * irc/services.ts): O3 takes no CIDR and no force, speaks its own
+ * duration syntax, and answers in words, which are shown as they came.
+ * KILL and Z-line stay on the server (X3 has no Z-line).
  */
 export default defineComponent({
 	name: "OperActionDialog",
@@ -304,7 +312,7 @@ export default defineComponent({
 		const busy = ref(false);
 		const problem = ref("");
 		const result = ref("");
-		const suggestions = ref<{mask: string; label: string}[]>([]);
+		const rawSuggestions = ref<{mask: string; label: string}[]>([]);
 		const preview = ref<{count: number; text: string} | null>(null);
 		let previewTimer: ReturnType<typeof setTimeout> | undefined;
 		let previewFor = "";
@@ -315,6 +323,18 @@ export default defineComponent({
 		const banType = computed<BanType>(() =>
 			request.value && request.value.action !== "kill" ? request.value.action : "gline"
 		);
+		/** The oper service a G-line or shun goes through, when the network has one. */
+		const serviceBot = computed(() => {
+			const services = network.value?.services;
+			const r = request.value;
+
+			if (!services || !r || r.action === "kill" || r.action === "zline") {
+				return "";
+			}
+
+			return services.package === "x3" ? services.bots.oper.trim() : "";
+		});
+		const viaServices = computed(() => serviceBot.value !== "");
 		const title = computed(() => {
 			const r = request.value;
 
@@ -323,10 +343,21 @@ export default defineComponent({
 			}
 
 			const what = r.action === "kill" ? "Kill" : NAMES[r.action];
-			return r.nick ? `${what} ${r.nick}` : what;
+			const via = viaServices.value ? ` via ${serviceBot.value}` : "";
+			return r.nick ? `${what} ${r.nick}${via}` : `${what}${via}`;
 		});
 		const actionLabel = computed(() =>
-			request.value?.action === "kill" ? "Kill" : `Set ${NAMES[banType.value]}`
+			request.value?.action === "kill"
+				? "Kill"
+				: `Set ${NAMES[banType.value]}${
+						viaServices.value ? ` via ${serviceBot.value}` : ""
+				  }`
+		);
+		// O3 rejects CIDR masks: only `*@ip`, `ident@ip` and `*@host` are offered there.
+		const suggestions = computed(() =>
+			viaServices.value
+				? rawSuggestions.value.filter((s) => !/\/\d+$/.test(s.mask))
+				: rawSuggestions.value
 		);
 
 		const maskCheck = computed(() => checkMask(banType.value, mask.value));
@@ -366,7 +397,7 @@ export default defineComponent({
 			const s = seconds.value;
 			return (
 				!maskCheck.value.error &&
-				(!maskCheck.value.needsForce || force.value) &&
+				(!maskCheck.value.needsForce || force.value || viaServices.value) &&
 				s !== undefined &&
 				s > 0 &&
 				s <= BAN_MAX_SECONDS
@@ -381,7 +412,7 @@ export default defineComponent({
 			force.value = false;
 			problem.value = "";
 			result.value = "";
-			suggestions.value = [];
+			rawSuggestions.value = [];
 			preview.value = null;
 			previewFor = "";
 			busy.value = false;
@@ -413,7 +444,7 @@ export default defineComponent({
 				return; // the dialog moved on
 			}
 
-			suggestions.value = maskSuggestions(banType.value, {ident, ip, host});
+			rawSuggestions.value = maskSuggestions(banType.value, {ident, ip, host});
 
 			if (!mask.value && suggestions.value.length > 0) {
 				mask.value = suggestions.value[0].mask;
@@ -541,6 +572,35 @@ export default defineComponent({
 			}
 
 			const type = banType.value;
+
+			if (viaServices.value && type !== "zline") {
+				const bot = serviceBot.value;
+				const reply = await servicesBan(n.uuid, {
+					type,
+					mask: normaliseMask(type, mask.value),
+					seconds: seconds.value ?? 0,
+					reason: reason.value.trim(),
+				});
+				busy.value = false;
+
+				switch (reply.outcome) {
+					case "ok":
+						result.value = `${NAMES[type]} set via ${bot}: ${reply.text ?? ""}`;
+						setTimeout(close, 1500);
+						return;
+					case "refused":
+						// O3's own words; the title already says who answered.
+						problem.value = reply.text ?? `${bot} refused it.`;
+						return;
+					case "closed":
+						problem.value = "Not sent: the connection is down.";
+						return;
+					default:
+						problem.value = `${bot} did not answer.`;
+						return;
+				}
+			}
+
 			const line = banLine({
 				type,
 				mask: mask.value,
@@ -608,6 +668,7 @@ export default defineComponent({
 			suggestions,
 			preview,
 			banType,
+			viaServices,
 			title,
 			actionLabel,
 			maskCheck,

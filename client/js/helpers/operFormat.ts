@@ -137,6 +137,8 @@ const CATEGORIES: Record<string, {label: string; family: string}> = {
 	WHOIS: {label: "whois", family: "oper"},
 	WALLOPS: {label: "wallops", family: "wallops"},
 	OTHER: {label: "notice", family: "server"},
+	/** The services feed (irc/servicesfeed.ts): snoop and audit lines. */
+	SERVICES: {label: "services", family: "oper"},
 };
 
 export function categoryBadge(category: string): {label: string; family: string} {

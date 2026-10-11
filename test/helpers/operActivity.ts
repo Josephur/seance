@@ -4,6 +4,7 @@ import {
 	actorOf,
 	coarseKindOf,
 	COARSE_KINDS,
+	countLabel,
 	inPeriod,
 	isOperAction,
 	KIND_COARSE,
@@ -169,12 +170,167 @@ describe("oper activity rollup (helpers/operActivity.ts)", function () {
 			"kills",
 			"modes",
 			"opers",
+			"alerts",
 			"jupes",
 			"links",
 			"rehash",
 			"wallops",
 			"other",
 		]);
+	});
+
+	it("counts a kind in the singular when there is one", function () {
+		expect(countLabel("opers", 1)).to.equal("1 oper-up");
+		expect(countLabel("opers", 3)).to.equal("3 oper-ups");
+		expect(countLabel("glines", 1)).to.equal("1 G-line");
+		expect(countLabel("glines", 12)).to.equal("12 G-lines");
+		expect(countLabel("kills", 1)).to.equal("1 kill");
+		expect(countLabel("modes", 2)).to.equal("2 channel modes");
+		expect(countLabel("modes", 1)).to.equal("1 channel mode");
+		expect(countLabel("wallops", 1)).to.equal("1 WALLOPS");
+		expect(countLabel("other", 1)).to.equal("1 other action");
+	});
+
+	describe("the services feed (irc/servicesfeed.ts entries)", function () {
+		const bots = {serviceNicks: ["O3", "AuthServ", "ChanServ"]};
+
+		function audit(coarse: string, from: string, at = 0): LoggedNotice {
+			return {
+				time: T0 + at * MIN,
+				type: "audit",
+				text: `() [${from}!i@h:acct]: something`,
+				from,
+				snotice: {
+					kind: `x3.audit.${coarse}`,
+					category: "SERVICES",
+					fields: {nick: from, ident: "i", host: "h", command: "something", args: ""},
+					route: "network",
+				},
+			};
+		}
+
+		function snoop(keyword: string, fields: Record<string, string>, at = 0): LoggedNotice {
+			return {
+				time: T0 + at * MIN,
+				type: "snoop",
+				text: `[21:14:00] ${keyword.toUpperCase()} …`,
+				snotice: {
+					kind: `x3.snoop.${keyword}`,
+					category: "SERVICES",
+					fields,
+					route: "network",
+				},
+			};
+		}
+
+		it("credits an audit line to the person who typed it, by its coarse kind", function () {
+			expect(actorOf(audit("glines", "Rubin"), bots)).to.deep.equal({
+				type: "nick",
+				name: "Rubin",
+			});
+			expect(coarseKindOf(audit("glines", "Rubin"), bots)).to.equal("glines");
+			expect(coarseKindOf(audit("modes", "n"), bots)).to.equal("modes");
+			expect(coarseKindOf(audit("alerts", "n"), bots)).to.equal("alerts");
+			expect(coarseKindOf(audit("opers", "n"), bots)).to.equal("opers");
+			expect(coarseKindOf(audit("other", "n"), bots)).to.equal("other");
+			expect(coarseKindOf(audit("nonsense", "n"), bots)).to.equal("other");
+			expect(isOperAction(audit("other", "n"), bots)).to.equal(true);
+
+			// A module log line has no human behind it.
+			const log: LoggedNotice = {
+				...audit("x", "n"),
+				from: undefined,
+				snotice: {
+					kind: "x3.log.info",
+					category: "SERVICES",
+					fields: {facility: "OpServ", severity: "info", message: "m"},
+				},
+			};
+			expect(actorOf(log, bots)).to.equal(undefined);
+			expect(coarseKindOf(log, bots)).to.equal("other");
+		});
+
+		it("takes a snoop OPER as an oper coming up, and a bot's kill or mode as the services'", function () {
+			expect(
+				actorOf(snoop("oper", {nick: "rubin", ident: "~r", host: "h"}), bots)
+			).to.deep.equal({type: "nick", name: "rubin"});
+			expect(coarseKindOf(snoop("oper", {nick: "rubin"}), bots)).to.equal("opers");
+
+			expect(actorOf(snoop("kill", {nick: "troll", killer: "O3"}), bots)).to.deep.equal({
+				type: "service",
+				name: "O3",
+			});
+			expect(coarseKindOf(snoop("kill", {nick: "troll", killer: "O3"}), bots)).to.equal(
+				"kills"
+			);
+
+			const byBot = snoop("mode", {channel: "#a", modes: "+o x", setter: "ChanServ"});
+			expect(actorOf(byBot, bots)).to.deep.equal({type: "service", name: "ChanServ"});
+			expect(coarseKindOf(byBot, bots)).to.equal("modes");
+
+			// A user's mode, and everything else in the feed, is plumbing.
+			const byUser = snoop("mode", {channel: "#a", modes: "+m", setter: "alice"});
+			expect(actorOf(byUser, bots)).to.equal(undefined);
+			expect(coarseKindOf(byUser, bots)).to.equal("other");
+
+			for (const [keyword, fields] of [
+				["connect", {nick: "x", ip: "1.2.3.4"}],
+				["join", {channel: "#a", nick: "x"}],
+				["part", {channel: "#a", nick: "x"}],
+				["quit", {nick: "x"}],
+				["nick", {nick: "x", newNick: "y"}],
+				["auth", {nick: "x", account: "x"}],
+				["umode", {nick: "x", modes: "+i"}],
+			] as [string, Record<string, string>][]) {
+				expect(actorOf(snoop(keyword, fields), bots), keyword).to.equal(undefined);
+				expect(coarseKindOf(snoop(keyword, fields), bots), keyword).to.equal("other");
+			}
+
+			// Without the setting, nobody is a service.
+			expect(actorOf(snoop("kill", {nick: "troll", killer: "O3"}))).to.deep.equal({
+				type: "nick",
+				name: "O3",
+			});
+			expect(coarseKindOf(byBot)).to.equal("other");
+		});
+
+		it("rolls the feed up with the notices: humans, then the services row", function () {
+			const entries = [
+				snotice("ban.add", {oper: "alice", mask: "a"}, 0),
+				audit("glines", "alice", 1),
+				audit("glines", "Rubin", 2),
+				snoop("oper", {nick: "Rubin"}, 3),
+				snoop("kill", {nick: "troll", killer: "O3"}, 4),
+				snoop("mode", {channel: "#a", modes: "+o x", setter: "ChanServ"}, 5),
+				snoop("join", {channel: "#a", nick: "x"}, 6),
+				snotice("hack.mode", {nick: "ChanServ", channel: "#a"}, 7),
+			];
+
+			const rows = rollupByOper(entries, T0 - MIN, bots);
+			expect(rows.map((r) => [r.key, r.count])).to.deep.equal([
+				["nick:alice", 2],
+				["nick:rubin", 2],
+				["services", 3],
+			]);
+			expect(rows[1].groups.map((g) => [g.coarse, g.count])).to.deep.equal([
+				["glines", 1],
+				["opers", 1],
+			]);
+			expect(rows[2].actor).to.deep.equal({type: "service", name: "services"});
+			expect(rows[2].groups.map((g) => [g.coarse, g.count])).to.deep.equal([
+				["kills", 1],
+				["modes", 2],
+			]);
+
+			const kinds = rollupByKind(entries, T0 - MIN, bots);
+			expect(kinds.map((g) => [g.coarse, g.count])).to.deep.equal([
+				["glines", 3],
+				["kills", 1],
+				["modes", 2],
+				["opers", 1],
+				["other", 1],
+			]);
+		});
 	});
 
 	it("periods: local midnight, a day back, the page load", function () {

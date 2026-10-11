@@ -408,9 +408,16 @@ export function openNoticeRouteMenu(
 /** The badge a logged notice or a message carries: its text and colour family. */
 export function noticeBadge(
 	info: SnoticeInfo,
-	type: "snotice" | "wallops"
+	type: "snotice" | "wallops" | "snoop" | "audit"
 ): {label: string; family: string} {
-	return type === "wallops"
-		? {label: wallopsBadge(info.kind), family: "wallops"}
-		: categoryBadge(info.category);
+	switch (type) {
+		case "wallops":
+			return {label: wallopsBadge(info.kind), family: "wallops"};
+		case "snoop":
+			return {label: "snoop", family: "oper"};
+		case "audit":
+			return {label: "services", family: "oper"};
+		default:
+			return categoryBadge(info.category);
+	}
 }

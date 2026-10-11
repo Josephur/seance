@@ -22,6 +22,25 @@
 			</div>
 		</div>
 
+		<!-- Services support, without the channels: what the feed would add
+		     (docs/projects/oper-tools.md, "Graceful degradation"). Join is
+		     offered for the report channel only. -->
+		<p
+			v-for="m in missingChannels"
+			:key="m.channel"
+			:class="['oper-muted', 'oper-activity-missing', 'oper-missing-' + m.role]"
+		>
+			<span>{{ m.text }}</span>
+			<button
+				v-if="m.role === 'report'"
+				type="button"
+				class="btn btn-small oper-join-channel"
+				@click="join(m.channel)"
+			>
+				Join
+			</button>
+		</p>
+
 		<p v-if="!rows.length" class="oper-muted oper-activity-empty">
 			Nothing kept for this period.
 		</p>
@@ -66,7 +85,7 @@
 							:aria-expanded="isOpen(row.key + '/' + g.coarse)"
 							@click="toggle($event, row.key + '/' + g.coarse)"
 						>
-							<span class="oper-row-name">{{ g.count }} {{ g.label }}</span>
+							<span class="oper-row-name">{{ countLabel(g.coarse, g.count) }}</span>
 							<span class="oper-row-time">{{ span(g) }}</span>
 						</button>
 						<ol v-if="isOpen(row.key + '/' + g.coarse)" class="oper-timeline">
@@ -148,6 +167,22 @@
 
 .oper-activity-view {
 	margin-left: auto;
+}
+
+.oper-activity-missing {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.35rem 0.75rem;
+	margin: 0 0 0.6rem;
+	font-size: 0.9375em;
+}
+
+.oper-activity-missing .btn {
+	margin: 0;
+	width: auto;
+	padding: 0.25em 0.8em;
+	font-size: 0.8125em;
 }
 
 .oper-rollup {
@@ -277,13 +312,17 @@ import storage from "../../js/localStorage";
 import localetime from "../../js/helpers/localetime";
 import useNow from "../../js/hooks/use-now";
 import {
-	actorOf,
+	actorOf as actorOfEntry,
+	countLabel,
 	periodStart,
 	rollupByKind,
 	rollupByOper,
+	type ActivityOptions,
 	type KindGroup,
 	type Period,
 } from "../../js/helpers/operActivity";
+import {serviceNicksOf} from "../../js/irc/services/index";
+import {ChanState, ChanType} from "../../../shared/types/chan";
 import NoticeBadge from "./NoticeBadge.vue";
 import SnoticeText from "./SnoticeText.vue";
 import Username from "../Username.vue";
@@ -321,9 +360,59 @@ export default defineComponent({
 		};
 
 		const since = computed(() => periodStart(period.value, now.value));
-		const byOper = computed(() => rollupByOper(recent.value, since.value));
-		const byKind = computed(() => rollupByKind(recent.value, since.value));
+		// Which nicks are the services bots is the network's setting.
+		const opts = computed<ActivityOptions>(() => ({
+			serviceNicks: serviceNicksOf(props.network.services),
+		}));
+		const byOper = computed(() => rollupByOper(recent.value, since.value, opts.value));
+		const byKind = computed(() => rollupByKind(recent.value, since.value, opts.value));
 		const rows = computed(() => (view.value === "oper" ? byOper.value : byKind.value));
+		const actorOf = (entry: LoggedNotice) => actorOfEntry(entry, opts.value);
+
+		/** The configured services channels this client is not in, and what each would add. */
+		const missingChannels = computed(() => {
+			const services = props.network.services;
+
+			if (!services) {
+				return [];
+			}
+
+			const joined = (name: string) =>
+				props.network.channels.some(
+					(c) =>
+						c.type === ChanType.CHANNEL &&
+						c.state === ChanState.JOINED &&
+						c.name.toLowerCase() === name.toLowerCase()
+				);
+			const out: {role: "report" | "snoop"; channel: string; text: string}[] = [];
+			const {report, snoop} = services.bots;
+
+			if (report && !joined(report)) {
+				out.push({
+					role: "report",
+					channel: report,
+					text: `Not in ${report}: what services did for opers isn't counted.`,
+				});
+			}
+
+			if (snoop && !joined(snoop)) {
+				out.push({
+					role: "snoop",
+					channel: snoop,
+					text: `Not in ${snoop}: connects and joins aren't kept.`,
+				});
+			}
+
+			return out;
+		});
+
+		const join = (channel: string) => {
+			const lobby = props.network.channels[0];
+
+			if (lobby) {
+				socket.emit("input", {target: lobby.id, text: `/join ${channel}`});
+			}
+		};
 
 		const isOpen = (key: string) => open.value[key] === true;
 
@@ -381,6 +470,9 @@ export default defineComponent({
 			isOpen,
 			toggle,
 			actorOf,
+			countLabel,
+			missingChannels,
+			join,
 			clock,
 			seconds,
 			span,
