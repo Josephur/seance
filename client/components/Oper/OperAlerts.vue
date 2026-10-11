@@ -72,6 +72,89 @@
 			</ul>
 		</details>
 
+		<section v-if="x3" class="oper-alerts-section oper-o3">
+			<div class="oper-o3-head">
+				<h2>{{ operBot }} alerts</h2>
+				<button type="button" class="btn btn-small oper-o3-new" @click="newAlert">
+					New {{ operBot }} alert…
+				</button>
+			</div>
+			<details class="oper-fold oper-o3-fold" @toggle="onToggle">
+				<summary>
+					Your {{ operBot }} alerts<template v-if="alerts.state === 'done'">
+						· {{ alerts.list.length }}</template
+					>
+				</summary>
+				<p v-if="alerts.state === 'asking'" class="oper-muted oper-o3-note">
+					Asking {{ operBot }}…
+				</p>
+				<p v-else-if="alerts.state === 'failed'" class="oper-muted oper-o3-note">
+					{{ alerts.note }}
+				</p>
+				<p
+					v-else-if="alerts.state === 'done' && alerts.list.length === 0"
+					class="oper-muted oper-o3-note"
+				>
+					No alerts of yours.
+				</p>
+				<ul v-else-if="alerts.state === 'done'" class="oper-lines oper-o3-list">
+					<li
+						v-for="a in alerts.list"
+						:key="a.name"
+						class="oper-line oper-o3-alert"
+						:data-alert="a.name"
+					>
+						<div class="oper-line-text">
+							<span class="oper-line-label">
+								<code>{{ a.name }}</code> · {{ a.reaction }} · by {{ a.owner }} ·
+								{{ expiresText(a) }}
+							</span>
+							<span class="oper-line-hint oper-mono">{{ a.criteria }}</span>
+							<span v-if="a.triggered" class="oper-line-hint"
+								>last fired
+								{{ a.triggered === "Never" ? "never" : `${a.triggered} ago` }}</span
+							>
+						</div>
+						<div class="oper-line-ctl">
+							<template v-if="deleting === a.name">
+								<span class="oper-o3-confirm">Delete {{ a.name }}?</span>
+								<button
+									type="button"
+									class="btn btn-small btn-danger"
+									:disabled="busy"
+									@click="confirmDelete(a)"
+								>
+									Delete
+								</button>
+								<button
+									type="button"
+									class="btn btn-small btn-cancel"
+									@click="deleting = ''"
+								>
+									Keep
+								</button>
+							</template>
+							<template v-else>
+								<button type="button" class="btn btn-small" @click="edit(a)">
+									Edit
+								</button>
+								<button
+									type="button"
+									class="btn btn-small"
+									@click="deleting = a.name"
+								>
+									Delete
+								</button>
+							</template>
+						</div>
+					</li>
+				</ul>
+				<p v-if="alerts.result" class="oper-o3-result" role="status">
+					{{ alerts.result }}
+				</p>
+			</details>
+		</section>
+
 		<details v-if="model" class="oper-fold oper-raw">
 			<summary>Raw mask and presets</summary>
 			<div class="oper-mask-readout">
@@ -239,6 +322,62 @@
 	cursor: pointer;
 	padding: 0.15rem 0;
 }
+
+/* The oper service's own alerts: the New button beside the heading, the
+ * list folded, Delete asked once inline. */
+.oper-alerts-section.oper-o3 {
+	margin-top: 1.25rem;
+}
+
+.oper-o3-head {
+	display: flex;
+	align-items: flex-end;
+	justify-content: space-between;
+	flex-wrap: wrap;
+	gap: 0.5rem 1rem;
+}
+
+.oper-o3-head h2 {
+	flex: 1 1 auto;
+	margin: 0;
+}
+
+.oper-o3 .oper-fold {
+	margin-top: 0.25rem;
+}
+
+.oper-o3 .btn-small {
+	margin: 0;
+	padding: 0.3em 0.75em;
+	font-size: 0.875em;
+	line-height: 1.4;
+	border-width: 1px;
+	letter-spacing: 0;
+	text-transform: none;
+}
+
+.oper-o3 .btn-cancel {
+	border-color: transparent;
+}
+
+.oper-o3-note,
+.oper-o3-result {
+	margin: 0.4rem 0 0;
+	font-size: 0.9375em;
+}
+
+.oper-o3-result {
+	color: var(--link-color);
+}
+
+.oper-o3-confirm {
+	color: var(--oper-amber);
+	font-size: 0.875em;
+}
+
+.oper-o3-alert .oper-line-hint.oper-mono {
+	overflow-wrap: anywhere;
+}
 </style>
 
 <script lang="ts">
@@ -254,6 +393,18 @@ import {routeFor, sweepTemporaryRoutes, temporaryRouteFor} from "../../js/irc/op
 import {alertLinesFor, lineRoute, untilText, type RestLine} from "../../js/helpers/operAlerts";
 import {applyNoticeRoute, hereItems} from "../../js/helpers/operMenu";
 import useNow from "../../js/hooks/use-now";
+import {clientForNetwork} from "../../js/irc/manager";
+import {delAlert, describeFailure, listAlerts} from "../../js/irc/alerts";
+import type {ServiceAlert} from "../../js/irc/services/types";
+import type {AlertBuilderRequest} from "../../js/helpers/alertBuilder";
+
+interface AlertsState {
+	state: "idle" | "asking" | "done" | "failed";
+	list: ServiceAlert[];
+	note: string;
+	/** The last delete's verdict, in the bot's words. */
+	result: string;
+}
 
 const SECTIONS: {id: "actions" | "network"; label: string}[] = [
 	{id: "actions", label: "Oper actions"},
@@ -404,13 +555,125 @@ export default defineComponent({
 			];
 		});
 
+		// --- The oper service's own alerts (irc/alerts.ts), X3 only: listed
+		// when the fold opens, Edit reopens the builder on one, Delete asks
+		// once inline. The builder announces `oper:alerts-changed`.
+		const x3 = computed(() => props.network.services?.package === "x3");
+		const operBot = computed(() => props.network.services?.bots.oper || "O3");
+		const alerts = ref<AlertsState>({state: "idle", list: [], note: "", result: ""});
+		const deleting = ref("");
+		const busy = ref(false);
+		const folded = ref(true);
+
+		const load = async () => {
+			const client = clientForNetwork(props.network.uuid);
+
+			if (!client) {
+				alerts.value = {...alerts.value, state: "failed", note: "The network is gone."};
+				return;
+			}
+
+			alerts.value = {...alerts.value, state: "asking"};
+			const answer = await listAlerts(client);
+
+			if (answer.kind !== "reply") {
+				alerts.value = {
+					...alerts.value,
+					state: "failed",
+					list: [],
+					note: describeFailure(client, answer),
+				};
+				return;
+			}
+
+			alerts.value = {...alerts.value, state: "done", list: answer.value ?? [], note: ""};
+		};
+
+		const onToggle = (event: Event) => {
+			folded.value = !(event.target as HTMLDetailsElement).open;
+
+			if (!folded.value && alerts.value.state !== "asking") {
+				void load();
+			}
+		};
+
+		const onAlertsChanged = (data: {network: string}) => {
+			if (data.network === props.network.uuid && !folded.value) {
+				void load();
+			}
+		};
+
+		const newAlert = () => {
+			const req: AlertBuilderRequest = {network: props.network.uuid};
+			eventbus.emit("oper:alert-builder", req);
+		};
+
+		const edit = (alert: ServiceAlert) => {
+			const req: AlertBuilderRequest = {network: props.network.uuid, edit: alert};
+			eventbus.emit("oper:alert-builder", req);
+		};
+
+		const confirmDelete = async (alert: ServiceAlert) => {
+			const client = clientForNetwork(props.network.uuid);
+
+			if (!client || busy.value) {
+				return;
+			}
+
+			busy.value = true;
+
+			try {
+				const answer = await delAlert(client, alert.name);
+				alerts.value = {
+					...alerts.value,
+					result:
+						answer.kind === "reply"
+							? answer.value?.text ?? `${operBot.value} did not answer.`
+							: describeFailure(client, answer),
+				};
+
+				if (answer.kind === "reply" && answer.value?.ok) {
+					alerts.value = {
+						...alerts.value,
+						list: alerts.value.list.filter((a) => a.name !== alert.name),
+					};
+				}
+			} finally {
+				busy.value = false;
+				deleting.value = "";
+			}
+		};
+
+		const expiresText = (alert: ServiceAlert) => {
+			if (!alert.expires) {
+				return "never expires";
+			}
+
+			const at = Date.parse(
+				alert.expires.replace(/^(\d{4}-\d\d-\d\d) (\d\d:\d\d:\d\d) (\S+)$/, "$1T$2$3")
+			);
+
+			if (!Number.isFinite(at)) {
+				return `expires ${alert.expires}`;
+			}
+
+			const left = Math.round((at - now.value) / 3_600_000);
+			return left <= 0
+				? "expired"
+				: left < 48
+				? `expires in ${left} h`
+				: `expires in ${Math.round(left / 24)} d`;
+		};
+
 		onMounted(() => {
 			sweepTemporaryRoutes(props.network.uuid);
 			eventbus.on("oper:routes", onRoutes);
+			eventbus.on("oper:alerts-changed", onAlertsChanged);
 		});
 
 		onUnmounted(() => {
 			eventbus.off("oper:routes", onRoutes);
+			eventbus.off("oper:alerts-changed", onAlertsChanged);
 
 			if (timer !== undefined) {
 				clearTimeout(timer);
@@ -419,6 +682,16 @@ export default defineComponent({
 		});
 
 		return {
+			x3,
+			operBot,
+			alerts,
+			deleting,
+			busy,
+			onToggle,
+			newAlert,
+			edit,
+			confirmDelete,
+			expiresText,
 			SECTIONS,
 			POSITIONS,
 			model,

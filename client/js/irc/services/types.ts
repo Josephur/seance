@@ -120,6 +120,47 @@ export interface ServiceAccountInfo {
 	lastQuitHostmask?: string;
 	hostmasks: string[];
 	channels?: string;
+	/** The account's level with the oper service (`Opserv level: 900`), for staff. */
+	opservLevel?: number;
+}
+
+/** One alert the oper service keeps (`stats alerts`). */
+export interface ServiceAlert {
+	name: string;
+	/** The reaction, lowercased (`notice`, `gline`…). */
+	reaction: string;
+	owner: string;
+	/** `2026-10-18 21:00:00 +0000` as the bot prints it; absent when it never expires. */
+	expires?: string;
+	/** The criteria text as stored, `reason …` included when there is one. */
+	criteria: string;
+	/** The bot's interval text since it last fired, or `Never`. */
+	triggered?: string;
+}
+
+/** One user a `trace print` found. */
+export interface TraceUser {
+	nick: string;
+	ident: string;
+	host: string;
+	account?: string;
+	/** The bot's flags for the user, when its output has any (`*` an oper). */
+	flags?: string;
+}
+
+/** What a `trace print` came to. */
+export interface TraceResult {
+	count: number;
+	users: TraceUser[];
+	/** The bot's complaint about the criteria, when it made one. */
+	error?: string;
+}
+
+/** The oper service's answer to a command that adds or removes something. */
+export interface CommandReply {
+	ok: boolean;
+	/** The bot's words, every line, formatting stripped. */
+	text: string;
 }
 
 /** One ban the oper service lists (`stats glines`, `gtrace`). */
@@ -144,6 +185,14 @@ export interface ServicesLookups {
 	traceCount(criteria: string): ServiceLookup<number>;
 	/** The `ADDALERT`/`TRACE` criterion for a shared fact, when the package has one. */
 	criterion(fact: {key: string; value: string}): string | undefined;
+	/** Who matches the criteria right now, by nick (the alert builder's count line). */
+	tracePrint(criteria: string): ServiceLookup<TraceResult>;
+	/** The oper's own alerts. */
+	alerts(): ServiceLookup<ServiceAlert[]>;
+	/** Add an alert; `command` is the whole line as the builder assembled it (`addalert …`). */
+	addAlert(command: string): ServiceLookup<CommandReply>;
+	/** Remove the alert called `name`. */
+	delAlert(name: string): ServiceLookup<CommandReply>;
 }
 
 export interface ServicesProfile {

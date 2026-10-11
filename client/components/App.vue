@@ -14,6 +14,7 @@
 		<ConfirmDialog ref="confirmDialog" />
 		<UploadPreview />
 		<InvestigateCard />
+		<AlertBuilder />
 		<OperActionDialog />
 		<PushPrompt />
 		<InstallGuide />
@@ -37,6 +38,7 @@ import ConfirmDialog from "./ConfirmDialog.vue";
 import UploadPreview from "./UploadPreview.vue";
 import OperActionDialog from "./Oper/ActionDialog.vue";
 import InvestigateCard from "./Oper/InvestigateCard.vue";
+import AlertBuilder from "./Oper/AlertBuilder.vue";
 import Mentions from "./Mentions.vue";
 import PushPrompt from "./PushPrompt.vue";
 import InstallGuide from "./InstallGuide.vue";
@@ -70,6 +72,7 @@ export default defineComponent({
 		UploadPreview,
 		OperActionDialog,
 		InvestigateCard,
+		AlertBuilder,
 		Mentions,
 		PushPrompt,
 		InstallGuide,

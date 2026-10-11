@@ -550,6 +550,7 @@ import {
 	openOperTargetMenu,
 } from "../../js/helpers/operMenu";
 import type {FactKey} from "../../js/helpers/commonality";
+import type {AlertBuilderRequest} from "../../js/helpers/alertBuilder";
 import {formatDuration, relativeTime} from "../../js/helpers/operFormat";
 import localetime from "../../js/helpers/localetime";
 import useNow from "../../js/hooks/use-now";
@@ -847,19 +848,21 @@ export default defineComponent({
 							label: f.label,
 					  }))
 					: userFacts(m);
-			const payload = {
+			// The builder (AlertBuilder.vue) makes rows of the facts; the
+			// criteria in the package's words are for anyone else listening.
+			const payload: AlertBuilderRequest & {criteria: string[]} = {
 				network: card.request.network,
-				channel: m.kind === "channel" ? m.target : undefined,
-				nick: m.kind === "user" ? m.target : undefined,
 				facts,
 				criteria: card.investigation.criteria(),
 			};
 
-			if (eventbus.has("oper:alert-builder")) {
-				eventbus.emit("oper:alert-builder", payload);
+			if (m.kind === "channel") {
+				payload.channel = m.target;
 			} else {
-				say("The alert builder is coming next.");
+				payload.nick = m.target;
 			}
+
+			eventbus.emit("oper:alert-builder", payload);
 		};
 
 		const activeChan = () =>

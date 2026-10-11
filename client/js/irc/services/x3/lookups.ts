@@ -17,6 +17,7 @@ import type {
 	ServiceUserInfo,
 } from "../types";
 import {parseCtime} from "../../profiles/report";
+import {x3Alerts} from "./alerts";
 
 /** `Label      : value` (O3 pads labels to 13) or `Label: value`. */
 const LABELLED = /^([A-Za-z][A-Za-z/() ]*?)\s*:\s?(.*)$/;
@@ -376,6 +377,17 @@ function account(name: string): ServiceLookup<ServiceAccountInfo> {
 					case "Channel(s)":
 						info.channels = info.channels ? `${info.channels} ${value}` : value;
 						break;
+
+					case "Opserv level": {
+						const level = Number.parseInt(value, 10);
+
+						if (Number.isFinite(level)) {
+							info.opservLevel = level;
+						}
+
+						break;
+					}
+
 					default:
 						break;
 				}
@@ -506,4 +518,5 @@ export const x3Lookups: ServicesLookups = {
 	bansCovering,
 	traceCount,
 	criterion,
+	...x3Alerts,
 };

@@ -4232,6 +4232,279 @@ button.snotice-badge:focus-visible {
 	}
 }
 
+/* The alert builder (Oper/AlertBuilder.vue): O3's `addalert` as a form in
+ * the same frame as the cards — a pane over the whole app, the page on a
+ * phone. The criteria are rows: a switch, the criterion in words, its
+ * value in monospace, a "wide" tag in amber, ✕. */
+#oper-alert-overlay {
+	position: fixed;
+	top: 0;
+	bottom: 0;
+	left: 0;
+	right: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 1.5rem;
+	background: var(--overlay-bg-color);
+	visibility: hidden;
+	opacity: 0;
+	transition: opacity 0.2s, visibility 0.2s;
+	z-index: 999;
+}
+
+#oper-alert-overlay.opened {
+	visibility: visible;
+	opacity: 1;
+}
+
+.oper-alert-builder {
+	--oper-amber: #c7841a;
+
+	width: min(46rem, 100%);
+	height: min(44rem, 100%);
+	user-select: text;
+}
+
+.oper-alert-builder .settings-modal-header h1 {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.oper-alert-form.container {
+	display: flex;
+	flex-direction: column;
+	gap: 0.9rem;
+	width: 100%;
+	margin: 0;
+	padding: 0 1.25rem 1rem;
+}
+
+.oper-alert-grid {
+	display: grid;
+	grid-template-columns: minmax(9rem, 1fr) minmax(13rem, 1.7fr) minmax(7rem, 0.8fr);
+	gap: 0.6rem 0.9rem;
+}
+
+.oper-alert-add label {
+	white-space: nowrap;
+}
+
+.oper-alert-field {
+	display: flex;
+	flex-direction: column;
+	gap: 0.3rem;
+	min-width: 0;
+}
+
+.oper-alert-label,
+.oper-alert-section-title {
+	color: var(--body-color-muted);
+	font-size: 0.875em;
+}
+
+.oper-alert-section-title {
+	margin-bottom: 0.2rem;
+}
+
+#oper-alert-overlay .input {
+	margin: 0;
+	width: 100%;
+	min-width: 0;
+}
+
+#oper-alert-overlay .oper-mono {
+	font-family: monospace;
+}
+
+.oper-alert-rows {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+}
+
+.oper-alert-row {
+	display: grid;
+	grid-template-columns: auto minmax(7rem, 11rem) minmax(0, 1fr) auto;
+	align-items: center;
+	gap: 0.3rem 0.6rem;
+	padding: 0.3rem 0;
+	border-bottom: 1px solid color-mix(in srgb, var(--body-color-muted) 25%, transparent);
+}
+
+.oper-alert-row.off .oper-alert-row-label {
+	color: var(--body-color-muted);
+}
+
+.oper-alert-row.off .oper-alert-value {
+	opacity: 0.55;
+}
+
+.oper-alert-switch {
+	margin: 0;
+	width: 1.1rem;
+	height: 1.1rem;
+	cursor: pointer;
+}
+
+.oper-alert-row-label {
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
+.oper-wide {
+	display: inline-block;
+	margin-left: 0.35em;
+	padding: 0 0.35em;
+	border: 1px solid var(--oper-amber);
+	border-radius: 0.3em;
+	color: var(--oper-amber);
+	font-size: 0.75em;
+	line-height: 1.5;
+	vertical-align: 0.1em;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+}
+
+.oper-alert-remove {
+	width: 1.75rem;
+	height: 1.75rem;
+	border-radius: 0.3rem;
+	color: var(--body-color-muted);
+	font-size: 0.875em;
+}
+
+.oper-alert-remove:hover,
+.oper-alert-remove:focus-visible {
+	color: var(--body-color);
+	background: color-mix(in srgb, var(--body-color-muted) 15%, transparent);
+}
+
+.oper-alert-add {
+	display: flex;
+	align-items: center;
+	gap: 0.6rem;
+	margin-top: 0.5rem;
+}
+
+.oper-alert-add .input {
+	width: auto;
+	max-width: 100%;
+}
+
+.oper-alert-note {
+	margin: 0;
+	font-size: 0.9375em;
+}
+
+.oper-alert-command {
+	margin: 0;
+	padding: 0.5rem 0.65rem;
+	border-radius: 0.3rem;
+	background: color-mix(in srgb, var(--body-color-muted) 12%, transparent);
+	font-family: monospace;
+	font-size: 0.875em;
+	line-height: 1.5;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	user-select: all;
+}
+
+.oper-alert-matches {
+	margin: 0;
+	font-weight: 700;
+}
+
+.oper-alert-matches.muted,
+.oper-alert-matches[data-state="asking"],
+.oper-alert-matches[data-state="idle"] {
+	color: var(--body-color-muted);
+	font-weight: normal;
+}
+
+.oper-alert-matches[data-state="failed"] {
+	color: var(--body-color-muted);
+	font-weight: normal;
+}
+
+.oper-alert-matches.warn {
+	color: var(--oper-amber);
+}
+
+.oper-alert-nicks {
+	margin: -0.5rem 0 0;
+	color: var(--body-color-muted);
+	font-size: 0.875em;
+	overflow-wrap: anywhere;
+}
+
+.oper-alert-footer {
+	flex-wrap: wrap;
+	gap: 0.5rem 1rem;
+}
+
+.oper-alert-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.4rem;
+}
+
+#oper-alert-overlay .btn-small {
+	margin: 0;
+	padding: 0.3em 0.75em;
+	font-size: 0.875em;
+	line-height: 1.4;
+	border-width: 1px;
+	letter-spacing: 0;
+	text-transform: none;
+}
+
+#oper-alert-overlay .btn-cancel {
+	border-color: transparent;
+}
+
+.oper-alert-result {
+	color: var(--link-color);
+	font-size: 0.875em;
+}
+
+.oper-alert-error {
+	color: #e74c3c;
+	font-size: 0.875em;
+}
+
+/* On a phone the builder is the page, and a row wraps its value under the label. */
+@media (max-width: 768px) {
+	#oper-alert-overlay {
+		padding: 0;
+	}
+
+	.oper-alert-builder {
+		height: 100%;
+		border-radius: 0;
+	}
+
+	.oper-alert-grid {
+		grid-template-columns: 1fr;
+	}
+
+	.oper-alert-row {
+		grid-template-columns: auto minmax(0, 1fr) auto;
+	}
+
+	.oper-alert-row .oper-alert-remove {
+		grid-column: 3;
+		grid-row: 1;
+	}
+
+	.oper-alert-row .oper-alert-value {
+		grid-column: 2 / -1;
+		grid-row: 2;
+	}
+}
+
 .changelog-text {
 	line-height: 1.5;
 }
