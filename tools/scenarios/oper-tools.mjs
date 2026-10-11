@@ -33,7 +33,7 @@ const PORT = process.env.SEANCE_PORT ?? "8000";
 export const url = `http://localhost:${PORT}/?host=localhost&port=8443&tls=true&nick=${ME}&join=%23seance`;
 
 /** A helper client on the dev ircd: joins the channel, runs `onReady`. */
-function helper(nick, onReady = () => {}) {
+function helper(nick, onReady = () => {}, realname = `Oper scenario ${nick}`) {
 	const ws = new WebSocket(IRCD, ["text.ircv3.net"]);
 	let ready = () => {};
 	let gone = () => {};
@@ -41,7 +41,7 @@ function helper(nick, onReady = () => {}) {
 
 	ws.onopen = () => {
 		send(`NICK ${nick}`);
-		send(`USER ${nick} 0 * :Oper scenario ${nick}`);
+		send(`USER ${nick} 0 * :${realname}`);
 	};
 
 	ws.onmessage = (ev) => {
@@ -102,6 +102,36 @@ async function cleanup() {
 async function type(page, text) {
 	await page.fill("#input", text);
 	await page.evaluate(`document.querySelector("#form").requestSubmit()`);
+}
+
+/** A real right click at the element's centre: what opens a context menu. */
+async function rightClick(page, selector) {
+	const r = await page.rect(selector);
+
+	if (!r) {
+		throw new Error(`nothing to right-click at ${selector}`);
+	}
+
+	const x = r.x + r.width / 2;
+	const y = r.y + r.height / 2;
+	await page.send("Input.dispatchMouseEvent", {type: "mouseMoved", x, y});
+	await page.send("Input.dispatchMouseEvent", {
+		type: "mousePressed",
+		x,
+		y,
+		button: "right",
+		buttons: 2,
+		clickCount: 1,
+	});
+	await page.send("Input.dispatchMouseEvent", {
+		type: "mouseReleased",
+		x,
+		y,
+		button: "right",
+		buttons: 0,
+		clickCount: 1,
+	});
+	await page.sleep(100);
 }
 
 /** The user list is a side panel on a desktop and an overlay on a phone. */
@@ -507,6 +537,198 @@ export default async function run(page) {
 	await routine.closed;
 	await page.waitFor(`!document.querySelector('.userlist .user[data-name="opdrive"]')`, {
 		label: "opdrive gone from the user list",
+	});
+
+	// ------------------------------------ the investigation cards (step 3)
+	// Two more helpers from the rig's address sharing a realname with none
+	// of the others but each other: with opvictim and the oper that is four
+	// users, so "not authed", the /24 and the server are shared by all and
+	// the realname by none (3 of 4 would do; the helpers' realnames differ).
+	// CONNEXIT is on (the Alerts tab above), so their connect notices are in
+	// the kept feed for "Seen before".
+	const bot2 = helper("opbot2", () => {}, "irc client");
+	const bot3 = helper("opbot3", () => {}, "irc client");
+	await Promise.all([bot2.ready, bot3.ready]);
+	await page.sleep(1500); // the connect notices land in the log
+	const overlay = "#oper-investigate-overlay";
+	const cardFacts = `(() => {
+		const root = document.querySelector("${overlay}");
+		return {
+			title: root.querySelector(".settings-modal-header h1").textContent.replace(/\\s+/g, " ").trim(),
+			facts: Array.from(root.querySelectorAll(".oper-facts > div")).map((row) => row.querySelector("dt").textContent.trim() + "=" + row.querySelector("dd").textContent.replace(/\\s+/g, " ").trim()),
+			chips: Array.from(root.querySelectorAll(".oper-common-chip")).map((c) => c.textContent.replace(/\\s+/g, " ").trim()),
+			users: Array.from(root.querySelectorAll(".oper-user-block")).map((b) => ({
+				nick: b.querySelector(".oper-user-nick").textContent.trim(),
+				ip: b.querySelector(".oper-chip-ip")?.textContent.trim(),
+				sameAll: b.classList.contains("same-all"),
+			})),
+			seen: Array.from(root.querySelectorAll(".oper-seen li")).map((li) => li.textContent.replace(/\\s+/g, " ").trim()),
+			verdict: root.querySelector(".oper-verdict")?.textContent.replace(/\\s+/g, " ").trim(),
+			bans: root.querySelector(".oper-bans")?.textContent.replace(/\\s+/g, " ").trim(),
+		};
+	})()`;
+
+	// The channel card, from the channel's context menu (the sidebar row);
+	// on the phone the row is under the drawer, so the typed route instead.
+	if (MOBILE) {
+		await type(page, `/investigate ${CHANNEL}`);
+	} else {
+		await rightClick(page, `.channel-list-item[data-name="${CHANNEL}"]`);
+		await page.waitFor(
+			`!!document.querySelector("#context-menu .context-menu-oper-investigate")`,
+			{label: "Investigate in the channel's menu"}
+		);
+		await page.click("#context-menu .context-menu-oper-investigate");
+	}
+
+	await page.waitFor(`!!document.querySelector("${overlay}.opened .oper-investigate")`, {
+		label: "the channel card",
+	});
+	await page.waitFor(
+		`document.querySelectorAll("${overlay} .oper-user-block").length >= 4 && !!document.querySelector("${overlay} .oper-common-chip") && Array.from(document.querySelectorAll("${overlay} .oper-chip-ip")).length >= 4`,
+		{label: "the users with their IPs, and the common facts", timeout: 20000}
+	);
+	// The bots are not on the rig: O3 and ChanServ are "no such nick" and the
+	// facts settle on the server's answers (the channel has no modes).
+	await page.waitFor(
+		`!/asking/.test(Array.from(document.querySelectorAll("${overlay} .oper-facts dd")).map((dd) => dd.textContent).join(" "))`,
+		{label: "the facts settled", timeout: 15000}
+	);
+	const channelCard = await page.evaluate(cardFacts);
+	page.check(
+		`the channel card's facts (${channelCard.facts.join(" | ")})`,
+		channelCard.facts.some((f) => /^Created=(now|\d.* ago)$/.test(f)) &&
+			channelCard.facts.some((f) => /^Modes=(\+\S*|\(none\))$/.test(f)) &&
+			channelCard.facts.some((f) => /^Topic=/.test(f)) &&
+			channelCard.facts.some((f) => /^Registered=—$/.test(f)) &&
+			channelCard.facts.some((f) => /^Bans=\d+$/.test(f))
+	);
+	page.check(
+		`the common facts name the server, the /24 and not authed (${channelCard.chips.join(
+			" · "
+		)})`,
+		channelCard.chips.some((c) => /^server irc\.seance\.test/.test(c)) &&
+			channelCard.chips.some((c) => /^172\.17\.0\.\*/.test(c)) &&
+			channelCard.chips.some((c) => /^not authed/.test(c))
+	);
+	page.check(
+		`every user block has a real IP (${channelCard.users
+			.map((u) => `${u.nick}@${u.ip}`)
+			.join(", ")})`,
+		channelCard.users.length >= 4 &&
+			channelCard.users.every((u) => /^\d+\.\d+\.\d+\.\d+$/.test(u.ip ?? ""))
+	);
+	page.check(
+		"the users sharing every fact are tinted",
+		channelCard.users.filter((u) => u.sameAll).length >= 3
+	);
+	await page.screenshot("10-channel-card", {selector: `${overlay} .oper-investigate`});
+
+	// Alert on this…: the builder is step 4, so for now a word that it is coming.
+	await page.click(`${overlay} .oper-common-actions .btn`);
+	await page.waitFor(
+		`/coming next/.test(document.querySelector("${overlay} .oper-toast")?.textContent ?? "")`,
+		{label: "the 'coming next' toast"}
+	);
+
+	// A nick in the list opens the user card on top; closing it comes back.
+	const nickIndex = await page.evaluate(
+		`Array.from(document.querySelectorAll("${overlay} .oper-user-nick")).findIndex((b) => b.textContent.trim() === "opbot2")`
+	);
+	await page.evaluate(
+		`document.querySelectorAll("${overlay} .oper-user-nick")[${nickIndex}].scrollIntoView({block: "center"})`
+	);
+	await page.click(`${overlay} .oper-user-nick`, nickIndex);
+	await page.waitFor(
+		`!!document.querySelector("${overlay} .oper-investigate-user") && !!document.querySelector("${overlay} .oper-facts .oper-chip-ip")`,
+		{label: "the user card on top, with the IP", timeout: 20000}
+	);
+	const stacked = await page.evaluate(cardFacts);
+	page.check(
+		`the stacked card is titled from the channel (${stacked.title})`,
+		/^#seance › opbot2/.test(stacked.title)
+	);
+	await page.screenshot("11-user-card-stacked", {selector: `${overlay} .oper-investigate`});
+	await page.click(`${overlay} .settings-modal-close`);
+	await page.waitFor(`!!document.querySelector("${overlay} .oper-user-list")`, {
+		label: "back on the channel card",
+	});
+	await page.click(`${overlay} .settings-modal-close`);
+	await page.waitFor(`!document.querySelector("${overlay}.opened")`, {label: "the card closed"});
+	await page.sleep(400); // the overlay fades for 0.2 s and would take the click
+
+	// The user card from the nick menu: the facts grid, the bans, seen before.
+	await openUserList(page);
+	await page.click(`.userlist .user[data-name="opbot3"]`);
+	await page.waitFor(`!!document.querySelector("#context-menu .context-menu-oper-investigate")`, {
+		label: "Investigate in the nick menu",
+	});
+	await page.click("#context-menu .context-menu-oper-investigate");
+	await page.waitFor(
+		`!!document.querySelector("${overlay}.opened .oper-investigate-user") && !!document.querySelector("${overlay} .oper-facts .oper-chip-ip") && /No live|covers/.test(document.querySelector("${overlay} .oper-investigate-user")?.textContent ?? "")`,
+		{label: "the user card with its IP and the ban list read", timeout: 25000}
+	);
+	const userCard = await page.evaluate(cardFacts);
+	page.check(
+		`the user card's facts (${userCard.facts.join(" | ")})`,
+		userCard.facts.some((f) => /^Host=opbot3@/.test(f)) &&
+			userCard.facts.some((f) => /^IP=172\.17\.0\.1 .*irc\.seance\.test/.test(f)) &&
+			userCard.facts.some((f) => /^Realname=irc client$/.test(f)) &&
+			userCard.facts.some((f) => /^Connected=\d/.test(f)) &&
+			userCard.facts.some((f) => /^Channels=only #seance$/.test(f))
+	);
+	page.check(
+		`seen before finds opbot3's own connect notice (${userCard.seen.join(" | ")})`,
+		userCard.seen.some((s) => /opbot3 from 172\.17\.0\.1 \(this IP\)/.test(s))
+	);
+	page.check(
+		`the verdict names what matched (${userCard.verdict})`,
+		/^Likely the same as \S+ \(\d\d:\d\d\): same IP/.test(userCard.verdict ?? "")
+	);
+	await page.screenshot("12-user-card", {selector: `${overlay} .oper-investigate`});
+
+	// Compare side by side: a second column, the shared IP tinted. The offer
+	// sits at the end of the scrolling body, under the footer on a phone, so
+	// let every "asking…" settle (the bots' 401s) before reaching for it.
+	await page.waitFor(
+		`!/asking…/.test(document.querySelector("${overlay} .oper-investigate-user")?.textContent ?? "")`,
+		{label: "every source answered", timeout: 30000}
+	);
+	// A button at the end of the body can sit in the viewport yet under the
+	// footer: scroll it up until the point to click is really its own.
+	const reach = async (selector) => {
+		await page.waitFor(
+			`(() => {
+				const b = document.querySelector(${JSON.stringify(selector)});
+				if (!b) return false;
+				b.scrollIntoView({block: "center"});
+				const r = b.getBoundingClientRect();
+				return document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === b;
+			})()`,
+			{label: `${selector} in reach`}
+		);
+		await page.click(selector);
+	};
+	await reach(`${overlay} .oper-compare-offer .btn`);
+	await page.fill(`${overlay} .oper-compare-ask input`, "opbot2");
+	await reach(`${overlay} .oper-compare-ask button[type="submit"]`);
+	await page.waitFor(
+		`!!document.querySelector("${overlay} .oper-compare-b .oper-facts .oper-chip-ip")`,
+		{label: "the compared user's IP", timeout: 20000}
+	);
+	const tinted = await page.evaluate(
+		`Array.from(document.querySelectorAll("${overlay} .oper-compare-b .oper-facts .same dt")).map((dt) => dt.textContent.trim())`
+	);
+	page.check(`the matching rows are tinted (${tinted.join(", ")})`, tinted.includes("IP"));
+	await page.screenshot("13-user-compare", {selector: `${overlay} .oper-investigate`});
+	await page.click(`${overlay} .settings-modal-close`);
+	await page.waitFor(`!document.querySelector("${overlay}.opened")`, {label: "the card closed"});
+	await page.sleep(400);
+	bot2.quit();
+	bot3.quit();
+	await Promise.all([bot2.closed, bot3.closed]);
+	await page.waitFor(`!document.querySelector('.userlist .user[data-name="opbot3"]')`, {
+		label: "the helpers gone from the user list",
 	});
 
 	// ------------------------------------------ G-line from a nick's menu

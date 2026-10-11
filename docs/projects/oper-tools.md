@@ -561,6 +561,106 @@ through O3, and the grey lines when a channel is missing. Wire facts:
   scenario against the AfterNET e-testnet (`tools/scenarios/oper-services.mjs`)
   waits for a session with it running.
 
+**Step 3 of the revised plan (2026-10-10): the channel card and the user
+card.** One overlay (`Oper/InvestigateCard.vue`, a Settings-style pane
+over the whole app; the user column is `Oper/InvestigateUser.vue`), one
+data object per card (`irc/investigate.ts` `Investigation`: `start`,
+`refresh`, `stop`, `lookup(nick)`, `traceCount()`, an `onChange`
+callback over a plain model), Vue-free so mocha drives it with
+FakeTransport.
+
+- **Entry points.** Investigate at the top of a nick's oper menu (above
+  Check, which stays), Investigate in a channel's menu — the sidebar row
+  and an inline `#chan` — when opered (`helpers/operMenu.ts`
+  `operChannelItems`), and `/investigate <nick|#chan>`
+  (`irc/commands/investigate.ts`; bare, the current channel or query).
+  Everything opens through the `oper:investigate` eventbus event. Cards
+  stack: a nick in the channel card opens the user card on top and ✕ goes
+  back; Escape, ✕ and the backdrop close the top one.
+- **Sources and pacing.** The first three commands go out at once and the
+  rest one every 2 s (`BURST`, `PACE_MS`: the fake-lag rule), the bots'
+  queries one at a time on their own lane since only the order correlates
+  a NOTICE with its question (`collectServiceReply` in `irc/services.ts`:
+  from the line the lookup says starts the answer to the one that ends it
+  or 1.5 s of quiet). Channel: `CHECK #chan` (`parseCheck` in
+  `profiles/nefarious/check.ts`), `WHO #chan %tcuihsnfdlar,<token>`,
+  `USERIP` five nicks at a time for anyone WHO gave no IP (a non-oper's
+  255.255.255.255 counts as none); with X3, O3 `chaninfo` (created from
+  the unix stamp, bans), ChanServ `info` (registered, since, owner), then
+  O3 `whois` per user for country, city, version, nick age and channels —
+  the first 20 (`LOOKUP_CAP`), the rest when the oper presses Look up in
+  their block. User: `CHECK nick`, `WHOIS nick nick`, `USERIP nick`, then
+  `STATS g`, `S`, `Z` (`parseBanRow` in `profiles/nefarious/stats.ts`;
+  opers only); with X3, O3 `whois`, AuthServ `accountinfo` once an
+  account is known (last quit hostmask, hostmasks), and O3
+  `gtrace print host superset <host>` **only when the server listed no
+  bans at all** — X3's bans are the server's, so a list that was read
+  needs nothing more; `superset` because the bans wanted are the ones
+  whose mask takes the host in. Every lookup's command, accept and parse
+  are the profile's (`irc/services/x3/lookups.ts`, `ServicesLookups` in
+  `irc/services/types.ts`; `criterion` turns a shared fact into an
+  ADDALERT/TRACE word — `info` and `version` values get `?` for spaces,
+  the connect age has none).
+- **The kept feed does the rest** (`helpers/commonality.ts`,
+  `helpers/verdict.ts`): when each user connected (the snoop connect line
+  or the server's `client.connect` notice) and joined; the last hour in
+  the channel (snoop join/create/part/kick/mode, consecutive joins within
+  a minute folded into "a, b and c joined"; the "Not in #mrsnoopy" grey
+  line when the snoop channel is configured and not joined, nothing
+  without services); "seen before" over connect, exit, nick-change, ban
+  hit, kill and oper-up notices and snoop connect/quit/kill/oper/auth
+  lines sharing the IP, host, realname or account — grouped by nick,
+  newest first, with their fate (`G-lined by rubin for 'bot group'`,
+  `killed by X`) from `ban.add`, `kill.oper`, snoop kills and O3 audit
+  lines; and the bans near the user — the live STATS rows whose mask
+  covers them (`maskCovers`: ident and host or IP by wildcard, IPv4 CIDR,
+  `$R`, `$V`), with the setter from the feed's `ban.add`, then the recent
+  `ban.*` notices covering them that are not live.
+- **Commonality** (`commonality()`): authed, connect age (< 15 min, < 1 h,
+  < 1 d, > 1 d), realname, ident shape (per character: `r8821` → `a####`;
+  the group's literal glob `r????` is the value, "r + 4 digits" the
+  label), the /24 or /64, server, version; common when at least
+  max(3, two thirds) share it; users sharing every fact are tinted along
+  their edge, those sharing none have a dashed one.
+- **Verdict** (`verdict()`): a live ban first ("Covered by a live G-line:
+  _@203.0.113._ (rubin, 3 d ago)."); else another nick sharing the IP, or
+  the host and the realname ("Likely the same as spamfan (Tue): same IP,
+  same realname, same ident shape; G-lined then by rubin for 'bot
+  group'."); else a weaker overlap said as such ("Nothing conclusive: …
+  shares the realname."); else that nothing in the kept feed shares
+  anything. Today's sightings carry the time, older ones the bare day.
+- **The rest of the card.** "Alert on this…" emits `oper:alert-builder`
+  with the facts and the criteria; nothing listens until step 4, so a
+  toast says the builder is coming. Trace count (X3 only) sends
+  `trace count <criteria>` and shows the number inline. Join & watch is
+  the sidebar's `/join`. Note… keeps a local note in `thelounge.oper`
+  (`OperPrefs.notes`, keyed by the channel name, else the IP, else the
+  account, else the nick; shown at the top of the card). Refresh asks
+  everything again. Raw replies shows every line received. G-line… and
+  Kill… open the existing dialog with the nick and `*@ip` prefilled.
+  Compare side by side asks for a nick and opens a second investigation
+  as a second column (one column with tabs under 40rem of pane, a
+  container query), rows whose values match tinted.
+- Decided along the way: the card asks the bots even when they are not
+  online (the dev rig), and each `401` is the usual "no such nick" line
+  in the window — an unconfigured package should be set to None; the
+  per-user WHO row's host is shown as the IP chip when the two are the
+  same; a `+o` user card without CHECK (not opered) still fills from
+  WHOIS and USERIP; the phone layout opens the channel card by
+  `/investigate` in the scenario because the sidebar row sits under the
+  drawer.
+- Tests: `test/helpers/commonality.ts`, `test/helpers/verdict.ts`,
+  `test/irc/investigate.ts` (a channel and a user investigation through
+  FakeTransport with CHECK/WHO/STATS replies and O3/ChanServ/AuthServ
+  NOTICE lines from x3-services.md, the burst and the 2 s pacing under
+  sinon's clock, gtrace only on an empty list, refresh). Browser:
+  `tools/scenarios/oper-tools.mjs` opens the channel card from the
+  sidebar row's menu with three helpers from the rig's address (the
+  common facts: not authed, the /24, the server), the stacked user card
+  from a nick in it, the user card from the nick menu (the facts grid,
+  "seen before" finding the helper's own connect notice, the verdict),
+  and Compare with the matching rows tinted — desktop and phone.
+
 ## Revised plan (rubin and Claude, 2026-10-10)
 
 The phase-1 panel was tried on AfterNET and found busy and overwhelming:
