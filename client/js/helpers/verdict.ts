@@ -341,18 +341,41 @@ function fateOf(feed: LoggedNotice[], who: Identity): string | undefined {
 }
 
 /**
+ * Whether a feed entry under the user's own nick is the user themself —
+ * their own connect, quit or auth line — rather than an earlier session of
+ * the nick from somewhere else: it is them unless the entry's IP (or,
+ * without one, its host) is known and differs.
+ */
+function isThemself(id: Identity, user: Identity): boolean {
+	if (id.ip && user.ip) {
+		return same(id.ip, user.ip);
+	}
+
+	if (id.host && user.host) {
+		return same(id.host, user.host);
+	}
+
+	return true;
+}
+
+/**
  * Everyone in the kept feed sharing `user`'s IP, host, realname or
  * account, grouped by nick, newest first, each with what matched and what
- * became of them. The user's own current nick is included: its own
- * connect line is a sighting too.
+ * became of them. The user's own lines — their nick (by the network's
+ * casemapping when `sameNick` is given) from their own IP or host — are
+ * not sightings: a previous session of the same nick from elsewhere is.
  */
-export function seenBefore(feed: LoggedNotice[], user: Identity): SeenEntry[] {
+export function seenBefore(
+	feed: LoggedNotice[],
+	user: Identity,
+	sameNick: (a: string, b: string) => boolean = (a, b) => a.toLowerCase() === b.toLowerCase()
+): SeenEntry[] {
 	const groups = new Map<string, SeenEntry>();
 
 	for (const entry of feed) {
 		const id = identityOf(entry);
 
-		if (!id) {
+		if (!id || (sameNick(id.nick, user.nick) && isThemself(id, user))) {
 			continue;
 		}
 
@@ -547,6 +570,18 @@ export function verdict(input: VerdictInput): string {
 		return `Nothing conclusive: ${weak.nick} (${whenText(weak.time, now)}) shares ${what.join(
 			" and "
 		)}${weak.fate ? `, and was ${weak.fate}` : ""}.`;
+	}
+
+	// The nick itself, seen from somewhere else (seenBefore keeps that; the
+	// user's own lines it leaves out): said as such, never as "the same as".
+	const elsewhere = input.seen[0];
+
+	if (elsewhere) {
+		const where = elsewhere.ip ?? elsewhere.host ?? "another address";
+		return `Nothing conclusive: the nick was seen from ${where} (${whenText(
+			elsewhere.time,
+			now
+		)})${elsewhere.fate ? `, and was ${elsewhere.fate}` : ""}.`;
 	}
 
 	return "No bans cover them and nothing in the kept feed shares their IP, host or realname.";

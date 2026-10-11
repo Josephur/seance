@@ -12,6 +12,7 @@
 import type {ServicesConfig} from "../../../shared/types/network";
 import type {IrcClient} from "./client";
 import type {IrcMessage} from "./message";
+import {sendQuiet} from "./quiet";
 import {request} from "./request";
 import {servicesProfileFor} from "./services/index";
 import {X3_REALNAMES} from "./services/x3";
@@ -176,6 +177,20 @@ interface ReplyWatcher<T> {
 	matcher: (text: string, msg: IrcMessage) => T | undefined;
 	resolve: (answer: ServiceAnswer<T>) => void;
 	timer: ReturnType<typeof setTimeout>;
+	/** A line this watcher accepts is consumed: shown in no window. */
+	quiet: boolean;
+	/** Set by a collector's matcher when it kept the line without settling. */
+	took?: boolean;
+}
+
+export interface AwaitOptions {
+	timeoutMs?: number;
+	/**
+	 * Consume the accepted NOTICE rather than show it. The ban path leaves
+	 * it shown (O3's words are the confirmation); a lookup whose answer a
+	 * card or form renders itself takes it quietly.
+	 */
+	quiet?: boolean;
 }
 
 const watchers = new WeakMap<IrcClient, ReplyWatcher<unknown>[]>();
@@ -211,15 +226,18 @@ function settle<T>(
  * that it accepts (formatting stripped); with `missing` when the server
  * answers `401` for that nick instead (the bot is not online); with
  * `timeout` after `timeoutMs`; with `closed` at once when the network is
- * down. The notice is still shown where it would have been: the oper sees
- * the bot's words too.
+ * down. The notice is still shown where it would have been unless
+ * `quiet`: the oper sees the bot's words too.
  */
 export function awaitServiceReply<T>(
 	client: IrcClient,
 	bot: string,
 	matcher: (text: string, msg: IrcMessage) => T | undefined,
-	timeoutMs = SERVICE_REPLY_TIMEOUT_MS
+	options: number | AwaitOptions = {}
 ): Promise<ServiceAnswer<T>> {
+	const opts: AwaitOptions = typeof options === "number" ? {timeoutMs: options} : options;
+	const timeoutMs = opts.timeoutMs ?? SERVICE_REPLY_TIMEOUT_MS;
+
 	return new Promise((resolve) => {
 		if (!client.isWelcomed) {
 			resolve({kind: "closed"});
@@ -232,6 +250,7 @@ export function awaitServiceReply<T>(
 			matcher,
 			resolve,
 			timer: setTimeout(() => settle(list, watcher, {kind: "timeout"}), timeoutMs),
+			quiet: opts.quiet ?? false,
 		};
 		list.push(watcher as ReplyWatcher<unknown>);
 	});
@@ -240,13 +259,17 @@ export function awaitServiceReply<T>(
 /**
  * Called from `IrcClient.handleMessage` for every live line: hands a bot's
  * NOTICE, or the server's `401` about it, to the watcher waiting for it.
- * Never swallows the line.
+ * Returns true when a quiet watcher consumed the line — the handlers then
+ * never see it, so it shows in no window; the card or form that asked
+ * renders the answer (its Raw replies keep the words). A line nobody is
+ * waiting for, or that a watcher accepted without `quiet`, is shown as
+ * usual; the `401` is always shown.
  */
-export function noteServiceReply(client: IrcClient, msg: IrcMessage): void {
+export function noteServiceReply(client: IrcClient, msg: IrcMessage): boolean {
 	const list = watchers.get(client);
 
 	if (!list || list.length === 0 || client.replaying) {
-		return;
+		return false;
 	}
 
 	const fromServer = !msg.source || msg.source.user === undefined;
@@ -260,32 +283,39 @@ export function noteServiceReply(client: IrcClient, msg: IrcMessage): void {
 			}
 		}
 
-		return;
+		return false;
 	}
 
 	if (msg.command !== "NOTICE" || fromServer) {
-		return;
+		return false;
 	}
 
 	const from = msg.source?.name ?? "";
 
 	if (!from || !client.isSelf(msg.params[0] ?? "")) {
-		return;
+		return false;
 	}
 
 	const text = stripFormatting(msg.params[msg.params.length - 1] ?? "");
+	let consumed = false;
 
 	for (const watcher of [...list]) {
 		if (!client.namesEqual(watcher.bot, from)) {
 			continue;
 		}
 
+		watcher.took = false;
 		const value = watcher.matcher(text, msg);
 
 		if (value !== undefined) {
 			settle(list, watcher, {kind: "reply", value});
+			consumed ||= watcher.quiet;
+		} else if (watcher.took) {
+			consumed ||= watcher.quiet;
 		}
 	}
+
+	return consumed;
 }
 
 /** How long a multi-line bot reply may stay silent before it is taken as complete. */
@@ -312,7 +342,9 @@ export interface CollectOptions {
  * {@link SERVICE_QUIET_MS} of silence — several of those replies have no
  * footer. Resolves like {@link awaitServiceReply}: `reply` with the lines
  * (formatting stripped), `missing` on a 401 for the bot, `timeout` when
- * nothing started, `closed` when the network is down.
+ * nothing started, `closed` when the network is down. Always quiet: a
+ * line taken shows in no window (the asker renders the answer), a line
+ * skipped shows as usual.
  */
 export function collectServiceReply(
 	client: IrcClient,
@@ -344,6 +376,7 @@ export function collectServiceReply(
 					return lines; // the caller settles with it
 				}
 
+				watcher.took = true;
 				quiet = setTimeout(
 					() => settle(list, watcher, {kind: "reply", value: lines}),
 					opts.quietMs ?? SERVICE_QUIET_MS
@@ -363,6 +396,7 @@ export function collectServiceReply(
 					),
 				opts.timeoutMs ?? SERVICE_REPLY_TIMEOUT_MS
 			),
+			quiet: true,
 		};
 		list.push(watcher as ReplyWatcher<unknown>);
 	});
@@ -392,9 +426,10 @@ export interface ServicesBanOutcome {
 /**
  * Ask the oper service for a G-line or shun and wait for its verdict in
  * its own words. Only for a package whose profile we have and a network
- * with an oper service named; the line goes out raw (a PRIVMSG to the
- * bot), and its echo opens the bot's query window like any `/msg` would.
- * A `401` for the bot is `refused` with "O3 is not online".
+ * with an oper service named; the line goes out as a quiet PRIVMSG to the
+ * bot (quiet.ts: its echo opens no query window), and the bot's reply is
+ * shown where a notice lands — it is the confirmation. A `401` for the
+ * bot is `refused` with "O3 is not online".
  */
 export async function servicesBan(
 	client: IrcClient,
@@ -410,7 +445,7 @@ export async function servicesBan(
 	const bot = services.bots.oper;
 	const reply = awaitServiceReply(client, bot, (text) => profile.parseBanReply(text));
 
-	if (!client.send(profile.banCommand(bot, ban))) {
+	if (!sendQuiet(client, profile.banCommand(bot, ban))) {
 		resetServiceReplies(client);
 		return {outcome: "closed"};
 	}

@@ -7,10 +7,12 @@ import {useNoticeLogBackend, type LoggedNotice} from "../../client/js/irc/notice
 import {
 	awaitServiceReply,
 	checkServices,
+	collectServiceReply,
 	describeServiceCheck,
 	SERVICE_REPLY_TIMEOUT_MS,
 	servicesBan,
 } from "../../client/js/irc/services";
+import {sendQuiet, takeQuietLabel} from "../../client/js/irc/quiet";
 import {parseBanReply, X3_DEFAULTS} from "../../client/js/irc/services/x3";
 import type {Transport} from "../../client/js/irc/types";
 import type {TransportEvent, TransportState} from "../../client/js/irc/transport";
@@ -326,7 +328,10 @@ describe("services support: a bot's reply (irc/services.ts awaitServiceReply)", 
 			seconds: 3600,
 			reason: "spamming",
 		});
-		expect(transport.sent).to.deep.equal(["PRIVMSG O3 :gline *@1.2.3.4 1h spamming"]);
+		// Quiet (quiet.ts): labeled, so the PRIVMSG's echo opens no window.
+		expect(transport.sent).to.deep.equal([
+			"@label=svc1 PRIVMSG O3 :gline *@1.2.3.4 1h spamming",
+		]);
 		transport.line(":O3!O3@services.test NOTICE opr :Invalid G-line '*@1.2.3.4'.");
 		expect(await ban).to.deep.equal({
 			outcome: "refused",
@@ -350,6 +355,124 @@ describe("services support: a bot's reply (irc/services.ts awaitServiceReply)", 
 			await servicesBan(client, {type: "shun", mask: "x", seconds: 1, reason: "r"})
 		).to.deep.equal({outcome: "closed", text: "No oper service is set up for this network."});
 		expect(transport.sent).to.have.length(3);
+	});
+});
+
+describe("services support: quiet lookups (irc/quiet.ts)", function () {
+	beforeEach(installSpy);
+	afterEach(removeSpy);
+
+	it("drops the echo of a labeled lookup: no msg, no query window for the bot", async function () {
+		const {client, transport} = setup();
+		const windows = () => client.channels.map((c) => c.name);
+
+		expect(sendQuiet(client, "PRIVMSG O3 :whois alice")).to.equal(true);
+		expect(transport.sent).to.deep.equal(["@label=svc1 PRIVMSG O3 :whois alice"]);
+
+		// The echo, labeled as nefarious2 relays it; also an ACK and a batch.
+		transport.line("@label=svc1 :opr!opr@host PRIVMSG O3 :whois alice");
+		sendQuiet(client, "PRIVMSG O3 :whois bob");
+		transport.line("@label=svc2 ACK");
+		sendQuiet(client, "PRIVMSG O3 :whois carol");
+		transport.lines(
+			"@label=svc3 :irc.test BATCH +q labeled-response",
+			"@batch=q :opr!opr@host PRIVMSG O3 :whois carol",
+			":irc.test BATCH -q"
+		);
+		await flush();
+
+		expect(
+			dispatch
+				.getCalls()
+				.filter((c) => c.args[0] === "msg")
+				.map((c) => JSON.stringify(c.args[1]))
+		).to.deep.equal([]);
+		expect(windows()).to.deep.equal(["irc.test", "#seance"]);
+
+		// An unlabeled self message is still what it always was: a /msg.
+		transport.line(":opr!opr@host PRIVMSG O3 :hello");
+		expect(windows()).to.deep.equal(["irc.test", "#seance", "O3"]);
+
+		// A label the server never echoes (a 401 instead) is forgotten and the
+		// numeric is shown: the oper should know the bot is not there.
+		sendQuiet(client, "PRIVMSG Nobody :whois x");
+		transport.line("@label=svc4 :irc.test 401 opr Nobody :No such nick");
+		expect(
+			dispatch
+				.getCalls()
+				.filter((c) => c.args[0] === "msg")
+				.map((c) => (c.args[1] as {msg: SharedMsg}).msg.type)
+		).to.include("error");
+		expect(takeQuietLabel(client, "svc4")).to.equal(false);
+
+		// Without labeled-response the line goes out plain (and its echo shows).
+		const plain = new FakeTransport();
+		const other = new IrcClient({
+			host: "irc.test",
+			port: 8443,
+			tls: true,
+			nick: "opr",
+			join: "",
+			sasl: "",
+			saslAccount: "",
+			saslPassword: "",
+			ids: new IdAllocator(),
+			transportFactory: () => plain,
+			highlights: () => ({keywords: [], exceptions: []}),
+		});
+		other.connect();
+		plain.open();
+		plain.lines(
+			":irc.test CAP * LS :batch",
+			":irc.test CAP opr ACK :batch",
+			":irc.test 001 opr :hi"
+		);
+		plain.sent = [];
+		sendQuiet(other, "PRIVMSG O3 :whois alice");
+		expect(plain.sent).to.deep.equal(["PRIVMSG O3 :whois alice"]);
+	});
+
+	it("shows no NOTICE a collector consumed, and still shows one nobody waits for", async function () {
+		const {client, transport} = setup();
+		const shown = () =>
+			dispatch
+				.getCalls()
+				.filter((c) => c.args[0] === "msg")
+				.map((c) => (c.args[1] as {msg: SharedMsg}).msg.text);
+
+		const reply = collectServiceReply(client, "O3", {
+			accept: (text) =>
+				/^Nick\s*:/.test(text) ? "start" : /^Server\s*:/.test(text) ? "end" : "take",
+		});
+		transport.lines(
+			":O3!O3@services.test NOTICE opr :Nick         : alice",
+			":O3!O3@services.test NOTICE opr :Host         : a@h",
+			":O3!O3@services.test NOTICE opr :Server       : leaf1"
+		);
+		const answer = await reply;
+		expect(answer.kind).to.equal("reply");
+		expect(shown()).to.deep.equal([]);
+		expect(client.channels.map((c) => c.name)).to.deep.equal(["irc.test", "#seance"]);
+
+		// Nobody is waiting now: the bot's next notice is shown as any notice is.
+		transport.line(":O3!O3@services.test NOTICE opr :Something unasked for.");
+		expect(shown()).to.deep.equal(["Something unasked for."]);
+
+		// A quiet awaitServiceReply consumes the line it accepts and no other.
+		const one = awaitServiceReply(
+			client,
+			"O3",
+			(text) => (/^Added/.test(text) ? text : undefined),
+			{
+				quiet: true,
+			}
+		);
+		transport.lines(
+			":O3!O3@services.test NOTICE opr :Not the answer.",
+			":O3!O3@services.test NOTICE opr :Added alert named x."
+		);
+		expect(await one).to.deep.equal({kind: "reply", value: "Added alert named x."});
+		expect(shown()).to.deep.equal(["Something unasked for.", "Not the answer."]);
 	});
 });
 

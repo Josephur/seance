@@ -63,6 +63,7 @@ import {getNote} from "./operprefs";
 import {parseCheck} from "./profiles/nefarious/check";
 import {type LiveBan, parseBanRow} from "./profiles/nefarious/stats";
 import {isIp, parseCtime} from "./profiles/report";
+import {sendQuiet} from "./quiet";
 import {canRequest, request, type ReplyUnit} from "./request";
 import {collectServiceReply, type ServiceAnswer} from "./services";
 import {servicesProfileFor} from "./services/index";
@@ -490,7 +491,8 @@ export class Investigation {
 					accept: (text) => lookup.accept(text),
 				});
 
-				if (!this.client.send(lookup.command(bot))) {
+				// Quiet (quiet.ts): the PRIVMSG's echo opens no window for the bot.
+				if (!sendQuiet(this.client, lookup.command(bot))) {
 					apply(undefined, {kind: "closed"});
 					return;
 				}
@@ -1422,7 +1424,7 @@ export class Investigation {
 		const near = bansNear(this.liveBans, feed, identity, now);
 		model.liveBans = near.live;
 		model.recentBans = near.recent;
-		model.seen = seenBefore(feed, identity);
+		model.seen = seenBefore(feed, identity, (a, b) => this.client.namesEqual(a, b));
 		model.verdict = verdict({user: identity, liveBans: near.live, seen: model.seen, now});
 
 		if (this.sources.stats !== "asking" && !this.gtraceAsked) {

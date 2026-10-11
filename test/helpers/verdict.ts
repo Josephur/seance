@@ -191,13 +191,64 @@ describe("the user card's verdict (helpers/verdict.ts)", function () {
 		];
 		const seen = seenBefore(feed, USER);
 
-		expect(seen.map((s) => s.nick)).to.deep.equal(["spamfan2", "lurker", "spamfan"]);
-		expect(seen[0].time).to.equal(NOW - 4 * MIN);
-		expect(seen[0].matched).to.deep.equal(["ip", "host", "realname"]);
-		expect(seen[1].matched).to.deep.equal(["realname"]);
-		expect(seen[2].matched).to.deep.equal(["ip", "host", "realname"]);
-		expect(seen[2].fate).to.equal("G-lined by rubin for 'bot group'");
-		expect(seen[0].fate).to.equal("G-lined by rubin for 'bot group'");
+		// spamfan2's own connect and exit lines are not sightings of someone else.
+		expect(seen.map((s) => s.nick)).to.deep.equal(["lurker", "spamfan"]);
+		expect(seen[0].time).to.equal(NOW - 200 * MIN);
+		expect(seen[0].matched).to.deep.equal(["realname"]);
+		expect(seen[1].matched).to.deep.equal(["ip", "host", "realname"]);
+		expect(seen[1].fate).to.equal("G-lined by rubin for 'bot group'");
+	});
+
+	it("leaves the user's own lines out, but keeps their nick's earlier session from elsewhere", function () {
+		const own = {
+			user: "r8821",
+			host: "r8821@203-0-113-7.example.net",
+			ip: "203.0.113.7",
+			realname: "irc client",
+		};
+		const feed: LoggedNotice[] = [
+			// The same nick a day ago from another address: someone else had it.
+			snotice(
+				"client.connect",
+				{
+					nick: "SpamFan2",
+					user: "x",
+					host: "x@other.example.org",
+					ip: "198.51.100.9",
+					realname: "irc client",
+				},
+				-24 * 60
+			),
+			snotice("client.connect", {nick: "spamfan2", ...own}, -5),
+			snoop("auth", {nick: "spamfan2", account: "spammy"}, -4),
+			snotice("client.exit", {nick: "SPAMFAN2", ...own, reason: "bye"}, -3),
+		];
+		const user: Identity = {...USER, account: "spammy"};
+		const seen = seenBefore(feed, user);
+
+		expect(seen.map((s) => `${s.nick}@${s.ip}`)).to.deep.equal(["SpamFan2@198.51.100.9"]);
+		expect(seen[0].matched).to.deep.equal(["realname"]);
+
+		// The network's casemapping decides what "the same nick" is.
+		const rfc = seenBefore(
+			feed,
+			{...user, nick: "spamfan2"},
+			(a, b) => a.toLowerCase().replace(/\[/g, "{") === b.toLowerCase().replace(/\[/g, "{")
+		);
+		expect(rfc.map((s) => s.nick)).to.deep.equal(["SpamFan2"]);
+
+		// And the verdict never names the user as their own match.
+		expect(verdict({user, liveBans: [], seen, now: NOW})).to.equal(
+			"Nothing conclusive: the nick was seen from 198.51.100.9 (Fri)."
+		);
+		expect(
+			verdict({
+				user,
+				liveBans: [],
+				seen: [{nick: "spamfan2", time: NOW - MIN, matched: ["ip", "host"]}],
+				now: NOW,
+			})
+		).to.equal("Nothing conclusive: the nick was seen from another address (20:59).");
 	});
 
 	it("says the time today and the bare day for older sightings", function () {

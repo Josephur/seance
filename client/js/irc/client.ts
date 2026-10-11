@@ -98,6 +98,7 @@ import {
 } from "./sts";
 import {channelOrder, get as getSavedNetwork, NetworkCursor, setCursor} from "./saved-networks";
 import {noteServiceReply, resetServiceReplies} from "./services";
+import {dropQuietLine} from "./quiet";
 import {ReconnectOptions, TransportEvent, TransportOptions, WsTransport} from "./transport";
 import type {ConnectOptions, InputOptions, IrcClientState, Transport} from "./types";
 import {
@@ -1966,9 +1967,18 @@ export class IrcClient {
 			return;
 		}
 
+		// The echo of a quiet line of ours — a lookup sent to a services bot
+		// (quiet.ts) — opens no window and shows nowhere.
+		if (dropQuietLine(this, msg)) {
+			return;
+		}
+
 		// A services bot answering a command we sent it, or the server
-		// saying there is no such bot (services.ts). The line is still shown.
-		noteServiceReply(this, msg);
+		// saying there is no such bot (services.ts). A line a quiet watcher
+		// consumed is shown in no window — the asker renders the answer.
+		if (noteServiceReply(this, msg)) {
+			return;
+		}
 
 		// Our own JOIN (live, not replayed) is what triggers a history load;
 		// the reference for a catch-up is the newest message before the JOIN.

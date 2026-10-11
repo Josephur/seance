@@ -37,6 +37,7 @@ import type {IrcClient} from "./client";
 import {isErrorNumeric} from "./errors";
 import {openBatchesOf, type BatchHandler, type OpenBatch} from "./handlers/batch";
 import type {IrcMessage} from "./message";
+import {takeQuietLabel} from "./quiet";
 import {tagPrefix} from "./wire";
 
 export const LABELED_RESPONSE_CAP = "labeled-response";
@@ -240,6 +241,11 @@ export const labeledBatch: BatchHandler = (client, batch) => {
 	if (entry) {
 		entry.lines.push(...batch.messages);
 		finish(client, entry, "batch");
+		return;
+	}
+
+	// The echo of a quiet line (quiet.ts) wrapped in a batch: dropped whole.
+	if (takeQuietLabel(client, batch.tags.get("label"))) {
 		return;
 	}
 
