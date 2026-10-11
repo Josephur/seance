@@ -208,6 +208,21 @@ html {
 			z-index: 2000;
 			pointer-events: none;
 			background-color: var(--canvas-bg-color, var(--body-bg-color));
+			animation: status-bar-tint-lower 0s 3s forwards;
+		}
+
+		/* iOS reads the strip's colour at launch and not again while the app
+		 * is open (measured on iOS 27), while a theme can go on changing
+		 * --canvas-bg-color: ps's sky does every minute. The strip then
+		 * stood out as an 8px band of today's colour between a status bar
+		 * of the launch's and the header. So once launch is past it goes
+		 * under the page (#viewport is a stacking context of its own), still
+		 * painted, and the header meets the status bar. The delay survives
+		 * reduced motion, which shortens durations only. */
+		@keyframes status-bar-tint-lower {
+			to {
+				z-index: -1;
+			}
 		}
 
 		#sidebar {
