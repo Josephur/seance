@@ -438,6 +438,59 @@ What a contribution needs:
 
 **Not yet**: see "Revised plan" below, which replaces phases 2 and 3.
 
+**Step 1 of the revised plan (2026-10-10): the panel restructured.** The
+Notices and Modes tabs are gone; the panel is Opers, Alerts and Me, and the
+shield opens Opers (old `/notices` and `/modes` links land on Alerts and
+Me).
+
+- **Opers** (`Oper/OperActivity.vue`, `helpers/operActivity.ts`): the
+  notice log rolled up. A period (today, 24 h, since reload) and a By oper
+  / By kind switch (remembered in `thelounge.oper.activityView`). By oper:
+  one row per actor who did anything, busiest first, `alice · 13 actions · 21:14`, an outlying total amber (over three times the others' median and
+  at least five); open for `12 G-lines 21:02 – 21:14`; open again for the
+  notices. The servers' own actions (a server's kill, a ban hit, a
+  temporary shun) are one "servers" row; a services row exists in the code
+  (`isServiceActor`) but nobody is a service until step 2's setting. By
+  kind: G-lines, kills, channel modes via OPMODE and services, opers coming
+  up, jupes, server links and splits, rehashes and restarts, WALLOPS, then
+  a closed "Everything else" with the plumbing (connects, bursts, log
+  lines, …), each opening straight to its timeline with who did each one.
+  The badge on every timeline row is the route menu (below).
+- **Alerts** (`Oper/OperAlerts.vue`, `helpers/operAlerts.ts`,
+  `irc/profiles/nefarious/alerts.ts`): twelve plain-words lines in two
+  sections, each a Here / Network / Off control over its kinds (kept in
+  step; the control shows the first kind's route). Here asks how long —
+  today, 3 days, a week, until I change it — and a temporary choice is
+  `OperPrefs.temporary` (`irc/operprefs.ts`: `routeFor` honours it until
+  it lapses, then puts back what was stored before; lapsed entries are
+  swept on the tab's mount and on the way past). The pressed button turns
+  amber with "2 more days" beside it. Off is quiet on the wire too: once
+  every kind on a server bit is off the bit is cleared, and a kind back on
+  sets it (`reconcileMask`, only the changed kinds' bits, never a dead or
+  debug-only one). "Everything else · N kinds" folds the twenty kinds
+  nobody cares about, one per line; "Raw mask and presets" folds the old
+  readout, the presets and the bits as plain checkboxes (dead and debug
+  bits hidden unless set). A profile without `alertLines` gets one line
+  per kind under the fold.
+- **Me** (`Oper/OperMe.vue`): `Global operator · +owsgx · nefarious2`,
+  the privileges as chips in a fold (open up to 12), the user modes as a
+  grid with the explanation as the tooltip and read out to a screen reader.
+- **The badge opens the route menu** (`Oper/NoticeBadge.vue`,
+  `helpers/operMenu.ts` `noticeRouteItems`): the kind by name, Show here
+  for today / 3 days / a week / until I change it, Show in the network
+  window, Show nowhere (the current one checked), and "Stop receiving
+  server events notices" (clears the bit) or "Stop receiving WALLOPS (-w)".
+  Every change goes through `applyNoticeRoute` and the `oper:routes`
+  eventbus event, which the Alerts tab re-reads on.
+- Tests: `test/helpers/operActivity.ts`, `test/helpers/operAlerts.ts`,
+  `test/irc/oper.ts` (temporary routes). The browser scenario covers the
+  three tabs at both widths and the badge → menu → Alerts round trip.
+- Decided along the way: the "hot" count needs at least one other oper to
+  compare against (a lone oper is never amber); `reconcileMask` touches
+  only the bits of the kinds just changed, so a line about bans never
+  switches CONNEXIT on; a temporary route's revert point is the permanent
+  choice at the time it was made, and a second temporary keeps the first's.
+
 ## Revised plan (rubin and Claude, 2026-10-10)
 
 The phase-1 panel was tried on AfterNET and found busy and overwhelming:

@@ -148,7 +148,7 @@ With `echo-message` the server's echo is the copy of a sent message that goes in
 
 - `oper:state {network, state: SharedOperState}` — being an oper on that network: `level` (from our own user modes, whoever set them — no 381 needed), `privs`/`privsKnown` (PRIVS), `snomask` (008), `umodes`, `profile` (the server family, `profiles/`), `features` (GET). Dispatched on every change; the store keeps it as `network.oper` (`socket-events/oper.ts`). The oper button, the oper panel and the oper menu entries read it.
 - `oper:reply {network, id, lines[], outcome}` — the answer to an `oper:request` emit: every line of the labeled reply, raw, in order (`irc/request.ts`); `helpers/operRequest.ts` turns the pair into a promise and parses the lines.
-- `oper:notices {network, entries[]}` — the notice log (`irc/noticelog.ts`), answering `oper:notices:get`.
+- `oper:notices {network, entries[]}` — the notice log (`irc/noticelog.ts`), answering `oper:notices:get`; the oper panel's Opers tab rolls it up (`helpers/operActivity.ts`).
 - Server notices and WALLOPS are `msg` events of type `snotice` / `wallops` carrying `snotice{kind, category, fields, origin?, route}`. Both are stored in the lobby: `route: "active"` adds `showInActive` (shown in the active window), `route: "network"` does not; neither raises unread. The notice log brings them back as one `more` page for the lobby on the next page load.
 
 ## 2. Client→server emits the IrcClient must `handle()`
