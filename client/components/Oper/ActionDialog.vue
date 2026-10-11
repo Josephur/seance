@@ -72,7 +72,7 @@
 					</p>
 
 					<label v-if="maskCheck.needsForce && !viaServices" class="oper-action-check">
-						<input v-model="force" type="checkbox" :disabled="!canForce" />
+						<input v-model="force" v-switch type="checkbox" :disabled="!canForce" />
 						Force this wide mask
 						<span v-if="!canForce" class="oper-muted"
 							>(needs the WIDE_{{ banType.toUpperCase() }} privilege)</span

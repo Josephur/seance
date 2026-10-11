@@ -191,6 +191,7 @@
 				>
 					<label class="oper-bit-head">
 						<input
+							v-switch
 							type="checkbox"
 							:checked="(draft & bit.bit) !== 0"
 							:disabled="unavailable(bit) && (draft & bit.bit) === 0"

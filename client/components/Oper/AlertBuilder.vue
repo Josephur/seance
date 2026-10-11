@@ -89,6 +89,7 @@
 							>
 								<input
 									v-model="row.on"
+									v-switch
 									class="oper-alert-switch"
 									type="checkbox"
 									role="switch"

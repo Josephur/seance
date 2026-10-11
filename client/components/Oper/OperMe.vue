@@ -29,6 +29,7 @@
 			<li v-for="m in modes" :key="m.letter" :class="{unavailable: !allowed(m)}">
 				<label :title="m.description">
 					<input
+						v-switch
 						type="checkbox"
 						:checked="has(m.letter)"
 						:disabled="!allowed(m) && !has(m.letter)"
