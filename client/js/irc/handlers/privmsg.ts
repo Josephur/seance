@@ -11,6 +11,7 @@ import type {IrcMessage} from "../message";
 import {settleEcho} from "../pending";
 import {isRoutineReplayNotice} from "../persistence";
 import {privilegesModified} from "../oper";
+import {noteServicesLine} from "../servicesfeed";
 import {handleServerNotice, handleWallops} from "../snotice";
 import {EDIT_TAG, REPLY_TAG, trailingLine} from "../wire";
 import type {Handler} from "../types";
@@ -298,7 +299,12 @@ function handleCtcpRequest(
 	);
 }
 
-const privmsg: Handler = (client, msg) => handleMessage(client, msg, MessageType.MESSAGE);
+const privmsg: Handler = (client, msg) => {
+	// A services bot's line in its snoop or report channel is kept for the
+	// oper panel (../servicesfeed.ts); the channel still shows it as is.
+	noteServicesLine(client, msg);
+	handleMessage(client, msg, MessageType.MESSAGE);
+};
 
 const notice: Handler = (client, msg) => {
 	// "Session resumed. Replayed N message(s)…" closes the server-driven

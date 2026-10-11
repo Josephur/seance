@@ -20,6 +20,7 @@ import {createHighlightTester} from "../highlight";
 import {ChanState, ChanType} from "../../../shared/types/chan";
 import {MessageType, SharedMsg, TypingState} from "../../../shared/types/msg";
 import type {
+	ServicesConfig,
 	SharedNetwork,
 	SharedNetworkStatus,
 	SharedServerOptions,
@@ -96,6 +97,7 @@ import {
 	upgradeOptions,
 } from "./sts";
 import {channelOrder, get as getSavedNetwork, NetworkCursor, setCursor} from "./saved-networks";
+import {noteServiceReply, resetServiceReplies} from "./services";
 import {ReconnectOptions, TransportEvent, TransportOptions, WsTransport} from "./transport";
 import type {ConnectOptions, InputOptions, IrcClientState, Transport} from "./types";
 import {
@@ -251,6 +253,12 @@ export class IrcClient {
 	serverVersion: string | undefined;
 	/** The name of the server we are connected to (004). */
 	serverName: string | undefined;
+	/**
+	 * The network's services, as the oper set them up (services.ts,
+	 * servicesfeed.ts): read from the saved network, changed by the edit
+	 * form through {@link setServices}. Undefined: none configured.
+	 */
+	services: ServicesConfig | undefined;
 	/** Query windows brought back from the log, filled on the first announce. */
 	private restoredQueries: Channel[] = [];
 	caps = new CapNegotiator(SEANCE_CAPS);
@@ -341,6 +349,7 @@ export class IrcClient {
 		this.unsubscribeTransport = this.transport.on((ev) => this.onTransportEvent(ev));
 
 		this.cursor = savedCursor(this.uuid);
+		this.services = getSavedNetwork(this.uuid)?.services;
 		this.lobby = new Channel(this.ids.chanId(), this.networkName, ChanType.LOBBY, (s) =>
 			this.casefold(s)
 		);
@@ -473,7 +482,13 @@ export class IrcClient {
 			serverOptions: this.serverOptions,
 			status: this.status,
 			channels: this.channels.map((chan) => chan.snapshot()),
+			...(this.services ? {services: this.services} : {}),
 		};
+	}
+
+	/** The services setting changed (`network:edit`); takes effect at once. */
+	setServices(services: ServicesConfig | undefined): void {
+		this.services = services;
 	}
 
 	/** Fields `network:info` / the edit form expect, minus `channels`. */
@@ -1081,6 +1096,7 @@ export class IrcClient {
 		this.queryLog.flush();
 		this.noticeLog.flush();
 		resetRequests(this);
+		resetServiceReplies(this);
 		resetOper(this);
 		this.serverReplay = false;
 		this.clearPendingEdits();
@@ -1950,6 +1966,10 @@ export class IrcClient {
 			return;
 		}
 
+		// A services bot answering a command we sent it, or the server
+		// saying there is no such bot (services.ts). The line is still shown.
+		noteServiceReply(this, msg);
+
 		// Our own JOIN (live, not replayed) is what triggers a history load;
 		// the reference for a catch-up is the newest message before the JOIN.
 		const selfJoin =
@@ -2266,7 +2286,11 @@ export class IrcClient {
 	 * goes in ahead of them.
 	 */
 	private async restoreNotices(): Promise<void> {
-		const entries = await this.noticeLog.load();
+		// The services feed's lines (servicesfeed.ts) were channel messages,
+		// never lobby lines: they come back for the Opers rollup only.
+		const entries = (await this.noticeLog.load()).filter(
+			(entry) => entry.type === "snotice" || entry.type === "wallops"
+		);
 
 		if (entries.length === 0) {
 			return;

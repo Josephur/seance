@@ -28,11 +28,15 @@ export const SAVE_DELAY_MS = 1000;
 export interface LoggedNotice {
 	/** Epoch ms (the server sends no time; it is ours). */
 	time: number;
-	/** `snotice` for a server notice, `wallops` for the WALLOPS family. */
-	type: "snotice" | "wallops";
+	/**
+	 * `snotice` for a server notice, `wallops` for the WALLOPS family; `snoop`
+	 * and `audit` for the services feed (servicesfeed.ts) — kept for the Opers
+	 * rollup only, never put back into the lobby.
+	 */
+	type: "snotice" | "wallops" | "snoop" | "audit";
 	/** The text as shown (a server notice without its `*** Notice -- `). */
 	text: string;
-	/** WALLOPS: who sent it. */
+	/** WALLOPS: who sent it. An audit line: who typed the command. */
 	from?: string;
 	snotice: SnoticeInfo;
 }
