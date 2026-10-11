@@ -33,6 +33,12 @@ export interface OperPrefs {
 	 * written before it existed, which load as if it were empty.
 	 */
 	temporary?: Record<string, TemporaryRoute>;
+	/**
+	 * The oper's own notes from the investigation cards, by what they are
+	 * about: a channel name, an IP, an account (irc/investigate.ts
+	 * `noteKey`). Local to this device, like the rest of the prefs.
+	 */
+	notes?: Record<string, string>;
 }
 
 interface Backend {
@@ -205,6 +211,31 @@ export function setSnomaskPref(uuid: string, snomask: number | undefined): void 
 			delete prefs.snomask;
 		} else {
 			prefs.snomask = snomask;
+		}
+	});
+}
+
+/** The note kept about `key` (a channel, an IP, an account) on this network, or "". */
+export function getNote(uuid: string, key: string): string {
+	return getOperPrefs(uuid).notes?.[key.toLowerCase()] ?? "";
+}
+
+/** Keep (or, blank, drop) the note about `key`. */
+export function setNote(uuid: string, key: string, text: string): void {
+	update(uuid, (prefs) => {
+		const notes = {...(prefs.notes ?? {})};
+		const k = key.toLowerCase();
+
+		if (text.trim() === "") {
+			delete notes[k];
+		} else {
+			notes[k] = text.trim();
+		}
+
+		if (Object.keys(notes).length > 0) {
+			prefs.notes = notes;
+		} else {
+			delete prefs.notes;
 		}
 	});
 }

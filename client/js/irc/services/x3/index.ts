@@ -19,6 +19,7 @@ import type {
 	ServicesProfile,
 	SnoopEvent,
 } from "../types";
+import {x3Lookups} from "./lookups";
 
 type Fields = Record<string, string>;
 
@@ -363,4 +364,5 @@ export const x3: ServicesProfile = {
 	banCommand,
 	parseBanReply,
 	isServiceNick,
+	lookups: x3Lookups,
 };

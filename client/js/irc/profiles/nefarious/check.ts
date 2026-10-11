@@ -1092,6 +1092,133 @@ function humanError(lines: IrcMessage[], target: string): string | undefined {
 	}
 }
 
+// ------------------------------------------------- the card as plain facts
+
+/** One member row of a channel card, as the investigation reads it. */
+export interface CheckMember {
+	nick: string;
+	ident: string;
+	host: string;
+	realname: string;
+	account?: string;
+	/** `@`, `+`, `%`, `<` (delayed), `~` (alias) or "". */
+	status: string;
+	clones?: number;
+	oplevel?: number;
+}
+
+/** A ban row of a channel card. */
+export interface CheckBan {
+	mask: string;
+	by: string;
+	/** Epoch ms, when the ctime parses. */
+	at?: number;
+}
+
+/**
+ * A CHECK reply as the facts it states, for the investigation cards
+ * (irc/investigate.ts): every `Label:: value` (a repeated label's values
+ * joined with a space), the member rows and the ban rows of a channel
+ * card. `error` is the human reading of a refusal; undefined when the
+ * lines are no CHECK reply at all.
+ */
+export interface CheckFacts {
+	type: "user" | "channel" | "server" | "host";
+	target: string;
+	fields: Record<string, string>;
+	members: CheckMember[];
+	bans: CheckBan[];
+	error?: string;
+}
+
+export function parseCheck(lines: IrcMessage[], command = ""): CheckFacts | undefined {
+	const card = readCard(lines);
+
+	if (!card) {
+		const target = commandTarget(command);
+		const error = humanError(lines, target);
+		return error ? {type: "user", target, fields: {}, members: [], bans: [], error} : undefined;
+	}
+
+	const type =
+		(["user", "channel", "server", "host"] as const).find((t) => t === card.type) ?? "user";
+	const facts: CheckFacts = {type, target: card.target, fields: {}, members: [], bans: []};
+	let inBans = false;
+
+	for (const msg of card.body) {
+		if (msg.command === "287") {
+			const m =
+				MEMBER_RE.exec(msg.params[msg.params.length - 1] ?? "") ??
+				MEMBER_LOOSE_RE.exec(msg.params[msg.params.length - 1] ?? "");
+
+			if (m) {
+				const [, oplvl, clones, , status, who, user, where, realname, account] = m;
+				const member: CheckMember = {
+					nick: who,
+					ident: user,
+					host: where,
+					realname,
+					status: status.trim(),
+				};
+
+				if (account) {
+					member.account = account;
+				}
+
+				if (clones.trim()) {
+					member.clones = Number(clones.trim());
+				}
+
+				if (oplvl.trim()) {
+					member.oplevel = Number(oplvl.trim());
+				}
+
+				facts.members.push(member);
+			}
+
+			continue;
+		}
+
+		const body = bodyOf(msg);
+		const ban = /^\[(\d+)\] - (\S+) - Set by (.+), on (.+)$/.exec(body);
+
+		if (ban && inBans) {
+			const at = parseCtime(ban[4]);
+			facts.bans.push(
+				at === undefined ? {mask: ban[2], by: ban[3]} : {mask: ban[2], by: ban[3], at}
+			);
+			continue;
+		}
+
+		const m = LABEL_RE.exec(body);
+
+		if (!m) {
+			continue;
+		}
+
+		const label = m[1].trim();
+		const value = clean(m[2] ?? "");
+
+		if (label === "Bans on channel") {
+			inBans = true;
+			continue;
+		}
+
+		if (label === "Excepts on channel") {
+			inBans = false;
+			continue;
+		}
+
+		if (value === "" || value === "<none>") {
+			continue;
+		}
+
+		facts.fields[label] = facts.fields[label] ? `${facts.fields[label]} ${value}` : value;
+	}
+
+	return facts;
+}
+
 /** The report for a CHECK reply; undefined when the lines are not one. */
 export function checkReport(lines: IrcMessage[], command: string): OperReport | undefined {
 	const card = readCard(lines);

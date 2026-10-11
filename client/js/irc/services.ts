@@ -288,6 +288,86 @@ export function noteServiceReply(client: IrcClient, msg: IrcMessage): void {
 	}
 }
 
+/** How long a multi-line bot reply may stay silent before it is taken as complete. */
+export const SERVICE_QUIET_MS = 1500;
+
+export interface CollectOptions {
+	/**
+	 * What to do with a line from the bot: `start` opens the collection
+	 * (the first line of the answer), `take` keeps a line of an open one,
+	 * `end` keeps it and completes, `skip` ignores it. Before the first
+	 * `start`, `take` counts as `skip`.
+	 */
+	accept: (text: string) => "start" | "take" | "end" | "skip";
+	/** Silence after the last taken line that completes the answer. */
+	quietMs?: number;
+	/** How long to wait for the first line. */
+	timeoutMs?: number;
+}
+
+/**
+ * Collect a multi-line NOTICE answer from `bot` (O3's `whois` and
+ * `chaninfo`, AuthServ's `accountinfo`, ChanServ's `info`): the lines from
+ * the one `accept` says starts it, until the one it says ends it or
+ * {@link SERVICE_QUIET_MS} of silence — several of those replies have no
+ * footer. Resolves like {@link awaitServiceReply}: `reply` with the lines
+ * (formatting stripped), `missing` on a 401 for the bot, `timeout` when
+ * nothing started, `closed` when the network is down.
+ */
+export function collectServiceReply(
+	client: IrcClient,
+	bot: string,
+	opts: CollectOptions
+): Promise<ServiceAnswer<string[]>> {
+	return new Promise((resolve) => {
+		if (!client.isWelcomed) {
+			resolve({kind: "closed"});
+			return;
+		}
+
+		const list = watchersOf(client);
+		const lines: string[] = [];
+		let quiet: ReturnType<typeof setTimeout> | undefined;
+		const watcher: ReplyWatcher<string[]> = {
+			bot,
+			matcher(text) {
+				const verdict = opts.accept(text);
+
+				if (verdict === "skip" || (verdict === "take" && lines.length === 0)) {
+					return undefined;
+				}
+
+				lines.push(text);
+				clearTimeout(quiet);
+
+				if (verdict === "end") {
+					return lines; // the caller settles with it
+				}
+
+				quiet = setTimeout(
+					() => settle(list, watcher, {kind: "reply", value: lines}),
+					opts.quietMs ?? SERVICE_QUIET_MS
+				);
+				return undefined;
+			},
+			resolve(answer) {
+				clearTimeout(quiet);
+				resolve(answer);
+			},
+			timer: setTimeout(
+				() =>
+					settle(
+						list,
+						watcher,
+						lines.length > 0 ? {kind: "reply", value: lines} : {kind: "timeout"}
+					),
+				opts.timeoutMs ?? SERVICE_REPLY_TIMEOUT_MS
+			),
+		};
+		list.push(watcher as ReplyWatcher<unknown>);
+	});
+}
+
 /** The socket closed: whoever was waiting for a bot gets `closed`. */
 export function resetServiceReplies(client: IrcClient): void {
 	const list = watchers.get(client);

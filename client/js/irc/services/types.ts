@@ -63,6 +63,89 @@ export interface ServicesBanRequest {
 	reason: string;
 }
 
+/** One NOTICE answer, line by line: how it starts, ends, and what it says. */
+export interface ServiceLookup<T> {
+	/** Which configured bot answers it. */
+	role: "oper" | "account" | "channel";
+	/** The line to send (a PRIVMSG to the bot). */
+	command(bot: string): string;
+	/** The collector's verdict on a line from the bot (services.ts `collectServiceReply`). */
+	accept(text: string): "start" | "take" | "end" | "skip";
+	/** The collected lines as a value; undefined when they say "no such thing". */
+	parse(lines: string[]): T | undefined;
+}
+
+/** A channel as the oper service knows it (O3 `chaninfo`). */
+export interface ServiceChannelInfo {
+	/** Epoch ms the channel was created, when the bot says. */
+	createdAt?: number;
+	modes?: string;
+	topic?: string;
+	topicBy?: string;
+	bans: {mask: string; by: string; at?: number}[];
+}
+
+/** A channel's registration (ChanServ `info`). */
+export interface ServiceRegistration {
+	registered: boolean;
+	/** `3w, 2d` — the bot's own interval text since registration. */
+	since?: string;
+	owner?: string;
+}
+
+/** A user as the oper service knows it (O3 `whois`). */
+export interface ServiceUserInfo {
+	nick: string;
+	ident?: string;
+	host?: string;
+	ip?: string;
+	country?: string;
+	city?: string;
+	version?: string;
+	marks?: string[];
+	modes?: string;
+	realname?: string;
+	server?: string;
+	account?: string;
+	/** `1h, 3m` — the bot's interval text for the nick's age. */
+	nickAge?: string;
+	channels?: string[];
+}
+
+/** An account as the account service knows it (AuthServ `accountinfo`). */
+export interface ServiceAccountInfo {
+	account: string;
+	registeredOn?: string;
+	lastSeen?: string;
+	lastQuitHostmask?: string;
+	hostmasks: string[];
+	channels?: string;
+}
+
+/** One ban the oper service lists (`stats glines`, `gtrace`). */
+export interface ServiceBan {
+	mask: string;
+	issuedBy?: string;
+	/** The bot's interval text (`3d, 2h`). */
+	issuedAgo?: string;
+	/** `never`, or the bot's interval text. */
+	expiresIn?: string;
+	reason: string;
+}
+
+export interface ServicesLookups {
+	channel(chan: string): ServiceLookup<ServiceChannelInfo>;
+	registration(chan: string): ServiceLookup<ServiceRegistration>;
+	user(nick: string): ServiceLookup<ServiceUserInfo>;
+	account(account: string): ServiceLookup<ServiceAccountInfo>;
+	/** The bans whose mask covers `host` (a `*@host` or `ident@host` subset search). */
+	bansCovering(host: string): ServiceLookup<ServiceBan[]>;
+	/** How many users match the alert criteria right now. */
+	traceCount(criteria: string): ServiceLookup<number>;
+	/** The `ADDALERT`/`TRACE` criterion for a shared fact, when the package has one. */
+	criterion(fact: {key: string; value: string}): string | undefined;
+}
+
 export interface ServicesProfile {
 	id: ServicesConfig["package"];
 	/** Display name (`X3`). */
@@ -81,4 +164,10 @@ export interface ServicesProfile {
 	parseBanReply(text: string): BanReply | undefined;
 	/** Whether `nick` is one of the configured bots. */
 	isServiceNick(nick: string, bots: ServicesConfig["bots"]): boolean;
+	/**
+	 * What the investigation cards ask the bots (irc/investigate.ts), when
+	 * the package can answer: absent, the cards show the server's answers
+	 * alone.
+	 */
+	lookups?: ServicesLookups;
 }

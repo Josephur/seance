@@ -233,7 +233,11 @@ export function parseStatsHelp(lines: IrcMessage[]): StatsEntry[] {
 /** A number column value; text when the server sent something else. */
 /** A port: an identifier, so no thousands separators (`8444`, not `8,444`). */
 function portOf(value: string | undefined): ReportValue | undefined {
-	return value !== undefined && /^\d+$/.test(value) ? mono(value) : value ? text(value) : undefined;
+	return value !== undefined && /^\d+$/.test(value)
+		? mono(value)
+		: value
+		? text(value)
+		: undefined;
 }
 
 function num(value: string | undefined): ReportValue | undefined {
@@ -423,6 +427,58 @@ function banTable(numeric: string): TableSpec {
 			};
 		},
 	};
+}
+
+/** One ban as `STATS g` / `S` / `Z` lists it, for the investigation cards. */
+export interface LiveBan {
+	type: "G-line" | "shun" | "Z-line";
+	mask: string;
+	/** Epoch ms; 0 for never. */
+	expiresAt: number;
+	/** Epoch ms of the last change, when the server gives one. */
+	lastModAt?: number;
+	/** Effectively active here (the state token, see {@link banState}). */
+	active: boolean;
+	reason: string;
+}
+
+const BAN_NUMERICS: Record<string, LiveBan["type"]> = {
+	"247": "G-line",
+	"542": "shun",
+	"546": "Z-line",
+};
+
+/**
+ * A `247` / `542` / `546` row — `<G|S|Z> <mask> <expire> <lastmod>
+ * <lifetime> <state> :<reason>` after our nick — as a {@link LiveBan};
+ * undefined for any other line.
+ */
+export function parseBanRow(msg: IrcMessage): LiveBan | undefined {
+	const type = BAN_NUMERICS[msg.command];
+	const p = msg.params.slice(1);
+
+	if (!type || p.length < 7) {
+		return undefined;
+	}
+
+	const token = p[5];
+	const local = token.length > 1 ? token[0] : "";
+	const global = token.endsWith("+");
+	const expire = Number(p[2]);
+	const lastmod = Number(p[3]);
+	const ban: LiveBan = {
+		type,
+		mask: p[1],
+		expiresAt: Number.isFinite(expire) && expire > 0 ? expire * 1000 : 0,
+		active: local === ">" || (global && local !== "<"),
+		reason: p.slice(6).join(" "),
+	};
+
+	if (Number.isFinite(lastmod) && lastmod > 0) {
+		ban.lastModAt = lastmod * 1000;
+	}
+
+	return ban;
 }
 
 /** `P` port flag letters (`listener.c:131-188`); `C`/`S` become the kind column. */
