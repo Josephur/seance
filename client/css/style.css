@@ -509,6 +509,9 @@ p {
 #settings #play::before,
 #settings .settings-menu .icon::before,
 #oper .settings-menu .icon::before,
+#oper .oper-row::before,
+#oper .oper-fold > summary::before,
+#context-menu .oper-route-current::after,
 #form #upload::before,
 #form #submit::before,
 #chat .msg[data-type="away"] .from::before,
@@ -607,6 +610,11 @@ p {
 .context-menu-oper-who::before { content: "\f0c0"; /* https://fontawesome.com/icons/users?style=solid */ }
 .context-menu-oper-copy::before { content: "\f0c5"; /* https://fontawesome.com/icons/copy?style=solid */ }
 .context-menu-oper-target::before { content: "\f05b"; /* https://fontawesome.com/icons/crosshairs?style=solid */ }
+.context-menu-oper-route-kind::before { content: "\f0f3"; /* https://fontawesome.com/icons/bell?style=solid */ }
+.context-menu-oper-route-active::before { content: "\f075"; /* https://fontawesome.com/icons/comment?style=solid */ }
+.context-menu-oper-route-network::before { content: "\f233"; /* https://fontawesome.com/icons/server?style=solid */ }
+.context-menu-oper-route-off::before { content: "\f070"; /* https://fontawesome.com/icons/eye-slash?style=solid */ }
+.context-menu-oper-route-stop::before { content: "\f1f6"; /* https://fontawesome.com/icons/bell-slash?style=solid */ }
 
 .context-menu-media-host-off::before,
 .context-menu-media-account-off::before,
@@ -3427,6 +3435,101 @@ part/quit messages where we don't load previews (adds a blank line otherwise) */
 	vertical-align: 0.1em;
 	color: var(--body-color-muted);
 	white-space: nowrap;
+}
+
+/* The badge is a button (Oper/NoticeBadge.vue): a tap opens "where these
+ * show" for the kind. Reset so it draws exactly as the span it was. */
+button.snotice-badge {
+	font: inherit;
+	font-size: 0.75em;
+	background: none;
+	cursor: pointer;
+}
+
+button.snotice-badge:hover,
+button.snotice-badge:focus-visible {
+	background: color-mix(in srgb, currentcolor 12%, transparent);
+}
+
+/* The oper panel's own bits (Oper/OperActivity.vue, OperAlerts.vue,
+ * OperMe.vue). Amber is the one colour of its own: an outlying count, a
+ * route chosen for a while. */
+#oper {
+	--oper-amber: #c7841a;
+}
+
+/* A segmented control: a row of buttons sharing one border, the pressed
+ * one filled (aria-pressed for a toggle group, aria-checked for a
+ * radiogroup). */
+.oper-seg {
+	display: inline-flex;
+	border: 1px solid color-mix(in srgb, var(--body-color-muted) 50%, transparent);
+	border-radius: 0.4rem;
+	overflow: hidden;
+}
+
+.oper-seg button {
+	padding: 0.25rem 0.7rem;
+	color: var(--body-color);
+	font-size: 0.9375em;
+	line-height: 1.4;
+	white-space: nowrap;
+}
+
+.oper-seg button + button {
+	border-left: 1px solid color-mix(in srgb, var(--body-color-muted) 50%, transparent);
+}
+
+.oper-seg button:hover,
+.oper-seg button:focus-visible {
+	background: color-mix(in srgb, var(--body-color-muted) 12%, transparent);
+}
+
+.oper-seg button[aria-pressed="true"],
+.oper-seg button[aria-checked="true"] {
+	background: var(--button-color);
+	color: var(--button-text-color-hover);
+}
+
+.oper-seg button[aria-checked="true"].tmp {
+	background: var(--oper-amber);
+}
+
+/* A folded row (`<details>`): a FontAwesome caret instead of the browser's
+ * marker, turned when open. */
+#oper .oper-fold > summary {
+	list-style: none;
+}
+
+#oper .oper-fold > summary::-webkit-details-marker {
+	display: none;
+}
+
+#oper .oper-fold > summary::before {
+	content: "\f0da"; /* https://fontawesome.com/icons/caret-right?style=solid */
+	display: inline-block;
+	width: 0.8em;
+	margin-right: 0.3em;
+}
+
+#oper .oper-fold[open] > summary::before {
+	content: "\f0d7"; /* https://fontawesome.com/icons/caret-down?style=solid */
+}
+
+/* The "where these show" menu: the kind's name is a heading, not a
+ * choice, and the place it shows now carries a check mark. */
+#context-menu .context-menu-oper-route-kind {
+	font-weight: 600;
+	cursor: default;
+}
+
+#context-menu .context-menu-oper-route-kind.active {
+	background: none;
+}
+
+#context-menu .oper-route-current::after {
+	content: "\f00c"; /* https://fontawesome.com/icons/check?style=solid */
+	margin-left: 0.6em;
 }
 
 .snotice-ban .snotice-badge,

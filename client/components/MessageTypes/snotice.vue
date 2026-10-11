@@ -1,6 +1,7 @@
 <template>
 	<span :class="['content', 'snotice', 'snotice-' + badge.family]">
-		<span class="snotice-badge" :title="kindLabel">{{ badge.label }}</span>
+		<NoticeBadge v-if="message.snotice" :info="message.snotice" :network="network" />
+		<span v-else class="snotice-badge">{{ badge.label }}</span>
 		<SnoticeText
 			v-if="message.snotice"
 			:info="message.snotice"
@@ -20,31 +21,26 @@
 import {computed, defineComponent, PropType} from "vue";
 import type {ClientMessage, ClientNetwork} from "../../js/types";
 import {categoryBadge} from "../../js/helpers/operFormat";
-import {findNoticeKind} from "../../js/irc/snotice";
+import NoticeBadge from "../Oper/NoticeBadge.vue";
 import SnoticeText from "../Oper/SnoticeText.vue";
 
 /**
  * A server notice, classified and routed (irc/snotice.ts): a category badge
- * and the notice in plain words. A global notice relayed from another server
- * names it at the end (irc/snotice.ts sets `origin` only then).
+ * (a button: where this kind shows) and the notice in plain words. A global
+ * notice relayed from another server names it at the end (irc/snotice.ts
+ * sets `origin` only then).
  */
 export default defineComponent({
 	name: "MessageTypeSnotice",
-	components: {SnoticeText},
+	components: {NoticeBadge, SnoticeText},
 	props: {
 		network: {type: Object as PropType<ClientNetwork>, required: true},
 		message: {type: Object as PropType<ClientMessage>, required: true},
 	},
 	setup(props) {
 		const badge = computed(() => categoryBadge(props.message.snotice?.category ?? "OTHER"));
-		const kindLabel = computed(() => {
-			const info = props.message.snotice;
-			return info
-				? findNoticeKind(info.kind, props.network.oper?.profile)?.label ?? info.kind
-				: "";
-		});
 
-		return {badge, kindLabel};
+		return {badge};
 	},
 });
 </script>

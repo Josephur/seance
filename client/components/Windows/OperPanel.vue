@@ -28,7 +28,7 @@
 							type="button"
 							:class="['icon', t.cls, {active: tab === t.id}]"
 							:aria-label="t.label"
-							:title="t.label"
+							:title="t.title"
 							@click="go(t.id)"
 						>
 							<span class="tab-label">{{ t.label }}</span>
@@ -44,8 +44,9 @@
 						the server grants it — by <code>/oper</code> or, on networks that do, when
 						you log in.
 					</p>
-					<OperNotices v-else-if="tab === 'notices'" :network="network" />
-					<OperModes v-else :network="network" />
+					<OperActivity v-else-if="tab === 'opers'" :network="network" />
+					<OperAlerts v-else-if="tab === 'alerts'" :network="network" />
+					<OperMe v-else :network="network" />
 				</div>
 			</div>
 			<div class="settings-modal-footer">
@@ -66,11 +67,15 @@
 	color: var(--body-color-muted);
 }
 
-.settings-menu .oper-notices::before {
-	content: "\f0a1"; /* https://fontawesome.com/icons/bullhorn?style=solid */
+.settings-menu .oper-opers::before {
+	content: "\f0c0"; /* https://fontawesome.com/icons/users?style=solid */
 }
 
-.settings-menu .oper-modes::before {
+.settings-menu .oper-alerts::before {
+	content: "\f0f3"; /* https://fontawesome.com/icons/bell?style=solid */
+}
+
+.settings-menu .oper-me::before {
 	content: "\f505"; /* https://fontawesome.com/icons/user-shield?style=solid */
 }
 </style>
@@ -81,23 +86,30 @@ import {useRoute, useRouter} from "vue-router";
 import {useStore} from "../../js/store";
 import {leavePage} from "../../js/router";
 import {isOperOn} from "../../js/helpers/operMenu";
-import OperNotices from "../Oper/OperNotices.vue";
-import OperModes from "../Oper/OperModes.vue";
+import OperActivity from "../Oper/OperActivity.vue";
+import OperAlerts from "../Oper/OperAlerts.vue";
+import OperMe from "../Oper/OperMe.vue";
 
 const TABS = [
-	{id: "notices", label: "Notices", cls: "oper-notices"},
-	{id: "modes", label: "Modes", cls: "oper-modes"},
+	{id: "opers", label: "Opers", title: "What the opers have been doing", cls: "oper-opers"},
+	{id: "alerts", label: "Alerts", title: "What reaches you, and how loudly", cls: "oper-alerts"},
+	{id: "me", label: "Me", title: "Your status, privileges and user modes", cls: "oper-me"},
 ];
+
+/** The phase-1 tab ids, so links to them still open (notices → alerts, modes → me). */
+const OLD_TABS: Record<string, string> = {notices: "alerts", modes: "me"};
 
 /**
  * The oper panel (docs/projects/oper-tools.md): a modal over the app, like
- * Settings, opened from the shield in the network header. Its route is
- * `/oper/<network>/<tab>`, so it is a page opened on purpose
- * (`onStandalonePage`), a reload brings it back, and Done is `leavePage()`.
+ * Settings, opened from the shield in the network header. Three tabs, each
+ * one question — Opers (what have they been doing), Alerts (what reaches
+ * me, how loudly) and Me. Its route is `/oper/<network>/<tab>`, so it is a
+ * page opened on purpose (`onStandalonePage`), a reload brings it back,
+ * and Done is `leavePage()`.
  */
 export default defineComponent({
 	name: "OperPanel",
-	components: {OperNotices, OperModes},
+	components: {OperActivity, OperAlerts, OperMe},
 	setup() {
 		const store = useStore();
 		const route = useRoute();
@@ -106,9 +118,10 @@ export default defineComponent({
 		const network = computed(() => store.getters.findNetwork(String(route.params.uuid)));
 		const networkName = computed(() => network.value?.name ?? "");
 		const opered = computed(() => isOperOn(network.value));
-		const tab = computed(() =>
-			TABS.some((t) => t.id === route.params.tab) ? String(route.params.tab) : "notices"
-		);
+		const tab = computed(() => {
+			const wanted = OLD_TABS[String(route.params.tab)] ?? String(route.params.tab);
+			return TABS.some((t) => t.id === wanted) ? wanted : "opers";
+		});
 
 		const go = (id: string) => {
 			void router.push(`/oper/${String(route.params.uuid)}/${id}`);

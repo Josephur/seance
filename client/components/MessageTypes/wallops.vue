@@ -1,6 +1,6 @@
 <template>
 	<span :class="['content', 'wallops', 'wallops-' + kind]">
-		<span class="snotice-badge">{{ badge }}</span>
+		<NoticeBadge :info="info" type="wallops" :network="network" />
 		<template v-if="message.from && message.from.nick">
 			<Username
 				v-if="fromUser"
@@ -15,28 +15,32 @@
 
 <script lang="ts">
 import {computed, defineComponent, PropType} from "vue";
+import type {SnoticeInfo} from "../../../shared/types/oper";
 import type {ClientMessage, ClientNetwork} from "../../js/types";
-import {wallopsBadge} from "../../js/helpers/operFormat";
+import NoticeBadge from "../Oper/NoticeBadge.vue";
 import ParsedMessage from "../ParsedMessage.vue";
 import Username from "../Username.vue";
 
 /**
- * WALLOPS, WALLUSERS and DESYNCH (irc/snotice.ts tells them apart): a badge,
- * who sent it — a person or a server — and the text.
+ * WALLOPS, WALLUSERS and DESYNCH (irc/snotice.ts tells them apart): a badge
+ * (a button: where this kind shows), who sent it — a person or a server —
+ * and the text.
  */
 export default defineComponent({
 	name: "MessageTypeWallops",
-	components: {ParsedMessage, Username},
+	components: {NoticeBadge, ParsedMessage, Username},
 	props: {
 		network: {type: Object as PropType<ClientNetwork>, required: true},
 		message: {type: Object as PropType<ClientMessage>, required: true},
 	},
 	setup(props) {
-		const kind = computed(() => props.message.snotice?.kind ?? "wallops");
-		const badge = computed(() => wallopsBadge(kind.value));
+		const info = computed<SnoticeInfo>(
+			() => props.message.snotice ?? {kind: "wallops", category: "WALLOPS", fields: {}}
+		);
+		const kind = computed(() => info.value.kind);
 		const fromUser = computed(() => kind.value === "wallops" || kind.value === "wallusers");
 
-		return {kind, badge, fromUser};
+		return {info, kind, fromUser};
 	},
 });
 </script>

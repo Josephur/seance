@@ -1,41 +1,33 @@
 <template>
-	<div class="oper-modes">
-		<h2>Status</h2>
-		<dl class="oper-status">
-			<div>
-				<dt>Level</dt>
-				<dd>{{ levelLabel }}</dd>
-			</div>
-			<div>
-				<dt>User modes</dt>
-				<dd>
-					<code>+{{ network.oper?.umodes }}</code>
-				</dd>
-			</div>
-			<div>
-				<dt>Server</dt>
-				<dd>{{ profileName }}</dd>
-			</div>
-		</dl>
-
-		<h2>
-			Privileges
-			<button type="button" class="btn btn-small oper-refresh" @click="refresh">
-				Refresh
-			</button>
-		</h2>
-		<p v-if="!network.oper?.privsKnown" class="oper-muted">Not reported yet.</p>
-		<p v-else-if="!privs.length" class="oper-muted">None.</p>
-		<p v-else class="oper-chips oper-privs">
-			<span v-for="p in privs" :key="p" class="oper-chip-static" :title="privHelp(p)">{{
-				p
-			}}</span>
+	<div class="oper-me">
+		<p class="oper-me-status">
+			<span class="oper-me-level">{{ levelLabel }}</span>
+			<span v-if="network.oper?.umodes" class="oper-me-sep">·</span>
+			<code v-if="network.oper?.umodes">+{{ network.oper.umodes }}</code>
+			<span class="oper-me-sep">·</span>
+			<span class="oper-me-profile">{{ profileName }}</span>
 		</p>
 
-		<h2>Your user modes</h2>
+		<details class="oper-fold oper-me-privs" :open="privs.length <= 12">
+			<summary>
+				Privileges · {{ network.oper?.privsKnown ? privs.length : "?" }}
+				<button type="button" class="btn btn-small oper-refresh" @click.prevent="refresh">
+					Refresh
+				</button>
+			</summary>
+			<p v-if="!network.oper?.privsKnown" class="oper-muted">Not reported yet.</p>
+			<p v-else-if="!privs.length" class="oper-muted">None.</p>
+			<p v-else class="oper-chips oper-privs">
+				<span v-for="p in privs" :key="p" class="oper-chip-static" :title="privHelp(p)">{{
+					p
+				}}</span>
+			</p>
+		</details>
+
+		<h2>User modes</h2>
 		<ul class="oper-umodes">
 			<li v-for="m in modes" :key="m.letter" :class="{unavailable: !allowed(m)}">
-				<label>
+				<label :title="m.description">
 					<input
 						type="checkbox"
 						:checked="has(m.letter)"
@@ -43,61 +35,71 @@
 						@change="set(m.letter, ($event.target as HTMLInputElement).checked)"
 					/>
 					<code>+{{ m.letter }}</code>
-					<span class="oper-umode-label">{{ m.label }}</span>
+					<span class="oper-umode-text">
+						<span class="oper-umode-label">{{ m.label }}</span>
+						<span class="sr-only">. {{ m.description }}</span>
+						<span v-if="!allowed(m)" class="oper-umode-needs">needs {{ m.priv }}</span>
+					</span>
 				</label>
-				<p class="oper-umode-desc">
-					{{ m.description }}
-					<span v-if="!allowed(m)">Needs the {{ m.priv }} privilege.</span>
-				</p>
 			</li>
 		</ul>
 	</div>
 </template>
 
 <style>
-.oper-modes h2 {
-	margin-top: 1.5rem;
+.oper-me-status {
 	display: flex;
-	align-items: center;
-	gap: 0.75rem;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 0.4rem;
+	margin: 0 0 1rem;
+	font-size: 1.0625em;
 }
 
-.oper-modes h2:first-child {
-	margin-top: 0;
-}
-
-.oper-modes .oper-refresh {
-	margin: 0;
-}
-
-.oper-status {
-	display: grid;
-	grid-template-columns: max-content 1fr;
-	gap: 0.25rem 1rem;
-	margin: 0;
-}
-
-.oper-status div {
-	display: contents;
-}
-
-.oper-status dt {
+.oper-me-sep,
+.oper-me-profile {
 	color: var(--body-color-muted);
 }
 
-.oper-status dd {
+.oper-me h2 {
+	margin: 1.25rem 0 0.5rem;
+	font-size: 1em;
+	color: var(--body-color-muted);
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+}
+
+.oper-me-privs {
+	margin-top: 0;
+}
+
+.oper-me-privs > summary {
+	display: flex;
+	align-items: center;
+	gap: 0.75rem;
+	font-size: 1em;
+	color: var(--body-color-muted);
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+}
+
+.oper-me-privs > summary .oper-refresh {
 	margin: 0;
+	text-transform: none;
+	letter-spacing: normal;
+}
+
+.oper-me-privs .oper-privs {
+	margin: 0.25rem 0 0;
 }
 
 .oper-umodes {
 	list-style: none;
 	margin: 0;
 	padding: 0;
-}
-
-.oper-umodes li {
-	padding: 0.4rem 0;
-	border-bottom: 1px solid color-mix(in srgb, var(--body-color-muted) 25%, transparent);
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr));
+	gap: 0.2rem 1rem;
 }
 
 .oper-umodes li.unavailable .oper-umode-label {
@@ -109,12 +111,18 @@
 	align-items: center;
 	gap: 0.5rem;
 	cursor: pointer;
+	padding: 0.2rem 0;
 }
 
-.oper-umode-desc {
+.oper-umode-text {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+}
+
+.oper-umode-needs {
 	color: var(--body-color-muted);
-	font-size: 0.875em;
-	margin: 0.15rem 0 0 1.6rem;
+	font-size: 0.8125em;
 }
 </style>
 
@@ -219,8 +227,13 @@ const PRIV_HELP: Record<string, string> = {
 	SEE_OPERS: "See hidden opers",
 };
 
+/**
+ * The Me tab (docs/projects/oper-tools.md, "The panel, redrawn"): one line
+ * of status, the privileges folded, the user modes as a small grid with
+ * the explanation on hover (and read out to a screen reader).
+ */
 export default defineComponent({
-	name: "OperModes",
+	name: "OperMe",
 	props: {
 		network: {type: Object as PropType<ClientNetwork>, required: true},
 	},

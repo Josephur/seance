@@ -123,7 +123,7 @@ export default defineComponent({
 		const opered = computed(() => isOperOn(props.network));
 
 		const openOperPanel = () => {
-			void router.push(`/oper/${props.network.uuid}/notices`);
+			void router.push(`/oper/${props.network.uuid}/opers`);
 		};
 
 		// Notification state for this network (bell icon): subscribed,
