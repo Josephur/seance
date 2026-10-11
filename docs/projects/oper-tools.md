@@ -406,8 +406,8 @@ What a contribution needs:
 | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **0. Foundations** | profile detection; `OperState`; `request.ts` correlation; `MessageType.REPORT` and `SNOTICE` with raw fallbacks; the routing function; fixtures from the captures                                                                                                                                                           |
 | **1. The core**    | classifier and default routes for server notices and WALLOPS; the IndexedDB notice store and its restore on page load; the oper button and modal shell with the Notices (switchboard and routing) and Modes tabs; CHECK cards; STATS tables for g S Z o p y u l m F; oper WHOIS; act-on-user menu with kill and ban dialogs |
-| **2. Management**  | Bans tab with impact preview and the notice-fed setter column; Users tab (oper WHO); Network tab; help and completion; burst alerts                                                                                                                                                                                         |
-| **3. Reach**       | Server tab and admin actions; raw console; channel oper tools; mass message; oper-tag badges; then the parked server-side asks. Other ircds' profiles by contribution.                                                                                                                                                      |
+| **2. Management**  | _Superseded by the revised plan below (2026-10-10)._                                                                                                                                                                                                                                                                        |
+| **3. Reach**       | _Superseded by the revised plan below (2026-10-10)._                                                                                                                                                                                                                                                                        |
 
 ## Built (phases 0 and 1, 2026-10-09)
 
@@ -436,12 +436,149 @@ What a contribution needs:
 - **The ban tools are nefarious2-only** for now (`profile === "nefarious2"`); KILL and Check are offered on any profile.
 - **The rig grants its oper the ban privileges.** `tools/nefarious-dev/local.conf` grants gline, shun, zline, remove and set explicitly, and turns on `CONNEXIT_NOTICES`.
 
-**Not yet** (phases 2 and 3):
+**Not yet**: see "Revised plan" below, which replaces phases 2 and 3.
 
-- the Bans, Users, Network and Server tabs;
-- burst alerts and notification rules;
-- command help and completion;
-- the raw console, channel oper tools, mass messages, oper-tag badges and bouncer admin.
+## Revised plan (rubin and Claude, 2026-10-10)
+
+The phase-1 panel was tried on AfterNET and found busy and overwhelming:
+a 20-switch snomask list with 67 route dropdowns nested under it, the
+log at the bottom, every item with a paragraph. The rethink started from
+what an oper actually does rather than from what the server sends, in a
+back-and-forth over drawings (the mockups were published as artifacts
+during the session; the decisions are recorded here).
+
+**What rubin told us about the job.**
+
+- Notices are a smoke detector, not reading matter: almost never looked
+  at unless something is wrong or being debugged. Most of the stream is
+  the network running itself. The rare kinds must land in the active
+  window; the rest belong in the network window or nowhere.
+- The snomask is "default and never touched" because the controls were
+  unusable, not because default is right.
+- Two real tasks: **watching all the opers** (not one at a time; is
+  anyone making a mistake or being malicious), and **investigation**,
+  which starts from a user ("is this nick the one we banned") or from a
+  **channel** ("who is in there, is it command-and-control"). The usual
+  steps: watch the snoop channel; `/who #chan cx`; `/check #chan`;
+  `/whois nick nick`; `/check nick`; join and look; find the botmaster
+  and ask nicely; else look for what the bots share and write an X3 alert
+  with criteria safe for curious bystanders.
+- A lot of this runs through **X3**, not the server: G-lines and alerts
+  are managed in O3; `#operserv` carries what services did for opers;
+  `#mrsnoopy` (X3's snoop module) is the connect/join/part/quit feed.
+- Seance stays generic: nothing AfterNET-specific is assumed. Services
+  support is a per-network setting.
+- Phone and desktop are both first class.
+
+**The panel, redrawn.** Three tabs, each one question:
+
+- **Opers** — what the opers have been doing, rolled up. A period picker
+  (today / 24 h / since reload) and a By oper / By kind switch. _By
+  oper_: one line per oper who did anything (`alice · 13 actions · 21:14`, busiest first, an outlying total in amber); open it for
+  sentences (`12 G-lines 21:02–21:14`, `1 channel mode via OPMODE`);
+  open one of those for the notices themselves. Services (O3) and the
+  servers get rows of their own, folded the same way. _By kind_: one line
+  per kind (G-lines 22, kills 9, OPMODE modes, opers coming up, links and
+  splits…), ordered by how much an oper cares, a closed "everything else
+  · 1 342" row last; open a kind straight to its timeline, newest first,
+  with who did each one. No counts table. Closed, the screen is five
+  lines tall.
+- **Alerts** — what reaches you and how loudly. Two short sections in
+  plain words, _Oper actions_ (bans added or removed, ban hits, kills,
+  services actions, someone opers up, failed /oper) and _The network_
+  (links and splits, rehashes and restarts, WALLOPS, refused
+  connections, every connect and quit), each line a three-position
+  control: **Here** (the active window), **Network** (network window, no
+  unread), **Off** (never; when every kind in a server family is off, the
+  client also clears that snomask bit, so Off is quiet on the wire too).
+  Tapping Here asks how long (today / 3 days / a week / until I change
+  it); a temporary choice shows warmer with "2 more days" beside it and
+  undoes itself. The ~14 kinds nobody cares about are one folded row;
+  the raw mask number and the presets are another. The server's 28
+  flavours of "server event" are merged into these lines in code and
+  never shown individually. The same "show here for…" menu opens from a
+  notice's badge in chat and in the log, so routing is changed from the
+  notice that annoyed you.
+- **Me** — one line of status (`Global operator · +owsgxzb`), the
+  privileges as a folded chip list, the user modes as a small grid with
+  the explanation on hover or long press. Rubin wonders whether a
+  non-oper version belongs in Settings; circle back later.
+
+**Services support.** A section at the bottom of the network's edit form,
+shown once connected and opered there: a package picker (_None_, _X3_;
+others by contribution, like ircds) and the bots by role, prefilled with
+the package's conventional names when picked — oper service `O3`, account
+service `AuthServ`, channel service `ChanServ`, oper report channel
+`#operserv`, snoop channel `#mrsnoopy` — with a liveness check (a
+`/whois` on each; X3's bots carry `+k` and answer CTCP VERSION with `X3 2.0+[…]`). With X3 selected: the snoop feed and the audit lines in the
+report channel are parsed like server notices (`docs/resources/x3- services.md`) and feed Opers and Alerts, credited to the person who typed
+the command rather than to the bot; the ban dialog sends through O3; the
+cards ask O3 and AuthServ for what the server does not know. **Graceful
+degradation**: when the client is not in the snoop or report channel,
+everything shows what it can from server notices and the client's own
+view, says in one grey line what the channel would add, and offers a
+Join button for the report channel only (not everyone is allowed in the
+snoop channel).
+
+**The channel card** (from any channel name: a snoop line, the sidebar,
+a notice, `/check #chan`): the channel's facts (created, from O3
+`chaninfo`; modes and topic from `check`; registered, from ChanServ;
+bans); **what most users have in common** (the card compares every user
+to every other on the fields X3 can alert on — authed, connect age,
+realname, ident shape, IP range, server, version — and says "8 of 9
+users: not authed, connected < 15 min, realname 'irc client', ident
+r + 4 digits, 203.0.113.\*", with an **Alert on this…** button); the
+users as three-line blocks (nick, flags, timing; ident@host and real IP;
+realname, account, country, where else they are) with the shared values
+tinted so the pattern reads down the list and the odd one out stands
+out by being plain; the last hour in the channel from the snoop feed,
+folded; Join & watch, Note, Refresh. Wire cost: `check` + `who` +
+`chaninfo`, then one O3 `whois` per user, paced for fake lag; the card
+fills in facts first, countries last.
+
+**The alert builder** (from the channel or user card's button, or empty
+from the Alerts tab, or on an existing alert from `stats alerts`): O3's
+`addalert` as a form. Name, reaction (notice by default; gline/kill/shun
+greyed unless the O3 level allows), expiry (a week); the shared facts
+arrive as criteria rows, each with its value editable in place, a switch
+to leave it out and ✕ to drop it; criteria that would catch bystanders on
+their own (IP range, connect age, server) are marked **wide** and arrive
+switched off; an "add" row for nick, host, version, account, clones,
+modes, regex; the exact command updated live; and **"Matches N users
+right now · none are opers"** from a `trace print` of the same criteria
+before anything is sent. Nothing reaches O3 until Add; O3's reply lands
+under the form. O3 has no edit, so editing is delete and re-add in one
+go.
+
+**The user card** (from any nick or `/check nick`): who they are on one
+screen (host, real IP with country and server, account, realname,
+connected and nick age, client version, modes, channels; each line as
+its answer arrives, "asking…" meanwhile; AuthServ's last-quit host and
+hostmasks when authed); **bans near this user** (`stats glines` and O3
+`gtrace` with the host as a subset, live and recently expired); **seen
+before**, a local search over the kept feed for anything sharing this
+IP, host, realname or account; a one-sentence verdict naming what
+matched, with **Compare side by side** (two cards as two columns, the
+matching rows tinted); G-line / Kill / Alert on this / Note / Raw
+replies.
+
+**Build order** (each usable on its own, on top of PR #99):
+
+1. The panel restructure: Opers, Alerts, Me, tap-the-badge routing. Needs
+   no X3.
+2. Services support: the setting, the snoop and audit parsers, bans
+   through O3.
+3. The channel and user cards.
+4. The alert builder.
+
+The phase-2/3 list that stood here before (Bans, Users, Network and
+Server tabs; burst alerts; help and completion; raw console; channel
+oper tools; mass messages; oper-tag badges; bouncer admin) is not
+abandoned, but none of it comes before these four.
+
+**How to work on this with rubin** (so the next session does not repeat
+the mistake): one thing at a time, drawn, with pros and cons, and a
+single question; a multiple-choice prompt is not a conversation.
 
 ## Testing
 
@@ -479,4 +616,12 @@ What a contribution needs:
 
 ## Open questions
 
-None at the moment. The next step is phase 0.
+- **How far back "seen before" should reach, and where it lives.** The
+  notice log keeps about a day; ban evasion plays out over weeks. The
+  default until rubin says otherwise: a week, in the browser (so per
+  device). Whether the oper team needs it shared is unanswered.
+- **Me for non-opers.** Whether a version of the Me tab (user modes, the
+  account) belongs in Settings for everyone.
+- **The X3 lines are per-network config.** X3 does not tag an override in
+  words; which channel a line went to is the only signal, which is why the
+  report and snoop channels are fields rather than detected.

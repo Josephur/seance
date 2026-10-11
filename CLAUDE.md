@@ -158,6 +158,7 @@ Cross-cutting types and helpers. `shared/types/socket-events.ts` (`ServerToClien
 - `docs/resources/nefarious2-websocket.md` — server behaviour: WS framing, CAP set, ISUPPORT/numeric quirks, upstream bugs and the local fix branch.
 - `docs/resources/nefarious2-dev.md` — running the dev ircd (Docker and native), test identities, TLS notes.
 - `docs/resources/nefarious2-oper.md` — the IRC-operator surface on the wire: OPER/PRIVS, snomask bits, every server notice format, WALLOPS, CHECK, STATS, bans, server bugs (filed and not).
+- `docs/resources/x3-services.md` — X3 services (O3, AuthServ, ChanServ) on the wire: the snoop feed, the audit lines opers' commands leave in the report channel, alert criteria and TRACE, the G-line commands, WHOIS/CHANINFO/ACCOUNTINFO output, how to recognise the bots.
 - `docs/projects/oper-tools.md` — the oper tools: what was decided, what is built, what is next.
 - `docs/resources/browser-irc-parser.md` — why the parser is hand-rolled.
 - `docs/resources/branding.md` — `config.json` schema, runtime vs build-time branding, uploader contract.
