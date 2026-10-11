@@ -115,6 +115,7 @@
 		<div>
 			<label class="opt">
 				<input
+					v-switch
 					:checked="store.state.settings.notification"
 					type="checkbox"
 					name="notification"
@@ -131,6 +132,7 @@
 		<div>
 			<label class="opt">
 				<input
+					v-switch
 					:checked="store.state.settings.notifyAllMessages"
 					type="checkbox"
 					name="notifyAllMessages"
@@ -142,6 +144,7 @@
 		<div>
 			<label class="opt">
 				<input
+					v-switch
 					:checked="store.state.settings.highlightMessages"
 					type="checkbox"
 					name="highlightMessages"
