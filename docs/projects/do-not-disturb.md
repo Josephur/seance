@@ -111,9 +111,42 @@ changes (`manager.syncPresenceAll()`), and at registration
   Its reply is the user's acknowledgement, so it is not counted as a quiet
   one. `userAwayChanged` only records and reports the state; it sends
   nothing, so a `/back` in DND never sends an `AWAY *` + `AWAY` pair.
-- Nothing is sent before 001 (`canSend`).
+- Nothing is sent before 001 (`canSend`), except the one declaration
+  below, which rides in the `CAP END` flush.
 - A MARKREAD for the open channel is still scheduled only while the page is
   attended — attention, not presence mode, decides "the user has seen it".
+
+### Away across reloads and reconnects
+
+nefarious2's bouncer attaches a reload or a reconnect to the held session,
+and a connection that registers without saying it is away counts as
+present: one present connection makes the account present, and the server
+announces the user back to everyone (measured on the testnet with
+`tools/scenarios/away-live.mjs`: a `/away` was lost on reload, and DND and
+Away mode flashed back until the post-MOTD `AWAY *`). So:
+
+- The client requests `draft/pre-away` and declares its away state
+  **before `CAP END`, in the same flush, immediately before it**
+  (`presence.ts` `registrationAwayLine`, wired as the negotiator's
+  `finalLines` hook so the pipelined path, a late ACK/NAK and the SASL path —
+  `PERSISTENCE ATTACH`, then the `AWAY`, then `CAP END` — all carry it):
+  `AWAY :<text>` while a `/away` is in force, else `AWAY *` when `wantsStar`
+  (DND, Away mode, an unattended Auto page; `starSent` stays set, so
+  `presenceRegistered` sends no second one). On the pipelined path the cap
+  is only requested, not yet ACKed; the server reads the REQ first. No
+  305/306 answers a pre-registration AWAY, so nothing is counted quiet.
+  `remoteDnd` is not known yet at that point; its GET follows.
+- The `/away` text is remembered per network across reloads in
+  `thelounge.state.away` (`irc/userAwayStore.ts`; `/back` forgets it, so
+  does removing the network; never in the settings backup). It is this
+  device's memory: a `/back` on another device does not clear it, and the
+  next reload here declares the old text again.
+- Without `draft/pre-away` (not offered, or NAKed), nothing is declared
+  before 001 and `presenceRegistered` re-sends `AWAY :<text>` for a `/away`
+  in force (its 306 kept quiet); the automatic star follows through
+  `syncPresence` as before.
+- A same-page reconnect goes through the same paths; `userAway` survives the
+  close because it is declared again.
 
 ## 3. Browser notifications — `client/js/socket-events/msg.ts`
 
@@ -260,6 +293,11 @@ resets DND to its default, as for every carried key. `presenceMode` rides in
   expired `until`, an empty schedule.
 - `test/irc/presence.ts`: each mode × attended/unattended × DND, `/away` on
   top, a mode change mid-session, nothing before 001.
+- `test/irc/preaway.ts`: the declaration right before `CAP END` (plain and
+  SASL, after `PERSISTENCE ATTACH`), a reload from the stored text, `/back`
+  and network removal forgetting it, DND / Away mode / a hidden page
+  declaring `AWAY *` with no second one, the fallback without the cap (or
+  with it NAKed).
 - `test/irc/pushMute.ts`: parse/format, the `*` merge keeping other entries,
   expired entries dropped, `remoteDnd` from 761/766/`METADATA`, the private
   write and the bare clear, adoption, ownership across a reconnect and a
@@ -268,6 +306,10 @@ resets DND to its default, as for every carried key. `presenceMode` rides in
 - `test/irc/multi-network.ts`: `network:presence-mode` on a saved and an
   unsaved network, `network:edit` keeping the dot's mode, `dnd:cleared`
   setting a network in mode `dnd` back to `auto`.
+- Live check `tools/scenarios/away-live.mjs` against the testnet rig (SASL,
+  `draft/persistence`, `draft/pre-away`; through `lib/irc-proxy.mjs` so a
+  same-page reconnect is a socket cut): what other users see — `/away`, DND
+  and Away mode across a reload and a reconnect, never back in between.
 - Browser check `tools/scenarios/dnd.mjs` against the dev ircd (also
   `--mobile --width=390 --height=844`): the pill and its menu, the dot and its
   menu (no navigation, no drag, its own right-click menu), the `AWAY *` /
