@@ -21,9 +21,13 @@ import {registerBusHandlers} from "./bus";
 import {IrcClient} from "./client";
 import {flushQueryLogs} from "./querylog";
 import {syncPresence} from "./presence";
+import {clearRemoteDnd} from "./pushMute";
 import * as saved from "./saved-networks";
 import type {SavedNetwork} from "./saved-networks";
 import type {ConnectOptions} from "./types";
+
+/** The global do-not-disturb as client/js/dnd.ts last set it; new clients start with it. */
+const globalDnd: {active: boolean; until: number | null} = {active: false, until: null};
 
 const clients = new Map<string, IrcClient>();
 
@@ -117,6 +121,8 @@ export function createNetwork(options: CreateNetworkOptions): IrcClient {
 			},
 		});
 		clients.set(entry.uuid, client);
+		client.setPresenceMode(saved.presenceModeOf(entry));
+		client.setGlobalDnd(globalDnd.active, globalDnd.until);
 
 		if (entry.name) {
 			client.setNetworkName(entry.name);
@@ -238,6 +244,21 @@ let lastPokeAt = 0;
 export function setAttendedAll(attended: boolean): void {
 	for (const client of clients.values()) {
 		client.setAttended(attended);
+	}
+}
+
+export function setGlobalDndAll(active: boolean, until: number | null): void {
+	globalDnd.active = active;
+	globalDnd.until = until;
+
+	for (const client of clients.values()) {
+		client.setGlobalDnd(active, until);
+	}
+}
+
+export function clearRemoteDndAll(): void {
+	for (const client of clients.values()) {
+		clearRemoteDnd(client);
 	}
 }
 

@@ -347,6 +347,10 @@ interface ClientToServerEvents {
 	"network:get": (uuid: string) => void;
 	// TODO typing
 	"network:edit": (data: Record<string, any>) => void;
+	"network:presence-mode": (data: {
+		network: string;
+		mode: "online" | "auto" | "away" | "dnd";
+	}) => void;
 	"network:new": (data: Record<string, any>) => void;
 
 	"sign-out": (token?: string) => void;

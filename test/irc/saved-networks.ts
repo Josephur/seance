@@ -437,4 +437,33 @@ describe("saved-networks", function () {
 			bots: {oper: "", account: "", channel: "", report: "", snoop: ""},
 		});
 	});
+	it("keeps a presence mode, reads a missing or bad one as auto", function () {
+		const net = saved.normalize({uuid: "p1", host: "irc.test", presenceMode: "away"});
+		expect(net?.presenceMode).to.equal("away");
+		expect(saved.presenceModeOf(net)).to.equal("away");
+		const plain = saved.normalize({uuid: "p2", host: "irc.test"});
+		expect(plain?.presenceMode).to.equal(undefined);
+		expect(saved.presenceModeOf(plain)).to.equal("auto");
+		const bad = saved.normalize({uuid: "p3", host: "irc.test", presenceMode: "busy"});
+		expect(saved.presenceModeOf(bad)).to.equal("auto");
+	});
+
+	it("the edit form sets the presence mode and keeps it when absent", function () {
+		const base = saved.normalize({uuid: "p4", host: "irc.test", presenceMode: "dnd"})!;
+		expect(saved.fromForm({host: "irc.test"}, base).presenceMode).to.equal("dnd");
+		expect(
+			saved.fromForm({host: "irc.test", presenceMode: "online"}, base).presenceMode
+		).to.equal("online");
+		expect(
+			saved.fromForm({host: "irc.test", presenceMode: "auto"}, base).presenceMode
+		).to.equal(undefined);
+	});
+
+	it("saving auto drops a stored presence mode", function () {
+		const net = saved.save({uuid: "p5", host: "irc.test", presenceMode: "dnd"} as any);
+		expect(saved.get(net.uuid)?.presenceMode).to.equal("dnd");
+		saved.save({...net, presenceMode: undefined});
+		expect(saved.get(net.uuid)?.presenceMode).to.equal(undefined);
+		expect(saved.presenceModeOf(saved.get(net.uuid))).to.equal("auto");
+	});
 });

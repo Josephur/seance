@@ -310,6 +310,7 @@ export function registerBusHandlers(bus: EventBus, registry: ClientRegistry): vo
 
 			// Services support applies at once: the feed and the ban path read it live.
 			client.setServices(next.services);
+			client.setPresenceMode(saved.presenceModeOf(next));
 		}
 
 		const info = networkInfo(registry, uuid);
@@ -317,6 +318,19 @@ export function registerBusHandlers(bus: EventBus, registry: ClientRegistry): vo
 		if (info) {
 			bus.dispatch("network:info", info);
 		}
+	});
+
+	// The lobby row's presence dot (NetworkLobby.vue): applied at once, and
+	// saved when the network is a saved one.
+	bus.handle("network:presence-mode", ({network, mode}) => {
+		const client = registry.clientForNetwork(network);
+		const existing = saved.get(network);
+
+		if (existing) {
+			saved.save({...existing, presenceMode: mode === "auto" ? undefined : mode});
+		}
+
+		client?.setPresenceMode(mode);
 	});
 
 	bus.handle("network:new", (data) => {

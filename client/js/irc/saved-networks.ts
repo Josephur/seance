@@ -19,6 +19,7 @@ import {forgetNetworkLog} from "./querylog";
 import {forgetNoticeLog} from "./noticelog";
 import {forgetOperPrefs} from "./operprefs";
 import type {ConnectOptions} from "./types";
+import {PRESENCE_MODES, type PresenceMode} from "../helpers/dnd";
 import type {ServicesConfig} from "../../../shared/types/network";
 
 export const STORAGE_KEY = "thelounge.networks";
@@ -65,6 +66,8 @@ export type SavedNetwork = ConnectOptions & {
 	 * bots by role, set in the edit form once opered. Absent means none.
 	 */
 	services?: ServicesConfig;
+	/** Online / Auto / Away / Do not disturb; absent = auto (docs/projects/do-not-disturb.md). */
+	presenceMode?: PresenceMode;
 };
 
 /** The subset of the localStorage wrapper this module needs. */
@@ -247,7 +250,22 @@ export function normalize(raw: Record<string, unknown>): SavedNetwork | undefine
 		net.services = services;
 	}
 
+	const mode = raw.presenceMode;
+
+	if (
+		typeof mode === "string" &&
+		mode !== "auto" &&
+		PRESENCE_MODES.includes(mode as PresenceMode)
+	) {
+		net.presenceMode = mode as PresenceMode;
+	}
+
 	return net;
+}
+
+/** The network's presence mode; absent or unknown is "auto". */
+export function presenceModeOf(net: Pick<SavedNetwork, "presenceMode"> | undefined): PresenceMode {
+	return net?.presenceMode ?? "auto";
 }
 
 /** Whether a network takes part in Web Push (`draft/webpush`): the saved
