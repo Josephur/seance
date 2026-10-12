@@ -144,7 +144,10 @@ A new Vue-free `client/js/irc/pushMute.ts` (`test/irc/pushMute.ts`):
   (`MUTE_READ_DELAY_MS`), when the connect burst's fake lag is spent, and
   only with the `draft/metadata-2` cap and an account (push needs both). On a
   network with many channels they can still fall inside `catchup.ts`'s 4 s
-  pacing: two commands of fake lag. The `GET` reply (761, or 766 for no key)
+  pacing: two commands of fake lag. Until the `GET` is answered, another
+  device's DND is not known here: for those first ~10 s a network shows no
+  shared DND, and nothing is written (a change made meanwhile waits for the
+  answer). The `GET` reply (761, or 766 for no key)
   and every later `METADATA` line update `muteValue` and `remoteDnd` (a live
   `*` entry). `handlers/metadata.ts` takes a value when its visibility is
   `private` or its target is our own nick; every other key stays silent.
@@ -158,25 +161,51 @@ renewed when under 7 days remain (checked on the minute tick). Nothing is
 written before the value has been read.
 
 - **Ownership**: the entry is ours (`muteOwned`) while the live `*` entry's
-  `until` equals the `until` this client last wrote (`muteOwnedUntil`). That
-  survives a reconnect — the next `GET` reads our own entry back and it is
-  still ours — but not a reload. Only an owned entry is rewritten or removed
-  when local DND ends.
+  `until` equals the `until` this client last wrote (`muteOwnedUntil`). Only
+  an owned entry is rewritten or removed when local DND ends.
+- **This device's memory** (`client/js/irc/muteMemory.ts`): per network
+  uuid, `thelounge.state.dndMute` keeps `{ownedUntil, confirmedUntil}` — the
+  `*` end this device last wrote and the last of its writes the server
+  echoed (a clear confirms `null`). It survives a reconnect and a reload, is
+  never carried by the settings backup (`thelounge.state.*`), and is
+  forgotten when the network is removed. The first `GET` of a connection
+  judges what it reads against it:
+  - the live `*` is the end we last wrote, or the last one confirmed (our
+    newest write died with the socket or the page): ours, and the next sync
+    writes what is wanted now;
+  - no live `*` and our last write unconfirmed: it never landed (a clear
+    included), and the sync writes the want;
+  - no live `*`, though the server confirmed our entry and its end is still
+    ahead, while DND is still wanted here: another device turned DND off
+    while we were away — **cleared elsewhere**, below;
+  - anything else: another device's entry, adopted (or none at all).
+- **An explicit change claims the entry**: the user changing DND here by
+  hand — For 1 hour, For 8 hours, Until I turn it off, Follow schedule,
+  editing the schedule, Off (`client/js/dnd.ts` → `manager.claimMuteAll()` →
+  `pushMute.ts` `claimMute`) — makes the next sync take the live `*` entry
+  as ours and write the new want over it, whoever wrote it, and lifts a
+  suppression another device's Off left. A claim made before the `GET` has
+  answered waits for it. A change that wants no entry claims nothing, so
+  following or editing a schedule never removes another device's DND (the
+  pill's Off does, `clearRemoteDnd`). An indefinite `*:0` is never claimed.
+  Automatic syncs (the minute tick, a reconnect) still adopt.
 - **A live `*` entry another device wrote is adopted, never rewritten**:
   push is muted already, and rewriting it would have two devices that
   disagree on the end rewrite each other forever. When it expires our own
   entry goes in at the next sync (up to a minute later).
 - **Cleared elsewhere**: when the live `*` entry disappears while this client
-  still wants DND, another device turned it off. It is not written back
-  (`muteSuppressed` until DND starts afresh) and the client dispatches
-  `dnd:cleared`; the page (`client/js/dnd.ts`) then turns its own DND off
-  (`reconcileRemote` → `turnOff`, so a scheduled window is skipped to its
-  end).
+  still wants DND (live, or at the first `GET` as above), another device
+  turned it off. It is not written back (`muteSuppressed` until DND starts
+  afresh or the user claims it) and the client dispatches `dnd:cleared`; the
+  page (`client/js/dnd.ts`) then turns its own DND off (`reconcileRemote` →
+  `turnOff`, so a scheduled window is skipped to its end), and `bus.ts` sets
+  every network of that client in mode `dnd` back to `auto`, saved — Off on
+  another device is Off for the account.
 
 **The pill reads shared DND**: when every connected network has `remoteDnd`
 and the local state is off, the pill says "Do not disturb" (set on another
-device) and its Off removes the entries (`clearRemoteDnd`, which also covers
-an entry of ours that a reload stopped us recognising).
+device) and its Off removes the entries (`clearRemoteDnd`), except on a
+network in mode `dnd`, which would only write its own again.
 
 **Limitations (documented, not solved):**
 
@@ -196,7 +225,8 @@ replaces them.
 
 - **Status pill** (`client/components/PresencePill.vue`, under the logo in
   `Sidebar.vue`): "Online · auto" (or the mix, "Online"), "Do not disturb ·
-  until 07:00", "Do not disturb" (indefinite or set elsewhere). The click opens
+  until 07:00", "Do not disturb" (indefinite or set elsewhere). Times follow
+  the 12/24-hour clock setting, the schedule's window in the menu included. The click opens
   a menu: Off · For 1 hour · For 8 hours · Until I turn it off · Follow
   schedule (✓, with the window's text) · Edit schedule… (opens Settings →
   Notifications). The label wraps to two centred lines, breaking only after
@@ -232,8 +262,12 @@ resets DND to its default, as for every carried key. `presenceMode` rides in
   top, a mode change mid-session, nothing before 001.
 - `test/irc/pushMute.ts`: parse/format, the `*` merge keeping other entries,
   expired entries dropped, `remoteDnd` from 761/766/`METADATA`, the private
-  write and the bare clear, adoption, ownership across a reconnect,
-  `dnd:cleared`.
+  write and the bare clear, adoption, ownership across a reconnect and a
+  reload (the memory), a lost write or clear rewritten, another device's Off
+  while away, the claim, `dnd:cleared`.
+- `test/irc/multi-network.ts`: `network:presence-mode` on a saved and an
+  unsaved network, `network:edit` keeping the dot's mode, `dnd:cleared`
+  setting a network in mode `dnd` back to `auto`.
 - Browser check `tools/scenarios/dnd.mjs` against the dev ircd (also
   `--mobile --width=390 --height=844`): the pill and its menu, the dot and its
   menu (no navigation, no drag, its own right-click menu), the `AWAY *` /
@@ -261,7 +295,13 @@ resets DND to its default, as for every carried key. `presenceMode` rides in
   plan rewrote it to our own end, which looped between two devices).
 - Ownership is "the live `*` entry's `until` equals the one we last wrote",
   kept across reconnects (a flag reset on reconnect left push muted after
-  Off).
+  Off), and across reloads in `thelounge.state.dndMute` with the last
+  confirmed end (after a reload a shorter DND chose nothing, and another
+  device's Off was undone at the next connect).
+- An explicit change on this page claims the live `*` entry; automatic
+  syncs still adopt it.
+- Another device's Off also sets networks in mode `dnd` back to `auto`
+  (they stayed away and silent with push unmuted).
 - Another device clearing the entry raises `dnd:cleared`, which turns this
   device's DND off instead of being written back.
 - A change from a session under a different nick is not applied live (the
