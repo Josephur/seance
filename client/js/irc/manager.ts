@@ -20,6 +20,7 @@ import {setMuteStatus} from "../mute";
 import {registerBusHandlers} from "./bus";
 import {IrcClient} from "./client";
 import {flushQueryLogs} from "./querylog";
+import {pruneUserAway} from "./userAwayStore";
 import {syncPresence} from "./presence";
 import {claimMute, clearRemoteDnd} from "./pushMute";
 import * as saved from "./saved-networks";
@@ -159,6 +160,8 @@ export function autoconnectSavedNetworks(): IrcClient[] {
 
 	autoconnectDone = true;
 	const started: IrcClient[] = [];
+	// Once per page: the `/away` memory of networks that are gone.
+	pruneUserAway([...saved.list().map((entry) => entry.uuid), ...clients.keys()]);
 
 	for (const entry of saved.list()) {
 		if (!entry.autoconnect || clients.has(entry.uuid)) {

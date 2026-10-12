@@ -84,3 +84,26 @@ export function forgetUserAway(uuid: string): void {
 		writeAll(all);
 	}
 }
+
+/**
+ * Drop the entries of every network not in `keep` (boot: the saved
+ * networks and whatever is already connected). A network the user never
+ * saved is not reconnected after a reload, so its `/away` would otherwise
+ * stay in the map for good.
+ */
+export function pruneUserAway(keep: Iterable<string>): void {
+	const all = readAll();
+	const wanted = new Set(keep);
+	let changed = false;
+
+	for (const uuid of Object.keys(all)) {
+		if (!wanted.has(uuid)) {
+			delete all[uuid];
+			changed = true;
+		}
+	}
+
+	if (changed) {
+		writeAll(all);
+	}
+}

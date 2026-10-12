@@ -267,7 +267,8 @@ describe("attention and AWAY * (presence.ts)", function () {
 		const before = query.shared.totalMessages;
 		h.transport.line(":bob!bob@host AWAY :*");
 		const chan = h.client.findChannel("#seance")!;
-		expect(chan.findUser("bob")?.away, "the star is not a reason to display").to.equal("");
+		// The marker itself: away with no reason, which is not present ("").
+		expect(chan.findUser("bob")?.away, "away, the star kept as its marker").to.equal("*");
 		expect(query.shared.totalMessages, "a star is not news in the query").to.equal(before);
 		h.transport.line(":bob!bob@host AWAY :lunch");
 		expect(query.shared.totalMessages, "a real away is").to.equal(before + 1);

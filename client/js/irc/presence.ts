@@ -56,6 +56,14 @@ export interface PresenceState {
 	/** This client sent `AWAY *` and has not cleared it. */
 	starSent: boolean;
 	/**
+	 * The away state was declared before `CAP END` on this connection
+	 * ({@link registrationAwayLine}); `safe` when `draft/pre-away` was then
+	 * already ACKed, or asked for again on its own after a NAK — the REQ
+	 * the server read before the line is one it can still accept. Null when
+	 * nothing was declared.
+	 */
+	declaration: {safe: boolean} | null;
+	/**
 	 * Automatic AWAY commands whose replies (RPL_NOWAWAY / RPL_UNAWAY) are
 	 * still to come and should not be shown: switching apps is not news.
 	 * Replies arrive in send order, so a count is enough; a user's own
@@ -72,6 +80,7 @@ export function initialPresence(): PresenceState {
 		userAway: false,
 		userAwayText: null,
 		starSent: false,
+		declaration: null,
 		quietReplies: 0,
 		lastReported: "",
 	};
@@ -220,6 +229,7 @@ export function sendBack(client: IrcClient): void {
 /** The connection closed: whatever we told that server is gone with it. */
 export function presenceClosed(client: IrcClient): void {
 	client.presence.starSent = false;
+	client.presence.declaration = null;
 	client.presence.quietReplies = 0;
 	reportPresence(client);
 }
@@ -234,26 +244,58 @@ export function presenceClosed(client: IrcClient): void {
  *
  * When the pipelined `CAP END` goes out the cap is only requested, not yet
  * ACKed; the server reads the REQ first, so being requested is enough. A
- * NAK is caught by {@link presenceRegistered}.
+ * NAK is caught by {@link presenceRegistered}, which is why the line
+ * records whether the REQ it rides on can still be refused.
+ *
+ * Nothing when the client is quitting: handlers/cap.ts then drops the
+ * `CAP END` flush (a required SASL login failed inside `beforeEnd`, which
+ * runs first), so the state is only changed for a line that goes out.
  */
 export function registrationAwayLine(client: IrcClient): string | null {
 	const p = client.presence;
 	const caps = client.caps;
 
+	if (client.isQuitting) {
+		return null;
+	}
+
 	if (!caps.hasCapability(PRE_AWAY_CAP) && !caps.isRequesting(PRE_AWAY_CAP)) {
 		return null;
 	}
 
+	let line: string | null = null;
+
 	if (p.userAway) {
-		return trailingLine("AWAY", [p.userAwayText ?? " "]);
-	}
-
-	if (wantsStar(client)) {
+		line = trailingLine("AWAY", [p.userAwayText ?? " "]);
+	} else if (wantsStar(client)) {
 		p.starSent = true;
-		return formatLine({command: "AWAY", params: [AWAY_STAR]});
+		line = formatLine({command: "AWAY", params: [AWAY_STAR]});
 	}
 
-	return null;
+	if (line !== null) {
+		p.declaration = {
+			safe: caps.hasCapability(PRE_AWAY_CAP) || caps.wasNakRetried(PRE_AWAY_CAP),
+		};
+	}
+
+	return line;
+}
+
+/**
+ * Whether the server took the away state declared before `CAP END`: the
+ * cap is on now, and the REQ the line rode on was not the one that was
+ * NAKed. A multi-cap REQ refused and its per-cap retry ACKed before 001
+ * leaves the cap on although the server read the line with it off.
+ */
+function declarationTaken(client: IrcClient): boolean {
+	const d = client.presence.declaration;
+	const caps = client.caps;
+
+	return (
+		d !== null &&
+		caps.hasCapability(PRE_AWAY_CAP) &&
+		(d.safe || !caps.wasNakRetried(PRE_AWAY_CAP))
+	);
 }
 
 /**
@@ -264,9 +306,11 @@ export function registrationAwayLine(client: IrcClient): string | null {
  */
 export function presenceRegistered(client: IrcClient): void {
 	const p = client.presence;
+	const taken = declarationTaken(client);
+	p.declaration = null;
 
-	if (!client.caps.hasCapability(PRE_AWAY_CAP)) {
-		// Nothing was declared, or the server refused the cap it rode on.
+	if (!taken) {
+		// Nothing was declared, or the server read it without the cap.
 		p.starSent = false;
 
 		if (p.userAway && canSend(client)) {

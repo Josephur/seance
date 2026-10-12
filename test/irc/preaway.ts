@@ -15,6 +15,7 @@ import * as saved from "../../client/js/irc/saved-networks";
 import {
 	USER_AWAY_KEY,
 	getUserAway,
+	pruneUserAway,
 	useStorageBackend,
 	type StorageBackend,
 } from "../../client/js/irc/userAwayStore";
@@ -291,5 +292,135 @@ describe("the away state across reloads and reconnects (draft/pre-away)", functi
 
 			expect(aways(welcome(h))).to.deep.equal(["AWAY :x"]);
 		});
+	});
+
+	describe("a NAKed REQ whose per-cap retry is ACKed before 001", function () {
+		/** LS, then NAK the whole REQ and ACK every per-cap retry. */
+		function nakThenRetry(h: Harness, caps: string): string[] {
+			h.client.connect();
+			h.sent();
+			h.transport.open();
+			h.transport.line(`:irc.test CAP * LS :${caps}`);
+			const first = h.sent();
+			const req = first.filter((l) => l.startsWith("CAP REQ :")).pop() as string;
+			h.transport.line(`:irc.test CAP alice NAK :${req.slice("CAP REQ :".length)}`);
+
+			for (const line of h.sent().filter((l) => l.startsWith("CAP REQ :"))) {
+				h.transport.line(`:irc.test CAP alice ACK :${line.slice("CAP REQ :".length)}`);
+			}
+
+			return first;
+		}
+
+		it("says the /away again after 001: the server read it with the cap off", function () {
+			backend.set(USER_AWAY_KEY, JSON.stringify({[UUID]: "x"}));
+			const h = client();
+			const first = nakThenRetry(h, PRE_AWAY_CAPS);
+			expect(tail(first), "pipelined under the REQ that is NAKed").to.deep.equal([
+				"AWAY :x",
+				"CAP END",
+			]);
+			expect(h.client.caps.hasCapability("draft/pre-away")).to.equal(true);
+			expect(aways(welcome(h))).to.deep.equal(["AWAY :x"]);
+		});
+
+		it("says AWAY * again after 001 for a hidden page, and counts it sent", function () {
+			const h = client();
+			h.client.setAttended(false);
+			const first = nakThenRetry(h, PRE_AWAY_CAPS);
+			expect(tail(first)).to.deep.equal(["AWAY *", "CAP END"]);
+			expect(aways(welcome(h))).to.deep.equal(["AWAY *"]);
+			expect(h.client.presence.starSent).to.equal(true);
+		});
+
+		it("with SASL the declaration rides on the ACKed retry and stands", function () {
+			backend.set(USER_AWAY_KEY, JSON.stringify({[UUID]: "x"}));
+			const h = client({sasl: "plain", saslAccount: "alice", saslPassword: "s3cret"});
+			const first = nakThenRetry(h, SASL_CAPS);
+			expect(aways(first), "nothing before SASL is done").to.deep.equal([]);
+			h.transport.lines(
+				"AUTHENTICATE +",
+				":irc.test 900 alice alice!alice@host alice :You are now logged in as alice",
+				":irc.test 903 alice :SASL authentication successful"
+			);
+			expect(tail(h.sent())).to.deep.equal(["AWAY :x", "CAP END"]);
+			expect(aways(welcome(h))).to.deep.equal([]);
+		});
+	});
+
+	it("a required login that fails declares nothing and leaves no star counted", function () {
+		const h = client({sasl: "plain", saslAccount: "alice", saslPassword: "s3cret"});
+		h.client.setAttended(false);
+		h.client.connect();
+		h.sent();
+		h.transport.open();
+		// No sasl offered: the login cannot happen, the client QUITs.
+		h.transport.line(`:irc.test CAP * LS :${PRE_AWAY_CAPS}`);
+		const sent = h.sent();
+		expect(sent).to.include("QUIT :SASL authentication failed");
+		expect(aways(sent)).to.deep.equal([]);
+		expect(sent).to.not.include("CAP END");
+		expect(h.client.presence.starSent).to.equal(false);
+	});
+
+	it("prunes the /away of networks that are gone", function () {
+		backend.set(USER_AWAY_KEY, JSON.stringify({kept: "a", gone: "b"}));
+		pruneUserAway(["kept", "other"]);
+		expect(JSON.parse(backend.get(USER_AWAY_KEY) as string)).to.deep.equal({kept: "a"});
+		pruneUserAway([]);
+		expect(backend.get(USER_AWAY_KEY)).to.equal(null);
+	});
+});
+
+describe("another user's AWAY * (draft/pre-away)", function () {
+	function registered(): Harness {
+		const h = setup();
+		connect(h);
+		h.transport.line(":alice!a@host JOIN #seance");
+		h.transport.lines(
+			":irc.test 353 alice = #seance :alice bob",
+			":irc.test 366 alice #seance :End of /NAMES list."
+		);
+		h.sent();
+		return h;
+	}
+
+	it("keeps the star apart from present, so a query still sees bob come back", function () {
+		const h = registered();
+		dispatchInput(h.client, h.client.lobby, "/query bob");
+		const query = h.client.findChannel("bob");
+		expect(query).to.not.equal(undefined);
+		const chan = h.client.findChannel("#seance");
+		h.dispatch.resetHistory();
+
+		h.transport.line(":bob!b@host AWAY :lunch");
+		h.transport.line(":bob!b@host AWAY *");
+		expect(query?.userAway).to.equal("*");
+		expect(chan?.findUser("bob")?.away, "away in the user list too").to.equal("*");
+		h.transport.line(":bob!b@host AWAY");
+		expect(chan?.findUser("bob")?.away).to.equal("");
+
+		const types = h.messages(query?.id).map((m) => m.type);
+		expect(types).to.deep.equal([MessageType.AWAY, MessageType.BACK]);
+	});
+
+	it("shows a 301 star as away, in a whois and in a query", function () {
+		const h = registered();
+		h.transport.lines(
+			":irc.test 311 alice bob ~bob host.example * :Bob Example",
+			":irc.test 301 alice bob :*",
+			":irc.test 318 alice bob :End of /WHOIS list."
+		);
+		const whois = h.messages().find((m) => m.type === MessageType.WHOIS);
+		expect(whois?.whois?.away).to.equal("away");
+
+		dispatchInput(h.client, h.client.lobby, "/query bob");
+		const query = h.client.findChannel("bob");
+		h.dispatch.resetHistory();
+		h.transport.line(":irc.test 301 alice bob :*");
+		h.transport.line(":irc.test 301 alice bob :*");
+		const shown = h.messages(query?.id).filter((m) => m.type === MessageType.AWAY);
+		expect(shown.map((m) => m.text)).to.deep.equal(["away"]);
+		expect(query?.userAway).to.equal("*");
 	});
 });

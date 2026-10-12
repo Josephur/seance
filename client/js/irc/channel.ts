@@ -63,7 +63,10 @@ export class Channel {
 	modeText: string | undefined = undefined;
 	/** The user asked for the modes (`/mode #chan`): show the next 324 even if it is unchanged. */
 	modesAsked = false;
-	/** Last away message seen for the peer of a query window. */
+	/**
+	 * Last away state seen for the peer of a query window: their message,
+	 * `*` (`draft/pre-away`: away, no reason given), "" once back.
+	 */
 	userAway: string | undefined = undefined;
 	/** Reference of every message handed to the UI, by id (`more` cursor lookup). */
 	readonly msgRefs = new Map<number, MsgRef>();
