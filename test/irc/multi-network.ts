@@ -558,4 +558,104 @@ describe("multiple networks", function () {
 			expect(saved.get("unknown")).to.equal(undefined);
 		});
 	});
+
+	describe("presence mode through the bus (network:presence-mode, network:edit, dnd:cleared)", function () {
+		function stored(): SavedNetwork {
+			return saved.save({
+				uuid: "net-a",
+				name: "",
+				host: "net-a.test",
+				port: 8443,
+				tls: true,
+				nick: "alice",
+				join: "",
+				sasl: "",
+				saslAccount: "",
+				saslPassword: "",
+			});
+		}
+
+		/** Register with an account and the metadata cap, the mute list read empty. */
+		function registerWithMute(client: IrcClient): FakeTransport {
+			const t = manager.transportOf(client);
+			t.open();
+			t.lines(`:irc.test CAP * LS :server-time message-tags batch draft/metadata-2`);
+			const req = t.sent.find((l) => l.startsWith("CAP REQ :")) as string;
+			t.lines(
+				`:irc.test CAP alice ACK :${req.slice("CAP REQ :".length)}`,
+				":irc.test 001 alice :Welcome",
+				":irc.test 900 alice alice!a@h alice :You are now logged in as alice",
+				":irc.test 422 alice :MOTD File is missing",
+				":irc.test 766 alice alice draft/webpush/mute :key not set"
+			);
+			return t;
+		}
+
+		it("network:presence-mode saves a saved network's mode and applies it", function () {
+			stored();
+			const a = manager.createNetwork({uuid: "net-a", nick: "alice"});
+			socket.emit("network:presence-mode", {network: "net-a", mode: "away"});
+			expect(a.presenceMode).to.equal("away");
+			expect(saved.get("net-a")?.presenceMode).to.equal("away");
+			socket.emit("network:presence-mode", {network: "net-a", mode: "auto"});
+			expect(a.presenceMode).to.equal("auto");
+			expect(saved.get("net-a")).to.not.have.property("presenceMode");
+		});
+
+		it("network:presence-mode on an unsaved network applies it and saves nothing", function () {
+			const a = manager.createNetwork({uuid: "net-a", nick: "alice"});
+			socket.emit("network:presence-mode", {network: "net-a", mode: "dnd"});
+			expect(a.presenceMode).to.equal("dnd");
+			expect(saved.get("net-a")).to.equal(undefined);
+		});
+
+		it("network:edit of an unsaved network keeps the mode the dot set", function () {
+			const a = manager.createNetwork({uuid: "net-a", nick: "alice"});
+			socket.emit("network:presence-mode", {network: "net-a", mode: "dnd"});
+			// The form posts no presenceMode when its select was not touched.
+			socket.emit("network:edit", {uuid: "net-a", nick: "alice", host: "net-a.test"});
+			expect(a.presenceMode).to.equal("dnd");
+			expect(saved.get("net-a")?.presenceMode).to.equal("dnd");
+		});
+
+		it("network:edit of a saved network keeps the mode the dot set", function () {
+			stored();
+			const a = manager.createNetwork({uuid: "net-a", nick: "alice"});
+			socket.emit("network:presence-mode", {network: "net-a", mode: "away"});
+			socket.emit("network:edit", {uuid: "net-a", nick: "alice", host: "net-a.test"});
+			expect(a.presenceMode).to.equal("away");
+			expect(saved.get("net-a")?.presenceMode).to.equal("away");
+		});
+
+		it("another device's Off sets a network in mode dnd back to auto, saved (probe C)", function () {
+			stored();
+			const a = manager.createNetwork({uuid: "net-a", nick: "alice"});
+			const t = registerWithMute(a);
+			socket.emit("network:presence-mode", {network: "net-a", mode: "dnd"});
+			const set = t.sent.find((l) => l.startsWith("METADATA * SET")) as string;
+			const value = set.split("private :")[1];
+			t.lines(
+				`:irc.test 761 alice alice draft/webpush/mute private :${value}`,
+				`:irc.test METADATA alice draft/webpush/mute * :${value}`
+			);
+			const mark = t.sent.length;
+			t.lines(":irc.test METADATA alice draft/webpush/mute *");
+			expect(a.presenceMode).to.equal("auto");
+			expect(saved.get("net-a")).to.not.have.property("presenceMode");
+			expect(a.presenceSnapshot()).to.include({mode: "auto", dnd: false});
+			expect(a.muteSuppressed).to.equal(false);
+			const after = t.sent.slice(mark);
+			expect(after.filter((l) => l.includes("METADATA"))).to.deep.equal([]);
+			expect(after).to.include("AWAY");
+		});
+
+		it("dnd:cleared leaves a network in another mode as it is", function () {
+			stored();
+			const a = manager.createNetwork({uuid: "net-a", nick: "alice"});
+			socket.emit("network:presence-mode", {network: "net-a", mode: "away"});
+			socket.dispatch("dnd:cleared", {network: "net-a"});
+			expect(a.presenceMode).to.equal("away");
+			expect(saved.get("net-a")?.presenceMode).to.equal("away");
+		});
+	});
 });
