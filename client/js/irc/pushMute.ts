@@ -123,16 +123,31 @@ export function desiredUntil(client: IrcClient, now: number): number | null {
 /** Send the whole value (empty deletes the key); `muteValue` holds it at once. */
 function writeMute(client: IrcClient, value: string): void {
 	client.muteValue = value;
+	prunePending(client);
 	client.mutePending.push({value, at: Date.now(), echoed: false});
-	// Private: only the account's own sessions may read or hear it (the
-	// server's push gate reads it whatever its visibility). The clear says
-	// private too, so its notification goes to the account's sessions,
-	// whatever their nick, rather than to whoever shares a channel.
+	// Private: only the account's own sessions may read it (the server's
+	// push gate reads it whatever its visibility). A delete takes no
+	// visibility (m_metadata.c: `SET target key` deletes).
 	client.send(
-		value
-			? `METADATA * SET ${MUTE_KEY} private :${value}`
-			: `METADATA * SET ${MUTE_KEY} private`
+		value ? `METADATA * SET ${MUTE_KEY} private :${value}` : `METADATA * SET ${MUTE_KEY}`
 	);
+}
+
+/**
+ * Forget writes older than MUTE_ECHO_TIMEOUT_MS, wherever they sit: one
+ * never echoed (refused) must stop hiding other devices' values, and this
+ * bounds the queue to the last timeout's writes whether or not any echo
+ * ever comes back.
+ */
+function prunePending(client: IrcClient): void {
+	const queue = client.mutePending;
+	const cutoff = Date.now() - MUTE_ECHO_TIMEOUT_MS;
+
+	for (let i = queue.length - 1; i >= 0; i--) {
+		if (queue[i].at < cutoff) {
+			queue.splice(i, 1);
+		}
+	}
 }
 
 /**
@@ -218,17 +233,8 @@ export function clearRemoteDnd(client: IrcClient): void {
  * is enough because a foreign value equal to our newest one changes nothing.
  */
 function ownEcho(client: IrcClient, value: string): boolean {
+	prunePending(client);
 	const queue = client.mutePending;
-	const cutoff = Date.now() - MUTE_ECHO_TIMEOUT_MS;
-
-	// Writes that never came back (refused), wherever they sit, are
-	// forgotten, and so are echoed ones as old: this bounds the queue to
-	// the writes of the last MUTE_ECHO_TIMEOUT_MS.
-	for (let i = queue.length - 1; i >= 0; i--) {
-		if (queue[i].at < cutoff) {
-			queue.splice(i, 1);
-		}
-	}
 
 	const index = queue.findIndex((p) => p.value === value);
 

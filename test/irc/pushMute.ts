@@ -279,7 +279,7 @@ describe("push mute on the wire (irc/pushMute.ts)", function () {
 		expect(h.client.remoteDnd).to.equal(true);
 		h.sent();
 		h.client.setGlobalDnd(false, null);
-		expect(h.sent()).to.deep.equal(["METADATA * SET draft/webpush/mute private", "AWAY"]);
+		expect(h.sent()).to.deep.equal(["METADATA * SET draft/webpush/mute", "AWAY"]);
 		expect(h.client.remoteDnd).to.equal(false);
 		expect(h.client.presenceSnapshot().dnd).to.equal(false);
 		// The echo of the clear changes nothing.
@@ -300,7 +300,7 @@ describe("push mute on the wire (irc/pushMute.ts)", function () {
 		h.client.setGlobalDnd(false, null);
 		expect(h.sent().filter((l) => l.includes("SET"))).to.deep.equal([]);
 		clearRemoteDnd(h.client);
-		expect(h.sent()).to.deep.equal(["METADATA * SET draft/webpush/mute private", "AWAY"]);
+		expect(h.sent()).to.deep.equal(["METADATA * SET draft/webpush/mute", "AWAY"]);
 	});
 
 	it("another user's entry in a shared channel is not ours", function () {
@@ -368,7 +368,7 @@ describe("push mute on the wire (irc/pushMute.ts)", function () {
 		h.client.setGlobalDnd(false, null);
 		h.client.setGlobalDnd(true, null);
 		expect(h.sent()).to.deep.equal([
-			"METADATA * SET draft/webpush/mute private",
+			"METADATA * SET draft/webpush/mute",
 			"AWAY",
 			"AWAY *",
 			`METADATA * SET draft/webpush/mute private :${on}`,
@@ -544,6 +544,22 @@ describe("push mute on the wire (irc/pushMute.ts)", function () {
 		// Any echo prunes by age: only the newest round's two writes can remain.
 		h.transport.line(":irc.test 766 alice alice draft/webpush/mute :key not set");
 		expect(h.client.mutePending.length).to.be.at.most(2);
+	});
+
+	it("stays bounded when no write is ever echoed", function () {
+		const h = connect();
+		h.transport.line(":irc.test 766 alice alice draft/webpush/mute :key not set");
+
+		for (let i = 0; i < 20; i++) {
+			h.client.setGlobalDnd(true, null);
+			h.client.setGlobalDnd(false, null);
+			clock.tick(MUTE_ECHO_TIMEOUT_MS + 1);
+			expect(h.client.mutePending.length).to.be.at.most(2);
+		}
+
+		expect(h.sent().filter((l) => l.includes("SET"))).to.have.length(40);
+		h.transport.close();
+		expect(h.client.mutePending).to.deep.equal([]);
 	});
 
 	it("takes a private value under another nick, never a public one", function () {
