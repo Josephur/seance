@@ -6,7 +6,9 @@ import {
 	INDEFINITE_MUTE_S,
 	MUTE_ECHO_TIMEOUT_MS,
 	MUTE_READ_DELAY_MS,
+	claimMute,
 	clearRemoteDnd,
+	desiredUntil,
 	formatMute,
 	globalUntil,
 	parseMute,
@@ -14,6 +16,13 @@ import {
 	withoutGlobal,
 } from "../../client/js/irc/pushMute";
 import {syncPresence} from "../../client/js/irc/presence";
+import {
+	MUTE_MEMORY_KEY,
+	getMuteMemory,
+	useStorageBackend as useMuteMemoryBackend,
+	type StorageBackend,
+} from "../../client/js/irc/muteMemory";
+import * as saved from "../../client/js/irc/saved-networks";
 import type {Transport} from "../../client/js/irc/types";
 import type {TransportEvent, TransportState} from "../../client/js/irc/transport";
 
@@ -714,5 +723,349 @@ describe("push mute on the wire (irc/pushMute.ts)", function () {
 			":irc.test 766 alice alice draft/webpush/mute :key not set"
 		);
 		expect(h.dispatch.getCalls().filter((c) => c.args[0] === "msg")).to.deep.equal([]);
+	});
+});
+
+class MemoryBackend implements StorageBackend {
+	data = new Map<string, string>();
+	get(key: string): string | null {
+		return this.data.get(key) ?? null;
+	}
+	set(key: string, value: string): void {
+		this.data.set(key, value);
+	}
+	remove(key: string): void {
+		this.data.delete(key);
+	}
+}
+
+describe("push mute across a reload or a reconnect (irc/muteMemory.ts)", function () {
+	let clock: sinon.SinonFakeTimers;
+	let backend: MemoryBackend;
+	const NOW_MS = Date.UTC(2026, 9, 12, 12, 0, 0);
+	const NOW_S = NOW_MS / 1000;
+	const HOUR_MS = 3600_000;
+	const sets = (lines: string[]) => lines.filter((l) => l.includes("SET"));
+	const cleared = (h: ReturnType<typeof connect>) =>
+		h.dispatch.getCalls().filter((c) => c.args[0] === "dnd:cleared");
+
+	beforeEach(function () {
+		clock = sinon.useFakeTimers({now: NOW_MS, toFake: ["setTimeout", "clearTimeout", "Date"]});
+		backend = new MemoryBackend();
+		useMuteMemoryBackend(backend);
+	});
+
+	afterEach(function () {
+		clock.restore();
+		useMuteMemoryBackend(null);
+	});
+
+	/** The server answers our newest write, both echoes. */
+	function echo(h: ReturnType<typeof connect>, value: string): void {
+		h.transport.lines(
+			value
+				? `:irc.test 761 alice alice draft/webpush/mute private :${value}`
+				: ":irc.test 766 alice alice draft/webpush/mute :key not set",
+			value
+				? `:irc.test METADATA alice draft/webpush/mute * :${value}`
+				: ":irc.test METADATA alice draft/webpush/mute *"
+		);
+	}
+
+	/** The GET's answer on a fresh registration. */
+	function read(h: ReturnType<typeof connect>, value: string): void {
+		h.transport.line(
+			value
+				? `:irc.test 761 alice alice draft/webpush/mute private :${value}`
+				: ":irc.test 766 alice alice draft/webpush/mute :key not set"
+		);
+	}
+
+	/** A page with DND `until` (null: indefinite) whose entry the server confirmed. */
+	function confirmed(until: number | null): {h: ReturnType<typeof connect>; value: string} {
+		const h = connect();
+		read(h, "");
+		h.client.setGlobalDnd(true, until);
+		const value = `*:${until === null ? NOW_S + INDEFINITE_MUTE_S : until / 1000}`;
+		expect(sets(h.sent())).to.deep.equal([
+			`METADATA * SET draft/webpush/mute private :${value}`,
+		]);
+		echo(h, value);
+		return {h, value};
+	}
+
+	/** The page loaded again: a new client on the same network, DND applied at boot. */
+	function reload(active: boolean, until: number | null): ReturnType<typeof connect> {
+		const h = connect();
+		h.client.setGlobalDnd(active, until);
+		h.sent();
+		return h;
+	}
+
+	it("remembers what it wrote and what the server confirmed, per network", function () {
+		const {h, value} = confirmed(NOW_MS + 8 * HOUR_MS);
+		expect(getMuteMemory("mute-net")).to.deep.equal({
+			ownedUntil: NOW_S + 8 * 3600,
+			confirmedUntil: NOW_S + 8 * 3600,
+		});
+		expect(JSON.parse(backend.data.get(MUTE_MEMORY_KEY) as string)).to.have.key("mute-net");
+		h.client.setGlobalDnd(true, NOW_MS + HOUR_MS);
+		expect(getMuteMemory("mute-net")).to.deep.equal({
+			ownedUntil: NOW_S + 3600,
+			confirmedUntil: NOW_S + 8 * 3600,
+		});
+		expect(value).to.equal(`*:${NOW_S + 8 * 3600}`);
+	});
+
+	it("after a reload, For 1 hour shortens our indefinite entry and its end lifts it", function () {
+		const first = confirmed(null).value;
+		clock.tick(86400_000); // 29 days left: no renewal due
+		const now = NOW_S + 86400;
+		const h = reload(true, null);
+		read(h, first);
+		expect(h.client.muteOwned).to.equal(true);
+		expect(sets(h.sent())).to.deep.equal([]);
+		h.client.setGlobalDnd(true, (now + 3600) * 1000);
+		expect(sets(h.sent())).to.deep.equal([
+			`METADATA * SET draft/webpush/mute private :*:${now + 3600}`,
+		]);
+		echo(h, `*:${now + 3600}`);
+		clock.tick(HOUR_MS + 1000);
+		// The hour is over: the server's entry has lapsed, nothing to remove.
+		h.client.setGlobalDnd(false, null);
+		expect(h.client.remoteDnd).to.equal(false);
+		expect(h.client.presenceSnapshot().dnd).to.equal(false);
+		expect(h.sent()).to.deep.equal(["AWAY"]);
+	});
+
+	it("after a reload, 8 hours to 1 hour rewrites our entry", function () {
+		const first = confirmed(NOW_MS + 8 * HOUR_MS).value;
+		const h = reload(true, NOW_MS + 8 * HOUR_MS);
+		read(h, first);
+		expect(sets(h.sent())).to.deep.equal([]);
+		h.client.setGlobalDnd(true, NOW_MS + HOUR_MS);
+		expect(sets(h.sent())).to.deep.equal([
+			`METADATA * SET draft/webpush/mute private :*:${NOW_S + 3600}`,
+		]);
+	});
+
+	it("after a reload, the schedule switched off mid-window clears our entry", function () {
+		const first = confirmed(NOW_MS + 2 * HOUR_MS).value;
+		const h = reload(true, NOW_MS + 2 * HOUR_MS);
+		read(h, first);
+		h.sent();
+		h.client.setGlobalDnd(false, null);
+		expect(h.sent()).to.deep.equal(["METADATA * SET draft/webpush/mute", "AWAY"]);
+		expect(h.client.remoteDnd).to.equal(false);
+	});
+
+	it("after a reload, an edited schedule window rewrites our entry's end", function () {
+		const first = confirmed(NOW_MS + 2 * HOUR_MS).value;
+		const h = reload(true, NOW_MS + 2 * HOUR_MS);
+		read(h, first);
+		h.client.setGlobalDnd(true, NOW_MS + 5 * HOUR_MS);
+		expect(sets(h.sent())).to.deep.equal([
+			`METADATA * SET draft/webpush/mute private :*:${NOW_S + 5 * 3600}`,
+		]);
+	});
+
+	it("without this device's memory an entry is adopted, until the user claims it", function () {
+		// The final review's probe A: our own `*:+29d` read back, no memory of it.
+		const h = connect();
+		h.client.setGlobalDnd(true, null);
+		read(h, `*:${NOW_S + 29 * 86400}`);
+		h.sent();
+		h.client.setGlobalDnd(true, NOW_MS + HOUR_MS);
+		expect(sets(h.sent())).to.deep.equal([]);
+		h.client.setGlobalDnd(true, null);
+		// "For 1 hour" from the pill: claimed, then applied.
+		claimMute(h.client);
+		h.client.setGlobalDnd(true, NOW_MS + HOUR_MS);
+		expect(sets(h.sent())).to.deep.equal([
+			`METADATA * SET draft/webpush/mute private :*:${NOW_S + 3600}`,
+		]);
+		echo(h, `*:${NOW_S + 3600}`);
+		clock.tick(HOUR_MS + 1000);
+		h.client.setGlobalDnd(false, null);
+		expect(h.sent()).to.deep.equal(["AWAY"]);
+		expect(h.client.remoteDnd).to.equal(false);
+		expect(h.client.presenceSnapshot().dnd).to.equal(false);
+	});
+
+	it("a claim made before the GET waits for it, and reports no clear", function () {
+		confirmed(NOW_MS + 8 * HOUR_MS);
+		const h = connect();
+		h.client.setGlobalDnd(true, NOW_MS + 8 * HOUR_MS);
+		h.sent();
+		claimMute(h.client);
+		h.client.setGlobalDnd(true, NOW_MS + HOUR_MS);
+		expect(sets(h.sent())).to.deep.equal([]);
+		h.dispatch.resetHistory();
+		// Another device's entry, then: claimed over.
+		read(h, `*:${NOW_S + 3 * 3600}`);
+		expect(sets(h.sent())).to.deep.equal([
+			`METADATA * SET draft/webpush/mute private :*:${NOW_S + 3600}`,
+		]);
+		expect(cleared(h)).to.have.length(0);
+	});
+
+	it("a claim that wants no entry leaves another device's DND alone", function () {
+		const h = connect();
+		read(h, `*:${NOW_S + 3600}`);
+		h.sent();
+		claimMute(h.client);
+		syncPresence(h.client);
+		expect(sets(h.sent())).to.deep.equal([]);
+		expect(h.client.remoteDnd).to.equal(true);
+		expect(h.client.muteClaim).to.equal(false);
+	});
+
+	it("a claim lifts the suppression another device's Off left", function () {
+		const h = connect();
+		read(h, "");
+		h.client.setGlobalDnd(true, NOW_MS + 8 * HOUR_MS);
+		echo(h, `*:${NOW_S + 8 * 3600}`);
+		h.transport.line(":irc.test METADATA alice draft/webpush/mute *");
+		expect(h.client.muteSuppressed).to.equal(true);
+		h.sent();
+		claimMute(h.client);
+		h.client.setGlobalDnd(true, NOW_MS + HOUR_MS);
+		expect(sets(h.sent())).to.deep.equal([
+			`METADATA * SET draft/webpush/mute private :*:${NOW_S + 3600}`,
+		]);
+	});
+
+	it("another device's Off while we were disconnected stays off (probe B)", function () {
+		const {h} = confirmed(NOW_MS + 8 * HOUR_MS);
+		reconnect(h);
+		h.sent();
+		h.dispatch.resetHistory();
+		read(h, "");
+		expect(sets(h.sent())).to.deep.equal([]);
+		expect(cleared(h).map((c) => c.args[1] as unknown)).to.deep.equal([{network: "mute-net"}]);
+		expect(h.client.muteSuppressed).to.equal(true);
+		// The next tick writes nothing either.
+		syncPresence(h.client);
+		expect(sets(h.sent())).to.deep.equal([]);
+		// And the next reconnect does not report it again.
+		reconnect(h);
+		h.dispatch.resetHistory();
+		read(h, "");
+		expect(cleared(h)).to.have.length(0);
+	});
+
+	it("another device's Off before this page loaded again stays off", function () {
+		confirmed(NOW_MS + 8 * HOUR_MS);
+		const h = reload(true, NOW_MS + 8 * HOUR_MS);
+		h.dispatch.resetHistory();
+		read(h, "");
+		expect(sets(h.sent())).to.deep.equal([]);
+		expect(cleared(h)).to.have.length(1);
+	});
+
+	it("our entry ending by itself while away is no Off from elsewhere", function () {
+		const {h} = confirmed(NOW_MS + HOUR_MS);
+		h.transport.close();
+		clock.tick(2 * HOUR_MS);
+		h.client.setGlobalDnd(true, NOW_MS + 5 * HOUR_MS);
+		reconnect(h);
+		h.sent();
+		h.dispatch.resetHistory();
+		read(h, "");
+		expect(cleared(h)).to.have.length(0);
+		expect(sets(h.sent())).to.deep.equal([
+			`METADATA * SET draft/webpush/mute private :*:${NOW_S + 5 * 3600}`,
+		]);
+	});
+
+	it("a write lost with the dying socket is written again, not adopted", function () {
+		const {h} = confirmed(NOW_MS + 8 * HOUR_MS);
+		h.client.setGlobalDnd(true, NOW_MS + HOUR_MS);
+		expect(sets(h.sent())).to.have.length(1); // never echoed
+		reconnect(h);
+		h.sent();
+		h.dispatch.resetHistory();
+		read(h, `*:${NOW_S + 8 * 3600}`);
+		expect(sets(h.sent())).to.deep.equal([
+			`METADATA * SET draft/webpush/mute private :*:${NOW_S + 3600}`,
+		]);
+		expect(h.client.muteOwned).to.equal(true);
+		expect(cleared(h)).to.have.length(0);
+	});
+
+	it("a clear lost with the dying socket is sent again", function () {
+		const {h} = confirmed(NOW_MS + 8 * HOUR_MS);
+		h.client.setGlobalDnd(false, null);
+		expect(h.sent()).to.include("METADATA * SET draft/webpush/mute");
+		reconnect(h);
+		h.sent();
+		read(h, `*:${NOW_S + 8 * 3600}`);
+		expect(sets(h.sent())).to.deep.equal(["METADATA * SET draft/webpush/mute"]);
+		expect(h.client.remoteDnd).to.equal(false);
+	});
+
+	it("a write that landed though its echo was lost is ours after a reload", function () {
+		confirmed(NOW_MS + 8 * HOUR_MS).h.client.setGlobalDnd(true, NOW_MS + HOUR_MS);
+		const h = reload(true, NOW_MS + HOUR_MS);
+		read(h, `*:${NOW_S + 3600}`);
+		expect(h.client.muteOwned).to.equal(true);
+		expect(getMuteMemory("mute-net").confirmedUntil).to.equal(NOW_S + 3600);
+		h.client.setGlobalDnd(false, null);
+		expect(sets(h.sent())).to.deep.equal(["METADATA * SET draft/webpush/mute"]);
+	});
+
+	it("our own confirmed Off, then DND again after a reload: written, no clear reported", function () {
+		const {h} = confirmed(NOW_MS + 8 * HOUR_MS);
+		h.client.setGlobalDnd(false, null);
+		echo(h, "");
+		expect(getMuteMemory("mute-net")).to.deep.equal({ownedUntil: null, confirmedUntil: null});
+		const h2 = reload(true, NOW_MS + 2 * HOUR_MS);
+		h2.dispatch.resetHistory();
+		read(h2, "");
+		expect(cleared(h2)).to.have.length(0);
+		expect(sets(h2.sent())).to.deep.equal([
+			`METADATA * SET draft/webpush/mute private :*:${NOW_S + 2 * 3600}`,
+		]);
+	});
+
+	it("another device's entry read back after a reload is adopted and forgets ours", function () {
+		confirmed(NOW_MS + 8 * HOUR_MS);
+		const h = reload(true, NOW_MS + 8 * HOUR_MS);
+		read(h, `*:${NOW_S + 3 * 3600}`);
+		expect(h.client.muteOwned).to.equal(false);
+		expect(sets(h.sent())).to.deep.equal([]);
+		expect(getMuteMemory("mute-net")).to.deep.equal({ownedUntil: null, confirmedUntil: null});
+	});
+
+	it("removing the network forgets this device's memory of it", function () {
+		confirmed(NOW_MS + 8 * HOUR_MS);
+		saved.remove("mute-net");
+		expect(backend.data.has(MUTE_MEMORY_KEY)).to.equal(false);
+	});
+
+	it("a timed DND already over wants no entry; a network in mode dnd still does", function () {
+		const h = connect();
+		h.client.setGlobalDnd(true, NOW_MS - 1000);
+		expect(desiredUntil(h.client, NOW_S)).to.equal(null);
+		h.client.setPresenceMode("dnd");
+		expect(desiredUntil(h.client, NOW_S)).to.equal(NOW_S + INDEFINITE_MUTE_S);
+	});
+
+	it("a network in mode dnd cleared elsewhere reports it (probe C; bus.ts sets auto)", function () {
+		const h = connect();
+		read(h, "");
+		h.client.setPresenceMode("dnd");
+		const value = `*:${NOW_S + INDEFINITE_MUTE_S}`;
+		echo(h, value);
+		h.sent();
+		h.dispatch.resetHistory();
+		h.transport.line(":irc.test METADATA alice draft/webpush/mute *");
+		expect(cleared(h)).to.have.length(1);
+		expect(h.client.muteSuppressed).to.equal(true);
+		// What bus.ts does on dnd:cleared (test/irc/multi-network.ts).
+		h.client.setPresenceMode("auto");
+		expect(h.client.presenceSnapshot().dnd).to.equal(false);
+		expect(h.client.muteSuppressed).to.equal(false);
+		expect(sets(h.sent())).to.deep.equal([]);
 	});
 });

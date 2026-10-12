@@ -18,6 +18,7 @@ import storage from "../localStorage";
 import {forgetNetworkLog} from "./querylog";
 import {forgetNoticeLog} from "./noticelog";
 import {forgetOperPrefs} from "./operprefs";
+import {forgetMuteMemory} from "./muteMemory";
 import type {ConnectOptions} from "./types";
 import {PRESENCE_MODES, type PresenceMode} from "../helpers/dnd";
 import type {ServicesConfig} from "../../../shared/types/network";
@@ -459,6 +460,7 @@ export function remove(uuid: string): void {
 	forgetNetworkLog(uuid); // its private conversations go with it
 	forgetNoticeLog(uuid); // and its server notices
 	forgetOperPrefs(uuid);
+	forgetMuteMemory(uuid); // and what this device wrote to its push mute list
 }
 
 /** Mark an entry as the most recently used one. */

@@ -20,7 +20,7 @@ import {
 	type DndSchedule,
 	type DndState,
 } from "./helpers/dnd";
-import {clearRemoteDndAll, setGlobalDndAll, syncPresenceAll} from "./irc/manager";
+import {claimMuteAll, clearRemoteDndAll, setGlobalDndAll, syncPresenceAll} from "./irc/manager";
 
 const KEY = "thelounge.dnd";
 const now = ref(new Date());
@@ -29,6 +29,18 @@ const verdict = computed(() => dndAt(state, now.value));
 
 function apply(): void {
 	setGlobalDndAll(verdict.value.active, verdict.value.until);
+}
+
+/**
+ * A change the user made here: every network's live `*` entry becomes
+ * ours (irc/pushMute.ts claimMute), so the new want is written over it,
+ * whoever wrote it. Claimed before the save, whose apply syncs at once.
+ */
+function saveByHand(next: DndState): void {
+	claimMuteAll();
+	save(next);
+	// The verdict may not have changed (no sync ran): take the claim now.
+	syncPresenceAll();
 }
 
 function save(next: DndState): void {
@@ -92,19 +104,23 @@ export default {
 	start,
 	setManual(manual: DndManual): void {
 		now.value = new Date();
-		save({...state, manual});
+		saveByHand({...state, manual});
 	},
 	setSchedule(schedule: DndSchedule): void {
 		now.value = new Date();
-		save({...state, schedule, scheduleSkippedUntil: null});
+		saveByHand({...state, schedule, scheduleSkippedUntil: null});
 	},
 	followSchedule(on: boolean): void {
 		now.value = new Date();
-		save({...state, schedule: {...state.schedule, enabled: on}, scheduleSkippedUntil: null});
+		saveByHand({
+			...state,
+			schedule: {...state.schedule, enabled: on},
+			scheduleSkippedUntil: null,
+		});
 	},
 	turnOff(): void {
 		now.value = new Date();
-		save(modelTurnOff(state, now.value));
+		saveByHand(modelTurnOff(state, now.value));
 		clearRemoteDndAll();
 	},
 };

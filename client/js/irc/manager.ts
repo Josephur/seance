@@ -21,7 +21,7 @@ import {registerBusHandlers} from "./bus";
 import {IrcClient} from "./client";
 import {flushQueryLogs} from "./querylog";
 import {syncPresence} from "./presence";
-import {clearRemoteDnd} from "./pushMute";
+import {claimMute, clearRemoteDnd} from "./pushMute";
 import * as saved from "./saved-networks";
 import type {SavedNetwork} from "./saved-networks";
 import type {ConnectOptions} from "./types";
@@ -256,9 +256,23 @@ export function setGlobalDndAll(active: boolean, until: number | null): void {
 	}
 }
 
+/**
+ * The pill's Off: remove every network's `*` entry, whoever wrote it. A
+ * network in mode dnd keeps its own (removing it would only have the next
+ * sync write it again).
+ */
 export function clearRemoteDndAll(): void {
 	for (const client of clients.values()) {
-		clearRemoteDnd(client);
+		if (client.presenceMode !== "dnd") {
+			clearRemoteDnd(client);
+		}
+	}
+}
+
+/** The user changed the do not disturb by hand: see pushMute.ts `claimMute`. */
+export function claimMuteAll(): void {
+	for (const client of clients.values()) {
+		claimMute(client);
 	}
 }
 

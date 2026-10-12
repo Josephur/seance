@@ -28,6 +28,8 @@ export interface PendingMute {
 	at: number;
 	/** At least one echo (761/766 or the METADATA line) has come back. */
 	echoed: boolean;
+	/** The `*` end the value says (unix seconds), null for none. */
+	until: number | null;
 }
 
 export interface MuteEntry {
@@ -110,21 +112,31 @@ export function desiredUntil(client: IrcClient, now: number): number | null {
 	const g = client.globalDnd;
 
 	if (g.active && g.until !== null) {
-		return Math.floor(g.until / 1000);
-	}
+		const until = Math.floor(g.until / 1000);
 
-	if (g.active || client.presenceMode === "dnd") {
+		// A timed DND already over (the minute tick has not caught up) wants
+		// nothing of its own; a network in mode dnd still does.
+		if (until > now) {
+			return until;
+		}
+	} else if (g.active) {
 		return now + INDEFINITE_MUTE_S;
 	}
 
-	return null;
+	return client.presenceMode === "dnd" ? now + INDEFINITE_MUTE_S : null;
+}
+
+/** The `*` end a value says, live or not; null for none or an indefinite one. */
+function ownUntil(value: string): number | null {
+	const entry = parseMute(value).find((e) => e.target === "*");
+	return entry && entry.until > 0 ? entry.until : null;
 }
 
 /** Send the whole value (empty deletes the key); `muteValue` holds it at once. */
 function writeMute(client: IrcClient, value: string): void {
 	client.muteValue = value;
 	prunePending(client);
-	client.mutePending.push({value, at: Date.now(), echoed: false});
+	client.mutePending.push({value, at: Date.now(), echoed: false, until: ownUntil(value)});
 	// Private: only the account's own sessions may read it (the server's
 	// push gate reads it whatever its visibility). A delete takes no
 	// visibility (m_metadata.c: `SET target key` deletes).
@@ -163,6 +175,21 @@ export function syncPushMute(client: IrcClient): void {
 	const now = nowSec();
 	const want = desiredUntil(client, now);
 	const have = globalUntil(client.muteValue, now);
+	const claim = client.muteClaim;
+	client.muteClaim = false;
+
+	// The user changed DND here by hand: the live entry, whoever wrote it,
+	// is replaced by what they asked for (an indefinite `*:0` excepted: it
+	// already mutes everything). A change that wants no entry claims
+	// nothing, so following or editing a schedule never removes another
+	// device's DND; the pill's Off removes it (clearRemoteDnd).
+	if (claim && want !== null) {
+		client.muteSuppressed = false;
+
+		if (have !== null && have !== Number.POSITIVE_INFINITY) {
+			client.muteOwnedUntil = have;
+		}
+	}
 
 	if (want !== null) {
 		// Another device took our entry away: leave it until DND starts afresh.
@@ -210,6 +237,17 @@ export function syncPushMute(client: IrcClient): void {
 	syncPresence(client);
 }
 
+/**
+ * An explicit change to the do not disturb on this page (client/js/dnd.ts):
+ * the next sync on this connection takes the live `*` entry as ours and
+ * writes the new want over it. Before the GET has answered, the claim waits
+ * for it. Automatic syncs (the minute tick, a reconnect) still adopt an
+ * entry another device wrote.
+ */
+export function claimMute(client: IrcClient): void {
+	client.muteClaim = true;
+}
+
 /** The pill's Off with DND set elsewhere: remove the `*` entry here. */
 export function clearRemoteDnd(client: IrcClient): void {
 	const now = nowSec();
@@ -240,7 +278,13 @@ function ownEcho(client: IrcClient, value: string): boolean {
 
 	if (index >= 0) {
 		queue.splice(0, index);
-		queue[0].echoed = true;
+
+		if (!queue[0].echoed) {
+			queue[0].echoed = true;
+			// The server holds this write: a reload's GET can trust it.
+			client.muteConfirmedUntil = queue[0].until;
+		}
+
 		return true;
 	}
 
@@ -258,11 +302,16 @@ export function onMuteValue(client: IrcClient, value: string): void {
 		return;
 	}
 
+	if (!client.muteKnown) {
+		onFirstRead(client, value);
+		syncPresence(client);
+		return;
+	}
+
 	const now = nowSec();
-	const before = client.muteKnown ? globalUntil(client.muteValue, now) : null;
+	const before = globalUntil(client.muteValue, now);
 	const hadLive = before !== null;
 	client.muteValue = value;
-	client.muteKnown = true;
 	const after = globalUntil(value, now);
 	const live = after !== null;
 
@@ -272,6 +321,8 @@ export function onMuteValue(client: IrcClient, value: string): void {
 	// `*`, or none, is theirs and is adopted (syncPushMute).
 	if (after !== client.muteOwnedUntil) {
 		client.muteOwnedUntil = null;
+		// Not ours on the server any more either.
+		client.muteConfirmedUntil = null;
 	}
 
 	if (hadLive && !live && desiredUntil(client, now) !== null) {
@@ -280,9 +331,67 @@ export function onMuteValue(client: IrcClient, value: string): void {
 		// muteValue before their echo): another device turned DND off. Do
 		// not put it back; tell the page (client/js/dnd.ts).
 		client.muteOwnedUntil = null;
+		client.muteConfirmedUntil = null;
 		client.muteSuppressed = true;
 		client.dispatchBus("dnd:cleared", {network: client.uuid});
 	}
 
 	syncPresence(client);
+}
+
+/**
+ * The GET after registration (a reconnect, or a reload with this device's
+ * memory, irc/muteMemory.ts): what the server holds against what we last
+ * wrote and what it last confirmed.
+ */
+function onFirstRead(client: IrcClient, value: string): void {
+	const now = nowSec();
+	client.muteValue = value;
+	client.muteKnown = true;
+	const live = globalUntil(value, now);
+	const owned = client.muteOwnedUntil;
+	const confirmed = client.muteConfirmedUntil;
+
+	if (live !== null && live !== Number.POSITIVE_INFINITY) {
+		if (live === owned) {
+			// Our last write is there, whether or not its echo reached us.
+			client.muteConfirmedUntil = live;
+			return;
+		}
+
+		if (live === confirmed) {
+			// Our last write died with the socket (or the page): the entry
+			// is our previous one. Ours, so the next sync writes the want.
+			client.muteOwnedUntil = live;
+			return;
+		}
+	}
+
+	if (live === null && owned !== confirmed) {
+		// Our last write never landed (a clear included), or it landed and
+		// is gone; we cannot tell, so no report: the next sync writes the
+		// want, as it would have.
+		client.muteConfirmedUntil = null;
+		return;
+	}
+
+	if (
+		live === null &&
+		confirmed !== null &&
+		confirmed > now &&
+		!client.muteClaim &&
+		desiredUntil(client, now) !== null
+	) {
+		// The server confirmed our entry and it has gone before its end
+		// while we were away: another device turned DND off.
+		client.muteOwnedUntil = null;
+		client.muteConfirmedUntil = null;
+		client.muteSuppressed = true;
+		client.dispatchBus("dnd:cleared", {network: client.uuid});
+		return;
+	}
+
+	// Another device's entry (adopted, syncPushMute), or none at all.
+	client.muteOwnedUntil = null;
+	client.muteConfirmedUntil = null;
 }

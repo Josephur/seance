@@ -64,6 +64,7 @@ import {
 } from "./presence";
 import {abortHistory, retryLostHistory} from "./history";
 import {globalUntil, MUTE_KEY, MUTE_READ_DELAY_MS, type PendingMute} from "./pushMute";
+import {getMuteMemory, setMuteMemory, type MuteMemory} from "./muteMemory";
 import {
 	cancelCatchup,
 	dropFromCatchup,
@@ -261,15 +262,40 @@ export class IrcClient {
 	muteKnown = false;
 	/**
 	 * The `*` end (unix seconds) this client last wrote, null once cleared or
-	 * taken over. Kept across a reconnect (not a reload: the pill's Off then
-	 * calls clearRemoteDnd), so our own entry read back is still ours.
+	 * taken over, and the last of those the server echoed back. Both are kept
+	 * across a reconnect and, per device, a reload (irc/muteMemory.ts), so
+	 * the next GET can tell our own entry from another device's.
 	 */
-	muteOwnedUntil: number | null = null;
+	private muteMemory: MuteMemory = {ownedUntil: null, confirmedUntil: null};
+	get muteOwnedUntil(): number | null {
+		return this.muteMemory.ownedUntil;
+	}
+	set muteOwnedUntil(until: number | null) {
+		this.rememberMute({...this.muteMemory, ownedUntil: until});
+	}
+	get muteConfirmedUntil(): number | null {
+		return this.muteMemory.confirmedUntil;
+	}
+	set muteConfirmedUntil(until: number | null) {
+		this.rememberMute({...this.muteMemory, confirmedUntil: until});
+	}
+	/** The user changed DND by hand: the next sync takes the live `*` entry as ours (pushMute.ts `claimMute`). */
+	muteClaim = false;
 	/** Another device cleared our entry: write nothing until local DND ends and starts again. */
 	muteSuppressed = false;
 	/** Our writes awaiting their echoes (pushMute.ts `ownEcho`). */
 	readonly mutePending: PendingMute[] = [];
 	private muteReadTimer: ReturnType<typeof setTimeout> | null = null;
+
+	private rememberMute(next: MuteMemory): void {
+		if (
+			next.ownedUntil !== this.muteMemory.ownedUntil ||
+			next.confirmedUntil !== this.muteMemory.confirmedUntil
+		) {
+			this.muteMemory = next;
+			setMuteMemory(this.uuid, next, Math.floor(Date.now() / 1000));
+		}
+	}
 
 	/** The live `*` entry is the one this client wrote. */
 	get muteOwned(): boolean {
@@ -395,6 +421,7 @@ export class IrcClient {
 		this.unsubscribeTransport = this.transport.on((ev) => this.onTransportEvent(ev));
 
 		this.cursor = savedCursor(this.uuid);
+		this.muteMemory = getMuteMemory(this.uuid);
 		this.services = getSavedNetwork(this.uuid)?.services;
 		this.lobby = new Channel(this.ids.chanId(), this.networkName, ChanType.LOBBY, (s) =>
 			this.casefold(s)

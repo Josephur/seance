@@ -68,6 +68,7 @@ describe("settings backup (helpers/settingsBackup.ts)", function () {
 		expect(isBackupKey("thelounge.sts")).to.equal(false);
 		expect(isBackupKey("thelounge.push")).to.equal(false);
 		expect(isBackupKey("thelounge.state.sidebar")).to.equal(false);
+		expect(isBackupKey("thelounge.state.dndMute")).to.equal(false);
 		expect(isBackupKey("thelounge.mentions")).to.equal(false);
 	});
 
