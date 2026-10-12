@@ -189,6 +189,19 @@ function connect(opts: {account?: boolean; metadata?: boolean} = {}) {
 	return {client, transport, dispatch, sent};
 }
 
+/** Drop the socket and register again on the same client (a reconnect). */
+function reconnect(h: ReturnType<typeof connect>): void {
+	h.transport.close();
+	const from = h.transport.sent.length;
+	h.transport.open();
+	h.transport.line(`:irc.test CAP * LS :${CAPS}`);
+	const req = h.transport.sent.slice(from).find((l) => l.startsWith("CAP REQ :")) as string;
+	h.transport.line(`:irc.test CAP alice ACK :${req.slice("CAP REQ :".length)}`);
+	h.transport.line(":irc.test 001 alice :Welcome");
+	h.transport.line(":irc.test 900 alice alice!a@h alice :You are now logged in as alice");
+	h.transport.line(":irc.test 422 alice :MOTD File is missing");
+}
+
 describe("push mute on the wire (irc/pushMute.ts)", function () {
 	let clock: sinon.SinonFakeTimers;
 	const NOW_MS = Date.UTC(2026, 9, 12, 12, 0, 0);
@@ -560,6 +573,70 @@ describe("push mute on the wire (irc/pushMute.ts)", function () {
 		expect(h.sent().filter((l) => l.includes("SET"))).to.have.length(40);
 		h.transport.close();
 		expect(h.client.mutePending).to.deep.equal([]);
+	});
+
+	it("our own entry read back after a reconnect is still ours", function () {
+		const h = connect();
+		h.transport.line(":irc.test 766 alice alice draft/webpush/mute :key not set");
+		h.client.setGlobalDnd(true, NOW_MS + 3600_000);
+		const on = `*:${NOW_S + 3600}`;
+		h.transport.lines(
+			`:irc.test 761 alice alice draft/webpush/mute private :${on}`,
+			`:irc.test METADATA alice draft/webpush/mute * :${on}`
+		);
+		reconnect(h);
+		h.sent();
+		h.dispatch.resetHistory();
+		h.transport.line(`:irc.test 761 alice alice draft/webpush/mute private :${on}`);
+		expect(h.client.muteOwned).to.equal(true);
+		expect(h.sent().filter((l) => l.includes("SET"))).to.deep.equal([]);
+		expect(h.dispatch.getCalls().some((c) => c.args[0] === "dnd:cleared")).to.equal(false);
+		h.client.setGlobalDnd(false, null);
+		expect(h.sent()).to.deep.equal(["METADATA * SET draft/webpush/mute", "AWAY"]);
+		expect(h.client.remoteDnd).to.equal(false);
+		expect(h.client.presenceSnapshot().dnd).to.equal(false);
+	});
+
+	it("a different entry read back after a reconnect is adopted", function () {
+		const h = connect();
+		h.transport.line(":irc.test 766 alice alice draft/webpush/mute :key not set");
+		h.client.setGlobalDnd(true, NOW_MS + 3600_000);
+		const on = `*:${NOW_S + 3600}`;
+		h.transport.lines(
+			`:irc.test 761 alice alice draft/webpush/mute private :${on}`,
+			`:irc.test METADATA alice draft/webpush/mute * :${on}`
+		);
+		reconnect(h);
+		h.sent();
+		h.dispatch.resetHistory();
+		h.transport.line(`:irc.test 761 alice alice draft/webpush/mute private :*:${NOW_S + 7200}`);
+		expect(h.client.muteOwned).to.equal(false);
+		expect(h.sent().filter((l) => l.includes("SET"))).to.deep.equal([]);
+		expect(h.dispatch.getCalls().some((c) => c.args[0] === "dnd:cleared")).to.equal(false);
+		h.client.setGlobalDnd(false, null);
+		expect(h.sent().filter((l) => l.includes("SET"))).to.deep.equal([]);
+		expect(h.client.remoteDnd).to.equal(true);
+	});
+
+	it("our indefinite entry read back after a reconnect is still renewed", function () {
+		const h = connect();
+		h.transport.line(":irc.test 766 alice alice draft/webpush/mute :key not set");
+		h.client.setPresenceMode("dnd");
+		const on = `*:${NOW_S + INDEFINITE_MUTE_S}`;
+		h.transport.lines(
+			`:irc.test 761 alice alice draft/webpush/mute private :${on}`,
+			`:irc.test METADATA alice draft/webpush/mute * :${on}`
+		);
+		clock.tick(24 * 86400 * 1000); // 6 days left
+		reconnect(h);
+		h.sent();
+		h.transport.line(`:irc.test 761 alice alice draft/webpush/mute private :${on}`);
+		expect(h.sent().filter((l) => l.includes("SET"))).to.deep.equal([
+			`METADATA * SET draft/webpush/mute private :*:${
+				NOW_S + 24 * 86400 + INDEFINITE_MUTE_S
+			}`,
+		]);
+		expect(h.client.muteOwned).to.equal(true);
 	});
 
 	it("takes a private value under another nick, never a public one", function () {

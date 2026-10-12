@@ -188,7 +188,7 @@ export function syncPushMute(client: IrcClient): void {
 
 		if (stale) {
 			writeMute(client, withGlobal(client.muteValue, want, now));
-			client.muteOwned = true;
+			client.muteOwnedUntil = want;
 		}
 
 		return;
@@ -196,18 +196,18 @@ export function syncPushMute(client: IrcClient): void {
 
 	client.muteSuppressed = false;
 
-	if (!client.muteOwned) {
+	const owned = client.muteOwned;
+	// Ours is gone either way: removed now, or it expired by itself.
+	client.muteOwnedUntil = null;
+
+	if (!owned) {
 		// Another device's entry: removed only by clearRemoteDnd.
 		return;
 	}
 
-	client.muteOwned = false;
-
-	if (have !== null) {
-		writeMute(client, withoutGlobal(client.muteValue, now));
-		// remoteDnd followed muteValue down: say so (AWAY, the snapshot).
-		syncPresence(client);
-	}
+	writeMute(client, withoutGlobal(client.muteValue, now));
+	// remoteDnd followed muteValue down: say so (AWAY, the snapshot).
+	syncPresence(client);
 }
 
 /** The pill's Off with DND set elsewhere: remove the `*` entry here. */
@@ -219,7 +219,7 @@ export function clearRemoteDnd(client: IrcClient): void {
 	}
 
 	writeMute(client, withoutGlobal(client.muteValue, now));
-	client.muteOwned = false;
+	client.muteOwnedUntil = null;
 	syncPresence(client);
 }
 
@@ -266,11 +266,12 @@ export function onMuteValue(client: IrcClient, value: string): void {
 	const after = globalUntil(value, now);
 	const live = after !== null;
 
-	// Another device's write. Our entry is still ours only if it kept our
-	// `*` exactly (it changed a per-channel entry); a different `*` is theirs
-	// and is adopted (syncPushMute).
-	if (after !== before) {
-		client.muteOwned = false;
+	// Our entry is still ours only while the live `*` says the end we last
+	// wrote: another device changing a per-channel entry, or the GET after
+	// a reconnect reading our own entry back, keeps it ours. A different
+	// `*`, or none, is theirs and is adopted (syncPushMute).
+	if (after !== client.muteOwnedUntil) {
+		client.muteOwnedUntil = null;
 	}
 
 	if (hadLive && !live && desiredUntil(client, now) !== null) {
@@ -278,7 +279,7 @@ export function onMuteValue(client: IrcClient, value: string): void {
 		// it (our own clears happen only when we want none, and update
 		// muteValue before their echo): another device turned DND off. Do
 		// not put it back; tell the page (client/js/dnd.ts).
-		client.muteOwned = false;
+		client.muteOwnedUntil = null;
 		client.muteSuppressed = true;
 		client.dispatchBus("dnd:cleared", {network: client.uuid});
 	}

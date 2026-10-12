@@ -259,13 +259,25 @@ export class IrcClient {
 	muteValue = "";
 	/** `muteValue` has been read on this connection (GET answered). */
 	muteKnown = false;
-	/** The live `*` entry is one this client wrote. */
-	muteOwned = false;
+	/**
+	 * The `*` end (unix seconds) this client last wrote, null once cleared or
+	 * taken over. Kept across a reconnect (not a reload: the pill's Off then
+	 * calls clearRemoteDnd), so our own entry read back is still ours.
+	 */
+	muteOwnedUntil: number | null = null;
 	/** Another device cleared our entry: write nothing until local DND ends and starts again. */
 	muteSuppressed = false;
 	/** Our writes awaiting their echoes (pushMute.ts `ownEcho`). */
 	readonly mutePending: PendingMute[] = [];
 	private muteReadTimer: ReturnType<typeof setTimeout> | null = null;
+
+	/** The live `*` entry is the one this client wrote. */
+	get muteOwned(): boolean {
+		return (
+			this.muteOwnedUntil !== null &&
+			globalUntil(this.muteValue, Math.floor(Date.now() / 1000)) === this.muteOwnedUntil
+		);
+	}
 
 	/** A live `*` entry in the account's push mute list (another device's DND, or ours). */
 	get remoteDnd(): boolean {
