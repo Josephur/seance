@@ -993,6 +993,20 @@ describe("push mute across a reload or a reconnect (irc/muteMemory.ts)", functio
 		expect(cleared(h)).to.have.length(0);
 	});
 
+	it("another device's Off while our newer write was lost stays off", function () {
+		const {h} = confirmed(NOW_MS + 8 * HOUR_MS);
+		h.client.setGlobalDnd(true, NOW_MS + HOUR_MS);
+		expect(sets(h.sent())).to.have.length(1); // dies with the socket
+		reconnect(h);
+		h.sent();
+		h.dispatch.resetHistory();
+		// Neither our 1 h nor our confirmed 8 h: someone took it away.
+		read(h, "");
+		expect(sets(h.sent())).to.deep.equal([]);
+		expect(cleared(h)).to.have.length(1);
+		expect(h.client.muteSuppressed).to.equal(true);
+	});
+
 	it("a clear lost with the dying socket is sent again", function () {
 		const {h} = confirmed(NOW_MS + 8 * HOUR_MS);
 		h.client.setGlobalDnd(false, null);

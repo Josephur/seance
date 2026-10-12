@@ -367,27 +367,30 @@ function onFirstRead(client: IrcClient, value: string): void {
 		}
 	}
 
-	if (live === null && owned !== confirmed) {
-		// Our last write never landed (a clear included), or it landed and
-		// is gone; we cannot tell, so no report: the next sync writes the
-		// want, as it would have.
-		client.muteConfirmedUntil = null;
-		return;
-	}
-
 	if (
 		live === null &&
 		confirmed !== null &&
 		confirmed > now &&
+		owned !== null &&
+		owned > now &&
 		!client.muteClaim &&
 		desiredUntil(client, now) !== null
 	) {
-		// The server confirmed our entry and it has gone before its end
-		// while we were away: another device turned DND off.
+		// Neither our last write (it would be live had it landed) nor the
+		// one the server confirmed (live had ours been lost), both still
+		// ahead: another device turned DND off while we were away.
 		client.muteOwnedUntil = null;
 		client.muteConfirmedUntil = null;
 		client.muteSuppressed = true;
 		client.dispatchBus("dnd:cleared", {network: client.uuid});
+		return;
+	}
+
+	if (live === null && owned !== confirmed) {
+		// Our last write never landed: a clear (owned null), or one whose
+		// end has passed, or none confirmed before it. No report: the next
+		// sync writes the want, as it would have.
+		client.muteConfirmedUntil = null;
 		return;
 	}
 
