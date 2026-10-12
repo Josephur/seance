@@ -1012,14 +1012,12 @@ p {
 }
 
 #sidebar .presence-pill {
-	display: inline-flex;
-	align-items: center;
-	gap: 0.375rem;
-	max-inline-size: calc(100% - 1rem);
+	display: inline-block;
+	max-inline-size: calc(100% - 0.5rem);
 	padding-block: 0.125rem;
-	padding-inline: 0.625rem;
+	padding-inline: 0.5rem;
 	border: 1px solid var(--rail-badge-bg, rgb(255 255 255 / 12%));
-	border-radius: 999px;
+	border-radius: 1rem;
 	background: transparent;
 	color: inherit;
 	font-size: 0.8125rem;
@@ -1032,10 +1030,34 @@ p {
 	border-color: currentcolor;
 }
 
+/* The label always says the state, the end time included: up to two centred
+ * lines, clamped only past that. */
 #sidebar .presence-pill-text {
+	/* -webkit-line-clamp only works on this display. */
+	/* stylelint-disable-next-line value-no-vendor-prefix */
+	display: -webkit-box;
 	overflow: hidden;
-	text-overflow: ellipsis;
+	white-space: normal;
+	text-align: center;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+	line-clamp: 2;
+}
+
+#sidebar .presence-pill-part {
 	white-space: nowrap;
+}
+
+/* Centred on the first line's 1.25rem. */
+#sidebar .presence-pill .presence-dot {
+	float: inline-start;
+	margin-block-start: 0.375rem;
+	margin-inline-end: 0.375rem;
+}
+
+#sidebar .presence-pill-caret {
+	float: inline-end;
+	margin-inline-start: 0.375rem;
 }
 
 #sidebar .presence-pill-caret::before {
@@ -1063,8 +1085,8 @@ p {
 }
 
 /* The lobby's dot before the nick (NetworkLobby.vue): a 1rem box around the
- * 0.5rem dot so it can be hit, the outline inside the nick's clip. */
-#sidebar .lobby-nick .presence-dot {
+ * 0.5rem dot so it can be hit, the outline inside its own box. */
+#sidebar .lobby-presence .presence-dot {
 	box-sizing: content-box;
 	padding: 0.25rem;
 	margin-inline-end: 0.0625rem;
@@ -1072,7 +1094,7 @@ p {
 	cursor: pointer;
 }
 
-#sidebar .lobby-nick .presence-dot:focus-visible {
+#sidebar .lobby-presence .presence-dot:focus-visible {
 	outline: 1px solid var(--rail-accent, currentcolor);
 	outline-offset: -1px;
 }
@@ -1222,8 +1244,17 @@ wrapper is what the jump-to results' server glyph (::before) sits beside. */
 	gap: 0.25rem;
 }
 
-.channel-list-item .lobby-nick {
+/* The dot and the nick, right-aligned together; the nick trims itself. */
+.channel-list-item .lobby-presence {
+	display: flex;
 	flex: 1 1 auto;
+	align-items: center;
+	justify-content: flex-end;
+	min-width: 0;
+}
+
+.channel-list-item .lobby-nick {
+	flex: 0 1 auto;
 	min-width: 0;
 	overflow: hidden;
 	white-space: nowrap;
@@ -1238,7 +1269,8 @@ wrapper is what the jump-to results' server glyph (::before) sits beside. */
 /* In the jump-to results a network is a destination, not a thing to operate
 on: the nick still tells the networks apart, the toolbar would only get in the
 way of the click. */
-.jump-to-results .channel-list-item .lobby-tools {
+.jump-to-results .channel-list-item .lobby-tools,
+.jump-to-results .channel-list-item .presence-dot {
 	display: none;
 }
 

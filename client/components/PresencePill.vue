@@ -5,11 +5,24 @@
 			:class="['presence-pill', {'is-dnd': isDnd}]"
 			aria-haspopup="menu"
 			:aria-label="`Presence: ${label}`"
+			:title="label"
 			@click="openMenu"
 		>
-			<span :class="['presence-dot', isDnd ? 'is-dnd' : 'is-online']" aria-hidden="true" />
-			<span class="presence-pill-text">{{ label }}</span>
-			<span class="presence-pill-caret" aria-hidden="true" />
+			<!-- The dot and the caret float on the first line, so a second line
+			     gets the pill's whole width; a long label breaks after its
+			     separator only ("Do not disturb ·" over "until 10:36 AM"). -->
+			<span class="presence-pill-text"
+				><span
+					:class="['presence-dot', isDnd ? 'is-dnd' : 'is-online']"
+					aria-hidden="true"
+				/><span class="presence-pill-caret" aria-hidden="true" /><template
+					v-for="(part, i) in parts"
+					:key="i"
+					><span v-if="i < parts.length - 1">{{ part }}&nbsp;·</span
+					><span v-else class="presence-pill-part">{{ part }}</span
+					>{{ i < parts.length - 1 ? " " : "" }}</template
+				></span
+			>
 		</button>
 	</div>
 </template>
@@ -31,6 +44,7 @@ export default defineComponent({
 		const router = useRouter();
 		const isDnd = computed(() => dnd.verdict.value.active || dnd.remoteOnly.value);
 		const label = computed(() => dnd.pillLabel.value);
+		const parts = computed(() => label.value.split(" · "));
 
 		const openMenu = (event: MouseEvent) => {
 			const manual = dnd.state.manual;
@@ -76,7 +90,7 @@ export default defineComponent({
 			eventbus.emit("contextmenu:items", {event, items});
 		};
 
-		return {isDnd, label, openMenu};
+		return {isDnd, label, parts, openMenu};
 	},
 });
 </script>

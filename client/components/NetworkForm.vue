@@ -549,20 +549,34 @@ export default defineComponent({
 		const commandsInput = ref<HTMLTextAreaElement | null>(null);
 		const commandsText = ref((props.defaults.commands ?? []).join("\n"));
 
-		// The network's presence mode (the lobby dot's four, client/js/dnd.ts).
-		// A stored "auto" is no key at all, so the select reads through
-		// presenceModeOf; a pick is posted as is, and "auto" clears the key.
-		const presenceMode = computed<PresenceMode>({
-			get: () => presenceModeOf(props.defaults),
-			set(mode) {
-				props.defaults.presenceMode = mode;
-			},
-		});
-
 		// --- Services support: the package and the bots by role, shown once
 		// this network is connected and opered (nothing to set up before).
 		const liveNetwork = computed(() =>
 			props.defaults.uuid ? store.getters.findNetwork(props.defaults.uuid) : undefined
+		);
+		// The network's presence mode (the lobby dot's four, client/js/dnd.ts).
+		// Until the select is touched it shows the live mode, which the dot
+		// may have changed since this form was filled, and the field is not
+		// posted, so saving the form keeps what is stored. A stored "auto" is
+		// no key at all, hence presenceModeOf; a pick is posted as is, and
+		// "auto" clears the key.
+		const presenceTouched = ref(false);
+		const presenceMode = computed<PresenceMode>({
+			get: () =>
+				presenceTouched.value
+					? presenceModeOf(props.defaults)
+					: liveNetwork.value?.presence?.mode ?? presenceModeOf(props.defaults),
+			set(mode) {
+				presenceTouched.value = true;
+				props.defaults.presenceMode = mode;
+			},
+		});
+		// Another network (or a fresh copy of this one) is a fresh form.
+		watch(
+			() => props.defaults,
+			() => {
+				presenceTouched.value = false;
+			}
 		);
 		const showServices = computed(
 			() => !!props.defaults.uuid && !!props.status?.connected && isOperOn(liveNetwork.value)
@@ -734,6 +748,11 @@ export default defineComponent({
 				services: showServices.value ? servicesValue() : props.defaults.services,
 			};
 			delete (data as NetworkFormDefaults).connected;
+
+			if (!presenceTouched.value) {
+				delete data.presenceMode;
+			}
+
 			return data;
 		};
 

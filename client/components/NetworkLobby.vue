@@ -73,7 +73,9 @@
 						/>
 					</span>
 				</div>
-				<span v-if="network.nick" :title="nickLabel" class="lobby-nick"
+				<!-- The presence dot stands before the nick, and alone when there
+				     is none; it never opens the row or starts a drag. -->
+				<span class="lobby-presence"
 					><button
 						type="button"
 						:class="['presence-dot', presenceClass]"
@@ -85,7 +87,9 @@
 						@pointerdown.stop
 						@mousedown.stop
 						@touchstart.stop
-					/><span class="sr-only">Nickname: </span>{{ network.nick }}</span
+					/><span v-if="network.nick" :title="nickLabel" class="lobby-nick"
+						><span class="sr-only">Nickname: </span>{{ network.nick }}</span
+					></span
 				>
 			</div>
 		</div>
