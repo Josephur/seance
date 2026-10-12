@@ -23,12 +23,17 @@
 
 import type {IrcClient} from "./client";
 import {formatLine} from "./message";
+import {trailingLine} from "./wire";
+import {forgetUserAway, setUserAway} from "./userAwayStore";
 import {scheduleMarkRead} from "./handlers/markread";
 import {syncPushMute} from "./pushMute";
 import type {SharedNetworkPresence} from "../../../shared/types/network";
 
 /** `draft/pre-away`: away for an unspecified reason. */
 export const AWAY_STAR = "*";
+
+/** The cap that lets `AWAY` be sent before registration completes. */
+export const PRE_AWAY_CAP = "draft/pre-away";
 
 /**
  * How long a visible-but-unfocused page waits before saying `AWAY *`. A
@@ -42,6 +47,12 @@ export interface PresenceState {
 	attended: boolean;
 	/** `/away` is in force; automatic `AWAY *` keeps its hands off. */
 	userAway: boolean;
+	/**
+	 * The text that `/away` sent (`" "` for a bare one), declared again at
+	 * every registration; null while `userAway` is false. Kept across
+	 * reloads by userAwayStore.ts.
+	 */
+	userAwayText: string | null;
 	/** This client sent `AWAY *` and has not cleared it. */
 	starSent: boolean;
 	/**
@@ -56,7 +67,14 @@ export interface PresenceState {
 }
 
 export function initialPresence(): PresenceState {
-	return {attended: true, userAway: false, starSent: false, quietReplies: 0, lastReported: ""};
+	return {
+		attended: true,
+		userAway: false,
+		userAwayText: null,
+		starSent: false,
+		quietReplies: 0,
+		lastReported: "",
+	};
 }
 
 function canSend(client: IrcClient): boolean {
@@ -166,12 +184,21 @@ export function takeQuietAwayReply(client: IrcClient): boolean {
 }
 
 /**
- * The user ran `/away` (`away` true) or `/back`. State only: the command
- * sends its own line (`/away` its message, `/back` through `sendBack`).
+ * The user ran `/away <text>` (`away` true) or `/back`. State only: the
+ * command sends its own line (`/away` its message, `/back` through
+ * `sendBack`). The text is remembered for the network across reloads.
  */
-export function userAwayChanged(client: IrcClient, away: boolean): void {
+export function userAwayChanged(client: IrcClient, away: boolean, text: string | null): void {
 	const p = client.presence;
 	p.userAway = away;
+	p.userAwayText = away ? text ?? " " : null;
+
+	if (away) {
+		setUserAway(client.uuid, p.userAwayText as string);
+	} else {
+		forgetUserAway(client.uuid);
+	}
+
 	// Whatever the user said replaces ours.
 	p.starSent = false;
 	reportPresence(client);
@@ -197,8 +224,56 @@ export function presenceClosed(client: IrcClient): void {
 	reportPresence(client);
 }
 
-/** Registration done: a page that is hidden while it connects says so. */
+/**
+ * The away state to declare during registration, sent immediately before
+ * `CAP END` in the same flush (caps.ts `finalLines`; the plain path and the
+ * SASL path alike). With `draft/pre-away` nefarious2 stores it and applies
+ * it at registration, so a held bouncer session that this connection
+ * attaches to is never counted present, and nobody sees the user come back
+ * and leave again. No 305/306 answers it, so nothing is counted quiet.
+ *
+ * When the pipelined `CAP END` goes out the cap is only requested, not yet
+ * ACKed; the server reads the REQ first, so being requested is enough. A
+ * NAK is caught by {@link presenceRegistered}.
+ */
+export function registrationAwayLine(client: IrcClient): string | null {
+	const p = client.presence;
+	const caps = client.caps;
+
+	if (!caps.hasCapability(PRE_AWAY_CAP) && !caps.isRequesting(PRE_AWAY_CAP)) {
+		return null;
+	}
+
+	if (p.userAway) {
+		return trailingLine("AWAY", [p.userAwayText ?? " "]);
+	}
+
+	if (wantsStar(client)) {
+		p.starSent = true;
+		return formatLine({command: "AWAY", params: [AWAY_STAR]});
+	}
+
+	return null;
+}
+
+/**
+ * Registration done. With `draft/pre-away` the away state was declared
+ * before `CAP END` and stands (a star sent then counts); without it the
+ * user's `/away` is said again now, its 306 kept quiet, and a page that is
+ * hidden while it connects (or a mode, or do not disturb) says `AWAY *`.
+ */
 export function presenceRegistered(client: IrcClient): void {
-	client.presence.starSent = false;
+	const p = client.presence;
+
+	if (!client.caps.hasCapability(PRE_AWAY_CAP)) {
+		// Nothing was declared, or the server refused the cap it rode on.
+		p.starSent = false;
+
+		if (p.userAway && canSend(client)) {
+			p.quietReplies++;
+			client.send(trailingLine("AWAY", [p.userAwayText ?? " "]));
+		}
+	}
+
 	syncPresence(client);
 }

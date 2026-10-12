@@ -58,6 +58,7 @@ import {
 	initialPresence,
 	presenceClosed,
 	presenceRegistered,
+	registrationAwayLine,
 	presenceSnapshot,
 	setAttended,
 	syncPresence,
@@ -65,6 +66,7 @@ import {
 import {abortHistory, retryLostHistory} from "./history";
 import {globalUntil, MUTE_KEY, MUTE_READ_DELAY_MS, type PendingMute} from "./pushMute";
 import {getMuteMemory, setMuteMemory, type MuteMemory} from "./muteMemory";
+import {getUserAway} from "./userAwayStore";
 import {
 	cancelCatchup,
 	dropFromCatchup,
@@ -422,6 +424,14 @@ export class IrcClient {
 
 		this.cursor = savedCursor(this.uuid);
 		this.muteMemory = getMuteMemory(this.uuid);
+		// A `/away` set before the reload is declared again at registration.
+		const away = getUserAway(this.uuid);
+
+		if (away !== null) {
+			this.presence.userAway = true;
+			this.presence.userAwayText = away;
+		}
+
 		this.services = getSavedNetwork(this.uuid)?.services;
 		this.lobby = new Channel(this.ids.chanId(), this.networkName, ChanType.LOBBY, (s) =>
 			this.casefold(s)
@@ -1031,6 +1041,12 @@ export class IrcClient {
 		if (mechanism) {
 			caps.beforeEnd = () => this.startSasl(mechanism);
 		}
+
+		// The away state, declared right before `CAP END` (presence.ts).
+		caps.finalLines = () => {
+			const line = registrationAwayLine(this);
+			return line ? [line] : [];
+		};
 
 		return caps;
 	}
