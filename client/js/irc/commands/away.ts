@@ -3,8 +3,7 @@
  * (with a single space, as the old server did).
  */
 
-import {formatLine} from "../message";
-import {userAwayChanged} from "../presence";
+import {sendBack, userAwayChanged} from "../presence";
 import {trailingLine} from "../wire";
 import type {Command} from "../types";
 
@@ -18,7 +17,7 @@ const away: Command = {
 		}
 
 		userAwayChanged(client, false);
-		client.send(formatLine({command: "AWAY", params: []}));
+		sendBack(client);
 	},
 };
 

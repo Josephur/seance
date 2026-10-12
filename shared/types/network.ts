@@ -71,12 +71,12 @@ export type SharedNetworkPresence = {
 };
 
 export type SharedNetwork = {
-	presence?: SharedNetworkPresence;
 	uuid: string;
 	name: string;
 	nick: string;
 	serverOptions: SharedServerOptions;
 	status: SharedNetworkStatus;
+	presence?: SharedNetworkPresence;
 	channels: SharedNetworkChan[];
 	/** Services support, when the oper configured it (absent: none). */
 	services?: ServicesConfig;

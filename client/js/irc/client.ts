@@ -26,7 +26,7 @@ import type {
 	SharedNetworkStatus,
 	SharedServerOptions,
 } from "../../../shared/types/network";
-import type {PushSession} from "../../../shared/types/socket-events";
+import type {PushSession, ServerToClientEvents} from "../../../shared/types/socket-events";
 import {CapNegotiator, SEANCE_CAPS, webpushVapidOf, WEBPUSH_CAP} from "./caps";
 import {casefold, namesEqual} from "./casemap";
 import {Channel, MsgRef} from "./channel";
@@ -56,6 +56,7 @@ import type {PresenceMode} from "../helpers/dnd";
 import {
 	PresenceState,
 	initialPresence,
+	presenceClosed,
 	presenceRegistered,
 	presenceSnapshot,
 	setAttended,
@@ -1091,6 +1092,7 @@ export class IrcClient {
 		this._state = "disconnected";
 		this.connected = false;
 		this.welcomed = false;
+		presenceClosed(this);
 		// The wait before the transport's retry, for the UI to count down;
 		// an immediate retry has nothing worth counting.
 		this.retryAt =
@@ -1939,16 +1941,16 @@ export class IrcClient {
 		}
 	}
 
-	presenceSnapshot() {
+	presenceSnapshot(): SharedNetworkPresence {
 		return presenceSnapshot(this);
 	}
 
 	/** Dispatch on the bus this client was given (presence.ts reports through it). */
-	dispatchBus(
-		event: "network:presence",
-		payload: {network: string; presence: SharedNetworkPresence}
+	dispatchBus<E extends keyof ServerToClientEvents>(
+		event: E,
+		...args: Parameters<ServerToClientEvents[E]>
 	): void {
-		this.bus.dispatch(event, payload);
+		this.bus.dispatch(event, ...args);
 	}
 
 	open(chanId: number): void {

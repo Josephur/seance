@@ -109,6 +109,12 @@ export function syncPresence(client: IrcClient): void {
 		}
 	}
 
+	reportPresence(client);
+}
+
+/** Tell the store the presence if it changed, and keep the push mute in step. */
+export function reportPresence(client: IrcClient): void {
+	const p = client.presence;
 	const snapshot = presenceSnapshot(client);
 	const json = JSON.stringify(snapshot);
 
@@ -159,14 +165,36 @@ export function takeQuietAwayReply(client: IrcClient): boolean {
 	return false;
 }
 
-/** The user ran `/away` (`away` true) or `/back`. */
+/**
+ * The user ran `/away` (`away` true) or `/back`. State only: the command
+ * sends its own line (`/away` its message, `/back` through `sendBack`).
+ */
 export function userAwayChanged(client: IrcClient, away: boolean): void {
 	const p = client.presence;
 	p.userAway = away;
-	// Whatever the user said replaces ours; after `/back` the next sync
-	// decides afresh.
+	// Whatever the user said replaces ours.
 	p.starSent = false;
-	syncPresence(client);
+	reportPresence(client);
+}
+
+/**
+ * `/back`: one line, whichever state the client wants — `AWAY *` while a
+ * mode, do not disturb or a hidden page calls for it, else `AWAY`. Its reply
+ * is the user's acknowledgement, so it is not counted as quiet.
+ */
+export function sendBack(client: IrcClient): void {
+	const p = client.presence;
+	const star = wantsStar(client);
+	p.starSent = star;
+	client.send(formatLine({command: "AWAY", params: star ? [AWAY_STAR] : []}));
+	reportPresence(client);
+}
+
+/** The connection closed: whatever we told that server is gone with it. */
+export function presenceClosed(client: IrcClient): void {
+	client.presence.starSent = false;
+	client.presence.quietReplies = 0;
+	reportPresence(client);
 }
 
 /** Registration done: a page that is hidden while it connects says so. */
