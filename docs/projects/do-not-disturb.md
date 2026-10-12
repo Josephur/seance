@@ -1,6 +1,8 @@
 # Do not disturb and per-network presence
 
-Status: spec, 2026-10-12. Branch `dnd` (from `origin/develop` `d9ec454d`).
+Status: built, 2026-10-12. Branch `dnd` (from `origin/develop` `d9ec454d`).
+This describes what was built; where the build changed the first plan, the
+list at the end says so.
 
 ## What the user asked for
 
@@ -103,7 +105,12 @@ changes (`manager.syncPresenceAll()`), and at registration
 (`presenceRegistered`). Unchanged rules:
 
 - `/away` (`userAway`) wins over everything; nothing automatic is sent while
-  it is in force, and `/back` hands control back to `syncPresence`.
+  it is in force.
+- `/back` sends exactly one line, chosen by the same rule (`sendBack`):
+  `AWAY *` while DND, Away or an unattended Auto calls for it, else `AWAY`.
+  Its reply is the user's acknowledgement, so it is not counted as a quiet
+  one. `userAwayChanged` only records and reports the state; it sends
+  nothing, so a `/back` in DND never sends an `AWAY *` + `AWAY` pair.
 - Nothing is sent before 001 (`canSend`).
 - A MARKREAD for the open channel is still scheduled only while the page is
   attended — attention, not presence mode, decides "the user has seen it".
@@ -120,38 +127,70 @@ covered by the same early return.
 
 A new Vue-free `client/js/irc/pushMute.ts` (`test/irc/pushMute.ts`):
 
-- `parseMute(value)` / `formatMute(entries)`; `withGlobal(value, until)` and
-  `withoutGlobal(value)` change only the `*` entry, keeping every other entry
-  (per-channel mutes from other devices) and dropping expired ones.
+- `parseMute(value)` / `formatMute(entries)` follow the server's grammar:
+  entries split at the first `:`, an `until` of 0 or below is indefinite and
+  live. `withGlobal(value, until)` and `withoutGlobal(value)` change only the
+  `*` entry, keeping every other entry (per-channel mutes from other devices)
+  and dropping expired ones; `globalUntil` is the live `*` entry's end
+  (`Infinity` for an indefinite one).
 - `IrcClient` keeps the last value seen (`muteValue`) and writes the merged
-  value with `METADATA * SET draft/webpush/mute * :<value>` (empty = delete).
-- On registration (after 001, not in the connect burst's critical path — one
-  line each): `METADATA * SUB draft/webpush/mute` and
-  `METADATA * GET draft/webpush/mute`. The `GET` reply (761 `RPL_KEYVALUE`,
-  or 766 for no key) and every later `METADATA` notification update
-  `muteValue` and `remoteDnd` (= a `*` entry whose `until` is in the future).
-  `handlers/metadata.ts` stops being silent for this one key.
-- Only networks with the `draft/metadata-2` cap and an account are written;
-  push requires both anyway.
+  value **private**: `METADATA * SET draft/webpush/mute private :<value>`.
+  nefarious2 stores `* SET key *` as public, visible to anyone sharing a
+  channel; a private value reaches only the account's own sessions, and the
+  push gate reads it whatever its visibility. The clear (an empty value) is
+  bare, `METADATA * SET draft/webpush/mute`, which deletes the key.
+- **Reading**: `METADATA * SUB draft/webpush/mute` and
+  `METADATA * GET draft/webpush/mute` go out **10 s after registration**
+  (`MUTE_READ_DELAY_MS`), when the connect burst's fake lag is spent, and
+  only with the `draft/metadata-2` cap and an account (push needs both). On a
+  network with many channels they can still fall inside `catchup.ts`'s 4 s
+  pacing: two commands of fake lag. The `GET` reply (761, or 766 for no key)
+  and every later `METADATA` line update `muteValue` and `remoteDnd` (a live
+  `*` entry). `handlers/metadata.ts` takes a value when its visibility is
+  `private` or its target is our own nick; every other key stays silent.
+  Each write comes back twice (the 761/766 and the subscribed `METADATA`
+  line) and is recognised as our own echo (`mutePending`, dropped after
+  30 s unechoed).
 
-**Writing.** When a network's `dnd` becomes true it writes `*:<until>`:
-the DND's end for a timed or scheduled DND, now + 30 days for an indefinite
-one (renewed when under 7 days remain, checked on the minute tick). When it
-becomes false it removes the `*` entry. A `*` entry the client did not write
-(another device's) is shown as DND but is removed only by the user switching
-DND off here.
+**Writing.** While a network's `dnd` holds, its `*` entry says the DND's end:
+the end of a timed or scheduled DND, or now + 30 days for an indefinite one,
+renewed when under 7 days remain (checked on the minute tick). Nothing is
+written before the value has been read.
+
+- **Ownership**: the entry is ours (`muteOwned`) while the live `*` entry's
+  `until` equals the `until` this client last wrote (`muteOwnedUntil`). That
+  survives a reconnect — the next `GET` reads our own entry back and it is
+  still ours — but not a reload. Only an owned entry is rewritten or removed
+  when local DND ends.
+- **A live `*` entry another device wrote is adopted, never rewritten**:
+  push is muted already, and rewriting it would have two devices that
+  disagree on the end rewrite each other forever. When it expires our own
+  entry goes in at the next sync (up to a minute later).
+- **Cleared elsewhere**: when the live `*` entry disappears while this client
+  still wants DND, another device turned it off. It is not written back
+  (`muteSuppressed` until DND starts afresh) and the client dispatches
+  `dnd:cleared`; the page (`client/js/dnd.ts`) then turns its own DND off
+  (`reconcileRemote` → `turnOff`, so a scheduled window is skipped to its
+  end).
 
 **The pill reads shared DND**: when every connected network has `remoteDnd`
 and the local state is off, the pill says "Do not disturb" (set on another
-device) and its Off removes the entries.
+device) and its Off removes the entries (`clearRemoteDnd`, which also covers
+an entry of ours that a reload stopped us recognising).
 
-**Limitation (documented, not solved):** the schedule is per device, and the
-server's mute is "from now until X", so a scheduled window silences push only
-when some Seance is open at the window's start. A device cannot book a future
-window in advance.
+**Limitations (documented, not solved):**
 
-`webpush.setSnooze` gets the same merge (it currently overwrites the key);
-the Settings snooze buttons are removed, the pill menu replacing them.
+- The schedule is per device, and the server's mute is "from now until X",
+  so a scheduled window silences push only when some Seance is open at the
+  window's start. A device cannot book a future window in advance.
+- A change made from another session of the account **under a different
+  nick** is not applied live: nefarious2 labels every `METADATA`
+  notification `*`, private ones included, so it cannot be told from another
+  user's public value. It is picked up at the next registration's `GET`.
+  Push muting itself is server-side and immediate either way.
+
+`webpush.setSnooze` and the Settings snooze buttons are removed; the pill menu
+replaces them.
 
 ## 5. UI
 
@@ -160,22 +199,28 @@ the Settings snooze buttons are removed, the pill menu replacing them.
   until 07:00", "Do not disturb" (indefinite or set elsewhere). The click opens
   a menu: Off · For 1 hour · For 8 hours · Until I turn it off · Follow
   schedule (✓, with the window's text) · Edit schedule… (opens Settings →
-  Notifications).
-- **Presence dot** in `NetworkLobby.vue`'s `.lobby-nick`: green present, amber
-  away (`AWAY *` in effect or `/away`), red DND. A click opens Online / Auto /
+  Notifications). The label wraps to two centred lines, breaking only after
+  its separator ("Do not disturb ·" over "until 10:36 AM"), so the end time is
+  never cut off; it is clamped only past two lines, and the whole label is
+  also the button's title.
+- **Presence dot** in `NetworkLobby.vue`, before the nick (`.lobby-presence`;
+  alone when there is no nick): green present, amber away (`AWAY *` in
+  effect or `/away`), red DND. A click opens Online / Auto /
   Away / Do not disturb for that network; the dot has its own `aria-label`
-  and does not start a drag or select the row.
-- **Network form** (`NetworkForm.vue`): the same four modes as a select.
+  and does not start a drag or select the row; a right-click on it opens the
+  same menu, not the lobby's.
+- **Network form** (`NetworkForm.vue`): the same four modes as a select; it
+  shows the mode the dot set, and saving keeps it.
 - **Settings → Notifications**: the schedule editor (enabled, start, end,
   weekdays) in place of the snooze buttons.
-- Every string through `t()` (keys registered with `tools/i18n/add.ts`),
-  sizes in `rem`, logical properties, the menus following the existing
+- Plain English copy as the surrounding components on this base (no i18n
+  layer on `origin/develop`), sizes in `rem`, logical properties, the menus following the existing
   context-menu styling and keyboard handling.
 
 ## 6. Settings backup
 
-`thelounge.dnd` joins the carried keys (`settingsBackup.ts`, with its
-`KEY_SINCE` entry where the module has one); `presenceMode` rides in
+`thelounge.dnd` joins `BACKUP_KEYS`; restoring a file made before it existed
+resets DND to its default, as for every carried key. `presenceMode` rides in
 `thelounge.networks` already.
 
 ## 7. Testing
@@ -186,10 +231,17 @@ the Settings snooze buttons are removed, the pill menu replacing them.
 - `test/irc/presence.ts`: each mode × attended/unattended × DND, `/away` on
   top, a mode change mid-session, nothing before 001.
 - `test/irc/pushMute.ts`: parse/format, the `*` merge keeping other entries,
-  expired entries dropped, `remoteDnd` from 761/766/`METADATA`.
-- Browser check `tools/scenarios/dnd.mjs` against the dev ircd: the pill and
-  its menu, the dot and its menu, the `AWAY *` / `AWAY` and `METADATA` frames,
-  no notification while DND is on.
+  expired entries dropped, `remoteDnd` from 761/766/`METADATA`, the private
+  write and the bare clear, adoption, ownership across a reconnect,
+  `dnd:cleared`.
+- Browser check `tools/scenarios/dnd.mjs` against the dev ircd (also
+  `--mobile --width=390 --height=844`): the pill and its menu, the dot and its
+  menu (no navigation, no drag, its own right-click menu), the `AWAY *` /
+  `AWAY` frames, `presenceMode` saved, a highlight from a helper connection
+  raising a notification and the sound out of DND and neither in it, and the
+  pill's whole label in the sidebar at the huge font step. The dev ircd has
+  no services, so no account and no `METADATA` write: the wire is
+  `test/irc/pushMute.ts`'s.
 - `yarn test` and `yarn build` green; a CLAUDE.md entry pointing here.
 
 ## Out of scope
@@ -200,3 +252,23 @@ the Settings snooze buttons are removed, the pill menu replacing them.
 - Overriding another present device of the same account (not possible
   through `draft/pre-away`).
 - Any change to nefarious2 or its configuration.
+
+## Changed during the build
+
+- The mute list is written `private`, and the clear is a bare `SET` (the
+  plan wrote it public, which any channel-mate could read).
+- A live `*` entry another device wrote is adopted and never rewritten (the
+  plan rewrote it to our own end, which looped between two devices).
+- Ownership is "the live `*` entry's `until` equals the one we last wrote",
+  kept across reconnects (a flag reset on reconnect left push muted after
+  Off).
+- Another device clearing the entry raises `dnd:cleared`, which turns this
+  device's DND off instead of being written back.
+- A change from a session under a different nick is not applied live (the
+  server labels every notification `*`); it waits for the next `GET`.
+- `SUB`/`GET` go out 10 s after registration, not in the connect burst.
+- `webpush.setSnooze` and the snooze buttons are removed, not merged.
+- `/back` sends one line chosen by the presence rule, never `AWAY *` then
+  `AWAY`.
+- The pill's label wraps to two lines rather than being cut off.
+- Copy is plain English, not `t()`: the base has no i18n layer.
