@@ -24,6 +24,8 @@
 import type {IrcClient} from "./client";
 import {formatLine} from "./message";
 import {scheduleMarkRead} from "./handlers/markread";
+import {syncPushMute} from "./pushMute";
+import type {SharedNetworkPresence} from "../../../shared/types/network";
 
 /** `draft/pre-away`: away for an unspecified reason. */
 export const AWAY_STAR = "*";
@@ -49,14 +51,73 @@ export interface PresenceState {
 	 * `/away` sent after ours is still acknowledged.
 	 */
 	quietReplies: number;
+	/** The last `network:presence` payload dispatched, as JSON. */
+	lastReported: string;
 }
 
 export function initialPresence(): PresenceState {
-	return {attended: true, userAway: false, starSent: false, quietReplies: 0};
+	return {attended: true, userAway: false, starSent: false, quietReplies: 0, lastReported: ""};
 }
 
 function canSend(client: IrcClient): boolean {
 	return client.transport.state === "open" && client.isConnected;
+}
+
+/** Do not disturb in force on this network. */
+export function effectiveDnd(client: IrcClient): boolean {
+	return client.globalDnd.active || client.presenceMode === "dnd" || client.remoteDnd;
+}
+
+/** Whether this connection should be `AWAY *` (ignoring `/away`). */
+export function wantsStar(client: IrcClient): boolean {
+	const mode = client.presenceMode;
+
+	return (
+		effectiveDnd(client) || mode === "away" || (mode === "auto" && !client.presence.attended)
+	);
+}
+
+export function presenceSnapshot(client: IrcClient): SharedNetworkPresence {
+	const p = client.presence;
+
+	return {
+		mode: client.presenceMode,
+		dnd: effectiveDnd(client),
+		away: p.userAway || p.starSent,
+	};
+}
+
+/**
+ * Bring the server in line with what this client wants: `AWAY *` or `AWAY`,
+ * unless the user's own `/away` is in force; then report the presence to the
+ * store and keep the push mute in step.
+ */
+export function syncPresence(client: IrcClient): void {
+	const p = client.presence;
+
+	if (!p.userAway && canSend(client)) {
+		const want = wantsStar(client);
+
+		if (want && !p.starSent) {
+			p.starSent = true;
+			p.quietReplies++;
+			client.send(formatLine({command: "AWAY", params: [AWAY_STAR]}));
+		} else if (!want && p.starSent) {
+			p.starSent = false;
+			p.quietReplies++;
+			client.send(formatLine({command: "AWAY", params: []}));
+		}
+	}
+
+	const snapshot = presenceSnapshot(client);
+	const json = JSON.stringify(snapshot);
+
+	if (json !== p.lastReported) {
+		p.lastReported = json;
+		client.dispatchBus("network:presence", {network: client.uuid, presence: snapshot});
+	}
+
+	syncPushMute(client);
 }
 
 /**
@@ -72,40 +133,15 @@ export function setAttended(client: IrcClient, attended: boolean): void {
 	}
 
 	p.attended = attended;
+	syncPresence(client);
 
 	if (attended) {
-		if (p.starSent) {
-			p.starSent = false;
-
-			if (canSend(client)) {
-				p.quietReplies++;
-				client.send(formatLine({command: "AWAY", params: []}));
-			}
-		}
-
 		const chan = client.activeChannel();
 
 		if (chan) {
 			scheduleMarkRead(client, chan);
 		}
-
-		return;
 	}
-
-	sendStar(client);
-}
-
-/** `AWAY *` now, if the state calls for it and nothing else owns away. */
-export function sendStar(client: IrcClient): void {
-	const p = client.presence;
-
-	if (p.attended || p.userAway || p.starSent || !canSend(client)) {
-		return;
-	}
-
-	p.starSent = true;
-	p.quietReplies++;
-	client.send(formatLine({command: "AWAY", params: [AWAY_STAR]}));
 }
 
 /**
@@ -127,13 +163,14 @@ export function takeQuietAwayReply(client: IrcClient): boolean {
 export function userAwayChanged(client: IrcClient, away: boolean): void {
 	const p = client.presence;
 	p.userAway = away;
-	// Whatever the user said replaces ours; a later `/back` while hidden
-	// stays "present" until the next attention change, as they asked.
+	// Whatever the user said replaces ours; after `/back` the next sync
+	// decides afresh.
 	p.starSent = false;
+	syncPresence(client);
 }
 
 /** Registration done: a page that is hidden while it connects says so. */
 export function presenceRegistered(client: IrcClient): void {
 	client.presence.starSent = false;
-	sendStar(client);
+	syncPresence(client);
 }

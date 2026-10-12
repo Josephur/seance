@@ -22,6 +22,7 @@ import {MessageType, SharedMsg, TypingState} from "../../../shared/types/msg";
 import type {
 	ServicesConfig,
 	SharedNetwork,
+	SharedNetworkPresence,
 	SharedNetworkStatus,
 	SharedServerOptions,
 } from "../../../shared/types/network";
@@ -51,7 +52,15 @@ import {
 	markReadAt,
 	scheduleMarkRead,
 } from "./handlers/markread";
-import {PresenceState, initialPresence, presenceRegistered, setAttended} from "./presence";
+import type {PresenceMode} from "../helpers/dnd";
+import {
+	PresenceState,
+	initialPresence,
+	presenceRegistered,
+	presenceSnapshot,
+	setAttended,
+	syncPresence,
+} from "./presence";
 import {abortHistory, retryLostHistory} from "./history";
 import {
 	cancelCatchup,
@@ -240,6 +249,13 @@ export class IrcClient {
 	readonly isupport = new ISupport();
 	/** Attention and away bookkeeping (presence.ts). */
 	readonly presence: PresenceState = initialPresence();
+	/** Online / Auto / Away / Do not disturb (docs/projects/do-not-disturb.md). */
+	presenceMode: PresenceMode = "auto";
+	/** The global do-not-disturb, fed by client/js/dnd.ts. */
+	globalDnd: {active: boolean; until: number | null} = {active: false, until: null};
+	/** A live `*` entry in the account's push mute list (another device's DND, or
+	 * ours). A plain field for now; Task 4 turns it into a getter over `muteValue`. */
+	remoteDnd = false;
 	/** Outstanding `TOKEN GENERATE` requests (draft/authtoken). */
 	readonly authtoken = new TokenRequests();
 	readonly channels: Channel[] = [];
@@ -482,6 +498,7 @@ export class IrcClient {
 			nick: this.nick,
 			serverOptions: this.serverOptions,
 			status: this.status,
+			presence: presenceSnapshot(this),
 			channels: this.channels.map((chan) => chan.snapshot()),
 			...(this.services ? {services: this.services} : {}),
 		};
@@ -1906,6 +1923,32 @@ export class IrcClient {
 	/** Attention changed (foreground.ts); see presence.ts. */
 	setAttended(attended: boolean): void {
 		setAttended(this, attended);
+	}
+
+	setPresenceMode(mode: PresenceMode): void {
+		if (this.presenceMode !== mode) {
+			this.presenceMode = mode;
+			syncPresence(this);
+		}
+	}
+
+	setGlobalDnd(active: boolean, until: number | null): void {
+		if (this.globalDnd.active !== active || this.globalDnd.until !== until) {
+			this.globalDnd = {active, until};
+			syncPresence(this);
+		}
+	}
+
+	presenceSnapshot() {
+		return presenceSnapshot(this);
+	}
+
+	/** Dispatch on the bus this client was given (presence.ts reports through it). */
+	dispatchBus(
+		event: "network:presence",
+		payload: {network: string; presence: SharedNetworkPresence}
+	): void {
+		this.bus.dispatch(event, payload);
 	}
 
 	open(chanId: number): void {

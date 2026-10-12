@@ -6,6 +6,8 @@
  * any device) as it found it. See docs/projects/do-not-disturb.md.
  */
 
+import type {IrcClient} from "./client";
+
 export const MUTE_KEY = "draft/webpush/mute";
 
 export interface MuteEntry {
@@ -73,3 +75,6 @@ export function withGlobal(value: string, untilSec: number, nowSec: number): str
 export function withoutGlobal(value: string, nowSec: number): string {
 	return formatMute(liveOthers(value, nowSec));
 }
+
+/** Keep the account's push mute list in step with do not disturb (Task 4 fills this in). */
+export function syncPushMute(_client: IrcClient): void {}
