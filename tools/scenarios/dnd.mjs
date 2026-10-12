@@ -433,6 +433,41 @@ export default async function run(page) {
 	await choose(PILL, "dnd-off");
 	await page.evaluate(`document.documentElement.dataset.fontSize = ${JSON.stringify(step)}`);
 
+	// ---- The schedule's window in the menu follows the clock setting.
+	const scheduleText = async () => {
+		await openDrawer();
+		await press(PILL);
+		await page.waitFor(`document.querySelector('${MENU_ITEM("dnd-schedule")}')`, {
+			label: "the schedule item",
+		});
+		const text = await page.evaluate(
+			`document.querySelector('${MENU_ITEM("dnd-schedule")}').textContent.trim()`
+		);
+		// Off closes it and changes nothing here (DND is off by now).
+		await press(MENU_ITEM("dnd-off"));
+		await page.waitFor(`!document.querySelector('${MENU}')`, {label: "the menu to close"});
+		return text;
+	};
+	const setClock = (on) =>
+		page.evaluate(`(() => {
+			const root = document.querySelector("[data-v-app]");
+			const store = root.__vue_app__.config.globalProperties.$store;
+			return store.dispatch("settings/update", {name: "use12hClock", value: ${on}, sync: true});
+		})()`);
+	const clockWas = await page.evaluate(`(() => {
+		const root = document.querySelector("[data-v-app]");
+		return !!root.__vue_app__.config.globalProperties.$store.state.settings.use12hClock;
+	})()`);
+	await setClock(false);
+	const in24 = await scheduleText();
+	await setClock(true);
+	const in12 = await scheduleText();
+	await setClock(clockWas);
+	page.check(
+		`the schedule's window follows the clock (${in24} / ${in12})`,
+		in24.includes("23:00–07:00") && in12.includes("11:00 PM–7:00 AM")
+	);
+
 	bot.quit();
 	page.check("no console errors", page.consoleErrors.length === 0);
 }
