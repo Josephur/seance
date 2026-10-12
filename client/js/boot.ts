@@ -35,8 +35,8 @@ import {installInputModality} from "./helpers/inputModality";
 import {hasVirtualKeyboard} from "./helpers/device";
 import {followSystemAccessibility} from "./helpers/systemAccessibility";
 import {onLaunch, openInstallGuideAtStart} from "./pwa";
-// Also registers the IRC layer's bus handlers (input, names, more, network:*).
 import dnd from "./dnd";
+// Also registers the IRC layer's bus handlers (input, names, more, network:*).
 import {autoconnectSavedNetworks, clientForNetwork, createNetwork} from "./irc/manager";
 
 declare global {

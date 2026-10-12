@@ -220,17 +220,27 @@ export function reconcileRemote(state: DndState, now: Date): DndState {
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 /** The pill's words while DND is on, from the verdict. */
+/** A wall-clock time as the clock setting writes it: "07:05" or "7:05 AM". */
+export function clockText(h: number, m: number, hour12: boolean): string {
+	const mm = String(m).padStart(2, "0");
+	return hour12
+		? `${h % 12 || 12}:${mm} ${h < 12 ? "AM" : "PM"}`
+		: `${String(h).padStart(2, "0")}:${mm}`;
+}
+
+/** A schedule's "HH:MM" by the clock setting; anything else as it is. */
+export function scheduleTimeText(hhmm: string, hour12: boolean): string {
+	const match = /^(\d{1,2}):(\d{2})$/.exec(hhmm);
+	return match ? clockText(Number(match[1]), Number(match[2]), hour12) : hhmm;
+}
+
 export function describeDnd(verdict: DndVerdict, now: Date, hour12: boolean): string {
 	if (verdict.until === null) {
 		return "Do not disturb";
 	}
 
 	const end = new Date(verdict.until);
-	const h = end.getHours();
-	const mm = String(end.getMinutes()).padStart(2, "0");
-	const time = hour12
-		? `${h % 12 || 12}:${mm} ${h < 12 ? "AM" : "PM"}`
-		: `${String(h).padStart(2, "0")}:${mm}`;
+	const time = clockText(end.getHours(), end.getMinutes(), hour12);
 	const sameDay = end.toDateString() === now.toDateString();
 	return `Do not disturb · until ${sameDay ? "" : `${DAYS[end.getDay()]} `}${time}`;
 }

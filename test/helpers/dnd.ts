@@ -6,6 +6,7 @@ import {
 	nextWindow,
 	parseDndState,
 	reconcileRemote,
+	scheduleTimeText,
 	serializeDndState,
 	turnOff,
 	windowAt,
@@ -166,5 +167,14 @@ describe("do not disturb model (helpers/dnd.ts)", function () {
 				true
 			)
 		).to.equal("Do not disturb · until 11:00 PM");
+	});
+
+	it("writes a schedule's times by the clock setting", function () {
+		expect(scheduleTimeText("22:00", false)).to.equal("22:00");
+		expect(scheduleTimeText("22:00", true)).to.equal("10:00 PM");
+		expect(scheduleTimeText("07:05", true)).to.equal("7:05 AM");
+		expect(scheduleTimeText("00:30", true)).to.equal("12:30 AM");
+		expect(scheduleTimeText("12:00", true)).to.equal("12:00 PM");
+		expect(scheduleTimeText("bad", true)).to.equal("bad");
 	});
 });

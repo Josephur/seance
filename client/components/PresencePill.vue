@@ -31,6 +31,8 @@
 import {computed, defineComponent} from "vue";
 import {useRouter} from "vue-router";
 import dnd from "../js/dnd";
+import {scheduleTimeText} from "../js/helpers/dnd";
+import {store} from "../js/store";
 import eventbus from "../js/eventbus";
 import type {ContextMenuItem} from "../js/helpers/contextMenu";
 
@@ -50,6 +52,8 @@ export default defineComponent({
 			const manual = dnd.state.manual;
 			const schedule = dnd.state.schedule;
 			const tick = (on: boolean, text: string) => (on ? `${text} ✓` : text);
+			const hour12 = !!store.state.settings.use12hClock;
+			const at = (hhmm: string) => scheduleTimeText(hhmm, hour12);
 			const items: ContextMenuItem[] = [
 				{label: "Off", type: "item", class: "dnd-off", action: () => dnd.turnOff()},
 				{
@@ -74,7 +78,7 @@ export default defineComponent({
 				{
 					label: tick(
 						schedule.enabled,
-						`Follow schedule (${schedule.start}–${schedule.end})`
+						`Follow schedule (${at(schedule.start)}–${at(schedule.end)})`
 					),
 					type: "item",
 					class: "dnd-schedule",
