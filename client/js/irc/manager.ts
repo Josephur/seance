@@ -20,6 +20,7 @@ import {setMuteStatus} from "../mute";
 import {registerBusHandlers} from "./bus";
 import {IrcClient} from "./client";
 import {flushQueryLogs} from "./querylog";
+import {syncPresence} from "./presence";
 import * as saved from "./saved-networks";
 import type {SavedNetwork} from "./saved-networks";
 import type {ConnectOptions} from "./types";
@@ -233,13 +234,6 @@ const FOREGROUND_PROBE_MS = 4_000;
 const STALE_DIAL_MS = 3_000;
 let lastPokeAt = 0;
 
-/**
- * Poke every live connection: networks waiting out reconnect backoff retry
- * now, open ones probe the socket (PING; silence means the OS killed it, and
- * the transport then closes it and reconnects). Called when the app returns
- * to the foreground — browsers from foreground.ts, native shells from
- * native.ts; deliberately disconnected networks are left alone.
- */
 /** The page's attention changed: every connection tells its server (presence.ts). */
 export function setAttendedAll(attended: boolean): void {
 	for (const client of clients.values()) {
@@ -247,6 +241,21 @@ export function setAttendedAll(attended: boolean): void {
 	}
 }
 
+/** Re-judge every client's presence (the do-not-disturb minute tick): timed
+ * mute entries expire without a word from the server. */
+export function syncPresenceAll(): void {
+	for (const client of clients.values()) {
+		syncPresence(client);
+	}
+}
+
+/**
+ * Poke every live connection: networks waiting out reconnect backoff retry
+ * now, open ones probe the socket (PING; silence means the OS killed it, and
+ * the transport then closes it and reconnects). Called when the app returns
+ * to the foreground — browsers from foreground.ts, native shells from
+ * native.ts; deliberately disconnected networks are left alone.
+ */
 export function reconnectAll(): void {
 	const now = Date.now();
 

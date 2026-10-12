@@ -63,6 +63,7 @@ import {
 	syncPresence,
 } from "./presence";
 import {abortHistory, retryLostHistory} from "./history";
+import {globalUntil, MUTE_KEY, MUTE_READ_DELAY_MS} from "./pushMute";
 import {
 	cancelCatchup,
 	dropFromCatchup,
@@ -254,9 +255,22 @@ export class IrcClient {
 	presenceMode: PresenceMode = "auto";
 	/** The global do-not-disturb, fed by client/js/dnd.ts. */
 	globalDnd: {active: boolean; until: number | null} = {active: false, until: null};
-	/** A live `*` entry in the account's push mute list (another device's DND, or
-	 * ours). A plain field for now; Task 4 turns it into a getter over `muteValue`. */
-	remoteDnd = false;
+	/** The account's push mute list as last read or written (irc/pushMute.ts). */
+	muteValue = "";
+	/** `muteValue` has been read on this connection (GET answered). */
+	muteKnown = false;
+	/** The live `*` entry is one this client wrote. */
+	muteOwned = false;
+	/** Another device cleared our entry: write nothing until local DND ends and starts again. */
+	muteSuppressed = false;
+	private muteReadTimer: ReturnType<typeof setTimeout> | null = null;
+
+	/** A live `*` entry in the account's push mute list (another device's DND, or ours). */
+	get remoteDnd(): boolean {
+		return (
+			this.muteKnown && globalUntil(this.muteValue, Math.floor(Date.now() / 1000)) !== null
+		);
+	}
 	/** Outstanding `TOKEN GENERATE` requests (draft/authtoken). */
 	readonly authtoken = new TokenRequests();
 	readonly channels: Channel[] = [];
@@ -1092,6 +1106,9 @@ export class IrcClient {
 		this._state = "disconnected";
 		this.connected = false;
 		this.welcomed = false;
+		this.clearMuteRead();
+		// Unknown until read again: the snapshot below stops counting it.
+		this.muteKnown = false;
 		presenceClosed(this);
 		// The wait before the transport's retry, for the UI to count down;
 		// an immediate retry has nothing worth counting.
@@ -1213,6 +1230,7 @@ export class IrcClient {
 		});
 		this.bus.dispatch("commands", commandNames());
 		presenceRegistered(this);
+		this.scheduleMuteRead();
 		flushDeferredMarkRead(this);
 		operRegistered(this);
 
@@ -1943,6 +1961,37 @@ export class IrcClient {
 
 	presenceSnapshot(): SharedNetworkPresence {
 		return presenceSnapshot(this);
+	}
+
+	/**
+	 * The push mute list (do not disturb), read once the connect burst is
+	 * over: every command costs fake lag and the server stops reading at
+	 * 10 s (docs/resources/nefarious2-websocket.md § Fake lag). The account
+	 * comes from SASL's 900, before 001; without one the list is neither
+	 * read nor written (push needs an account anyway).
+	 */
+	private scheduleMuteRead(): void {
+		this.clearMuteRead();
+
+		if (!this.caps.hasCapability("draft/metadata-2") || !this.account) {
+			return;
+		}
+
+		this.muteReadTimer = setTimeout(() => {
+			this.muteReadTimer = null;
+
+			if (this.isWelcomed && this.transport.state === "open") {
+				this.send(`METADATA * SUB ${MUTE_KEY}`);
+				this.send(`METADATA * GET ${MUTE_KEY}`);
+			}
+		}, MUTE_READ_DELAY_MS);
+	}
+
+	private clearMuteRead(): void {
+		if (this.muteReadTimer !== null) {
+			clearTimeout(this.muteReadTimer);
+			this.muteReadTimer = null;
+		}
 	}
 
 	/** Dispatch on the bus this client was given (presence.ts reports through it). */
