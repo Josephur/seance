@@ -18,6 +18,18 @@ describe("push mute value (irc/pushMute.ts)", function () {
 		expect(parseMute("")).to.deep.equal([]);
 	});
 
+	it("splits each entry at the first colon, as the server does", function () {
+		expect(parseMute("#a:b:5")).to.deep.equal([]);
+		expect(parseMute("#a:5:b")).to.deep.equal([]);
+	});
+
+	it("keeps indefinite entries (until 0 or a leading '-')", function () {
+		expect(parseMute("x:0;y:-1")).to.deep.equal([
+			{target: "x", until: 0},
+			{target: "y", until: -1},
+		]);
+	});
+
 	it("formats entries back", function () {
 		expect(
 			formatMute([
@@ -31,6 +43,16 @@ describe("push mute value (irc/pushMute.ts)", function () {
 		expect(globalUntil("*:1800000100", NOW)).to.equal(1800000100);
 		expect(globalUntil("*:1799999999", NOW)).to.equal(null);
 		expect(globalUntil("#seance:1800000100", NOW)).to.equal(null);
+	});
+
+	it("reads an indefinite global entry as Infinity", function () {
+		expect(globalUntil("*:0", NOW)).to.equal(Number.POSITIVE_INFINITY);
+		expect(globalUntil("*:-1", NOW)).to.equal(Number.POSITIVE_INFINITY);
+	});
+
+	it("keeps indefinite entries of other targets through both writes", function () {
+		expect(withGlobal("x:0;y:-1", 1800000900, NOW)).to.equal("x:0;y:-1;*:1800000900");
+		expect(withoutGlobal("x:0;y:-1;*:1800000900", NOW)).to.equal("x:0;y:-1");
 	});
 
 	it("sets the global entry and keeps the others", function () {

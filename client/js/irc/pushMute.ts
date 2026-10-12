@@ -18,7 +18,8 @@ export function parseMute(value: string): MuteEntry[] {
 	const out: MuteEntry[] = [];
 
 	for (const raw of value.split(";")) {
-		const colon = raw.lastIndexOf(":");
+		// The first colon, as the server splits it (memchr): a target never has one.
+		const colon = raw.indexOf(":");
 
 		if (colon <= 0) {
 			continue;
@@ -27,7 +28,8 @@ export function parseMute(value: string): MuteEntry[] {
 		const target = raw.slice(0, colon);
 		const untilText = raw.slice(colon + 1);
 
-		if (!/^\d+$/.test(untilText)) {
+		// A signed integer: 0 or a leading '-' is indefinite on the server.
+		if (!/^-?\d+$/.test(untilText)) {
 			continue;
 		}
 
@@ -41,13 +43,27 @@ export function formatMute(entries: MuteEntry[]): string {
 	return entries.map((e) => `${e.target}:${e.until}`).join(";");
 }
 
+/**
+ * The `*` entry's end while it is live: a unix-seconds number, `Infinity`
+ * for an indefinite one (until 0 or negative), `null` when absent or expired.
+ */
 export function globalUntil(value: string, nowSec: number): number | null {
 	const entry = parseMute(value).find((e) => e.target === "*");
-	return entry && entry.until > nowSec ? entry.until : null;
+
+	if (!entry) {
+		return null;
+	}
+
+	if (entry.until <= 0) {
+		return Number.POSITIVE_INFINITY;
+	}
+
+	return entry.until > nowSec ? entry.until : null;
 }
 
+/** Entries other than `*` that are still live; indefinite ones always are. */
 function liveOthers(value: string, nowSec: number): MuteEntry[] {
-	return parseMute(value).filter((e) => e.target !== "*" && e.until > nowSec);
+	return parseMute(value).filter((e) => e.target !== "*" && (e.until <= 0 || e.until > nowSec));
 }
 
 export function withGlobal(value: string, untilSec: number, nowSec: number): string {
