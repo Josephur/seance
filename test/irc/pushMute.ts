@@ -4,6 +4,7 @@ import {IrcClient} from "../../client/js/irc/client";
 import {IdAllocator} from "../../client/js/irc/ids";
 import {
 	INDEFINITE_MUTE_S,
+	MUTE_ECHO_TIMEOUT_MS,
 	MUTE_READ_DELAY_MS,
 	clearRemoteDnd,
 	formatMute,
@@ -334,6 +335,10 @@ describe("push mute on the wire (irc/pushMute.ts)", function () {
 		const h = connect();
 		h.transport.line(":irc.test 766 alice alice draft/webpush/mute :key not set");
 		h.client.setGlobalDnd(true, null);
+		// The server echoes our write before it relays the other device's.
+		h.transport.line(
+			`:irc.test 761 alice alice draft/webpush/mute * :*:${NOW_S + INDEFINITE_MUTE_S}`
+		);
 		h.sent();
 		h.dispatch.resetHistory();
 		h.transport.line(":irc.test METADATA alice draft/webpush/mute * :#seance:9999999999");
@@ -346,6 +351,84 @@ describe("push mute on the wire (irc/pushMute.ts)", function () {
 		h.client.setGlobalDnd(false, null);
 		h.client.setGlobalDnd(true, null);
 		expect(h.sent().filter((l) => l.includes("SET")).length).to.equal(1);
+	});
+
+	it("echoes of our own writes still in flight are not another device's", function () {
+		const h = connect();
+		h.transport.line(":irc.test 766 alice alice draft/webpush/mute :key not set");
+		h.client.setGlobalDnd(true, null);
+		const on = `*:${NOW_S + INDEFINITE_MUTE_S}`;
+		h.transport.lines(
+			`:irc.test 761 alice alice draft/webpush/mute * :${on}`,
+			`:irc.test METADATA alice draft/webpush/mute * :${on}`
+		);
+		h.sent();
+		h.dispatch.resetHistory();
+		// Off, then on again before either write is echoed.
+		h.client.setGlobalDnd(false, null);
+		h.client.setGlobalDnd(true, null);
+		expect(h.sent()).to.deep.equal([
+			"METADATA * SET draft/webpush/mute",
+			"AWAY",
+			"AWAY *",
+			`METADATA * SET draft/webpush/mute * :${on}`,
+		]);
+		h.transport.lines(
+			":irc.test 766 alice alice draft/webpush/mute :key not set",
+			":irc.test METADATA alice draft/webpush/mute *",
+			`:irc.test 761 alice alice draft/webpush/mute * :${on}`,
+			`:irc.test METADATA alice draft/webpush/mute * :${on}`
+		);
+		expect(h.dispatch.getCalls().some((c) => c.args[0] === "dnd:cleared")).to.equal(false);
+		expect(h.sent()).to.deep.equal([]);
+		expect(h.client.muteSuppressed).to.equal(false);
+		expect(h.client.muteOwned).to.equal(true);
+		expect(h.client.remoteDnd).to.equal(true);
+	});
+
+	it("a late echo of our write does not flap AWAY", function () {
+		const h = connect();
+		h.transport.line(":irc.test 766 alice alice draft/webpush/mute :key not set");
+		h.client.setGlobalDnd(true, null);
+		h.client.setGlobalDnd(false, null);
+		h.sent();
+		const on = `*:${NOW_S + INDEFINITE_MUTE_S}`;
+		h.transport.lines(
+			`:irc.test 761 alice alice draft/webpush/mute * :${on}`,
+			`:irc.test METADATA alice draft/webpush/mute * :${on}`
+		);
+		expect(h.client.remoteDnd).to.equal(false);
+		h.transport.lines(
+			":irc.test 766 alice alice draft/webpush/mute :key not set",
+			":irc.test METADATA alice draft/webpush/mute *"
+		);
+		expect(h.sent()).to.deep.equal([]);
+		expect(h.client.remoteDnd).to.equal(false);
+	});
+
+	it("another device's change after our echo still counts", function () {
+		const h = connect();
+		h.transport.line(":irc.test 766 alice alice draft/webpush/mute :key not set");
+		h.client.setGlobalDnd(true, null);
+		const on = `*:${NOW_S + INDEFINITE_MUTE_S}`;
+		h.transport.lines(
+			`:irc.test 761 alice alice draft/webpush/mute * :${on}`,
+			`:irc.test METADATA alice draft/webpush/mute * :${on}`,
+			":irc.test METADATA alice draft/webpush/mute *"
+		);
+		expect(h.client.muteSuppressed).to.equal(true);
+		expect(h.client.remoteDnd).to.equal(false);
+	});
+
+	it("a write never echoed stops hiding other devices' values", function () {
+		const h = connect();
+		h.transport.line(":irc.test 766 alice alice draft/webpush/mute :key not set");
+		h.client.setGlobalDnd(true, null);
+		h.client.setGlobalDnd(false, null);
+		// Both writes refused (no echo); much later another device sets a value.
+		clock.tick(MUTE_ECHO_TIMEOUT_MS + 1);
+		h.transport.line(`:irc.test METADATA alice draft/webpush/mute * :*:${NOW_S + 3600}`);
+		expect(h.client.remoteDnd).to.equal(true);
 	});
 
 	it("a timed DND ending clears itself", function () {

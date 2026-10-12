@@ -63,7 +63,7 @@ import {
 	syncPresence,
 } from "./presence";
 import {abortHistory, retryLostHistory} from "./history";
-import {globalUntil, MUTE_KEY, MUTE_READ_DELAY_MS} from "./pushMute";
+import {globalUntil, MUTE_KEY, MUTE_READ_DELAY_MS, type PendingMute} from "./pushMute";
 import {
 	cancelCatchup,
 	dropFromCatchup,
@@ -263,6 +263,8 @@ export class IrcClient {
 	muteOwned = false;
 	/** Another device cleared our entry: write nothing until local DND ends and starts again. */
 	muteSuppressed = false;
+	/** Our writes awaiting their echoes (pushMute.ts `ownEcho`). */
+	readonly mutePending: PendingMute[] = [];
 	private muteReadTimer: ReturnType<typeof setTimeout> | null = null;
 
 	/** A live `*` entry in the account's push mute list (another device's DND, or ours). */
@@ -1109,6 +1111,7 @@ export class IrcClient {
 		this.clearMuteRead();
 		// Unknown until read again: the snapshot below stops counting it.
 		this.muteKnown = false;
+		this.mutePending.length = 0;
 		presenceClosed(this);
 		// The wait before the transport's retry, for the UI to count down;
 		// an immediate retry has nothing worth counting.

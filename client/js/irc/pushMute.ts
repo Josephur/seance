@@ -18,6 +18,17 @@ export const INDEFINITE_MUTE_S = 30 * 86400;
 export const RENEW_BELOW_S = 7 * 86400;
 /** SUB/GET wait this long after registration: the connect burst is over by then. */
 export const MUTE_READ_DELAY_MS = 10_000;
+/** A write not echoed within this long is taken as lost (a FAIL, say). */
+export const MUTE_ECHO_TIMEOUT_MS = 30_000;
+
+/** A value this client sent and the server has not yet echoed (or has once). */
+export interface PendingMute {
+	value: string;
+	/** Date.now() when sent. */
+	at: number;
+	/** At least one echo (761/766 or the METADATA line) has come back. */
+	echoed: boolean;
+}
 
 export interface MuteEntry {
 	target: string;
@@ -112,6 +123,7 @@ export function desiredUntil(client: IrcClient, now: number): number | null {
 /** Send the whole value (empty deletes the key); `muteValue` holds it at once. */
 function writeMute(client: IrcClient, value: string): void {
 	client.muteValue = value;
+	client.mutePending.push({value, at: Date.now(), echoed: false});
 	client.send(value ? `METADATA * SET ${MUTE_KEY} * :${value}` : `METADATA * SET ${MUTE_KEY}`);
 }
 
@@ -180,8 +192,46 @@ export function clearRemoteDnd(client: IrcClient): void {
 	syncPresence(client);
 }
 
+/**
+ * Whether `value` is the echo of one of our own writes. Each SET comes back
+ * twice (the 761/766 confirmation and, being subscribed, the METADATA line),
+ * in the order sent, so an echo of an older write means newer ones are in
+ * flight and `muteValue` already holds the newest. A value that is no write
+ * of ours while one is still unechoed was set before it on the server, and
+ * our write replaces it there: it is stale too. Echo-matching only by value
+ * is enough because a foreign value equal to our newest one changes nothing.
+ */
+function ownEcho(client: IrcClient, value: string): boolean {
+	const queue = client.mutePending;
+	const cutoff = Date.now() - MUTE_ECHO_TIMEOUT_MS;
+
+	// Writes that never came back (refused) are forgotten.
+	while (queue.length > 0 && !queue[0].echoed && queue[0].at < cutoff) {
+		queue.shift();
+	}
+
+	const index = queue.findIndex((p) => p.value === value);
+
+	if (index >= 0) {
+		queue.splice(0, index);
+		queue[0].echoed = true;
+		return true;
+	}
+
+	if (queue.some((p) => !p.echoed)) {
+		return true;
+	}
+
+	queue.length = 0;
+	return false;
+}
+
 /** A value read back from the server (761, 766 as "", or a METADATA line). */
 export function onMuteValue(client: IrcClient, value: string): void {
+	if (client.muteKnown && ownEcho(client, value)) {
+		return;
+	}
+
 	const now = nowSec();
 	const hadLive = client.muteKnown && globalUntil(client.muteValue, now) !== null;
 	client.muteValue = value;
