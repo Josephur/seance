@@ -1,9 +1,11 @@
 import {expect} from "chai";
 import {
 	defaultDndState,
+	describeDnd,
 	dndAt,
 	nextWindow,
 	parseDndState,
+	reconcileRemote,
 	serializeDndState,
 	turnOff,
 	windowAt,
@@ -122,5 +124,47 @@ describe("do not disturb model (helpers/dnd.ts)", function () {
 		expect(
 			parseDndState(JSON.stringify({manual: {kind: "until"}, schedule: {start: "25:99"}}))
 		).to.deep.equal(defaultDndState());
+	});
+
+	it("a shared DND cleared elsewhere turns the local manual DND off", function () {
+		const s = defaultDndState();
+		s.manual = {kind: "indefinite"};
+		const now = at(2026, 10, 9, 12);
+		expect(reconcileRemote(s, now).manual).to.deep.equal({kind: "off"});
+		const off = defaultDndState();
+		expect(reconcileRemote(off, now)).to.equal(off);
+		// A scheduled DND cleared elsewhere skips the rest of its window.
+		const night = scheduled([FRI]);
+		expect(reconcileRemote(night, at(2026, 10, 9, 23, 30)).scheduleSkippedUntil).to.equal(
+			at(2026, 10, 10, 7).getTime()
+		);
+	});
+
+	it("describes the state for the pill", function () {
+		const now = at(2026, 10, 9, 22);
+		expect(
+			describeDnd(
+				{active: true, until: at(2026, 10, 9, 23).getTime(), source: "manual"},
+				now,
+				false
+			)
+		).to.equal("Do not disturb · until 23:00");
+		expect(
+			describeDnd(
+				{active: true, until: at(2026, 10, 10, 7).getTime(), source: "schedule"},
+				now,
+				false
+			)
+		).to.equal("Do not disturb · until Sat 07:00");
+		expect(describeDnd({active: true, until: null, source: "manual"}, now, false)).to.equal(
+			"Do not disturb"
+		);
+		expect(
+			describeDnd(
+				{active: true, until: at(2026, 10, 9, 23).getTime(), source: "manual"},
+				now,
+				true
+			)
+		).to.equal("Do not disturb · until 11:00 PM");
 	});
 });

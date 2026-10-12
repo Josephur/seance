@@ -211,3 +211,26 @@ export function parseDndState(raw: string | null): DndState {
 export function serializeDndState(state: DndState): string {
 	return JSON.stringify(state);
 }
+
+/** Another device turned the shared DND off: do the same here, if it is on. */
+export function reconcileRemote(state: DndState, now: Date): DndState {
+	return dndAt(state, now).active ? turnOff(state, now) : state;
+}
+
+const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/** The pill's words while DND is on, from the verdict. */
+export function describeDnd(verdict: DndVerdict, now: Date, hour12: boolean): string {
+	if (verdict.until === null) {
+		return "Do not disturb";
+	}
+
+	const end = new Date(verdict.until);
+	const h = end.getHours();
+	const mm = String(end.getMinutes()).padStart(2, "0");
+	const time = hour12
+		? `${h % 12 || 12}:${mm} ${h < 12 ? "AM" : "PM"}`
+		: `${String(h).padStart(2, "0")}:${mm}`;
+	const sameDay = end.toDateString() === now.toDateString();
+	return `Do not disturb · until ${sameDay ? "" : `${DAYS[end.getDay()]} `}${time}`;
+}
