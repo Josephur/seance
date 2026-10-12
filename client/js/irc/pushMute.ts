@@ -124,7 +124,15 @@ export function desiredUntil(client: IrcClient, now: number): number | null {
 function writeMute(client: IrcClient, value: string): void {
 	client.muteValue = value;
 	client.mutePending.push({value, at: Date.now(), echoed: false});
-	client.send(value ? `METADATA * SET ${MUTE_KEY} * :${value}` : `METADATA * SET ${MUTE_KEY}`);
+	// Private: only the account's own sessions may read or hear it (the
+	// server's push gate reads it whatever its visibility). The clear says
+	// private too, so its notification goes to the account's sessions,
+	// whatever their nick, rather than to whoever shares a channel.
+	client.send(
+		value
+			? `METADATA * SET ${MUTE_KEY} private :${value}`
+			: `METADATA * SET ${MUTE_KEY} private`
+	);
 }
 
 /**
@@ -147,13 +155,21 @@ export function syncPushMute(client: IrcClient): void {
 			return;
 		}
 
-		// An indefinite entry (someone's `*:0`) already silences everything.
-		if (have === Number.POSITIVE_INFINITY) {
+		// A live entry we did not write is adopted: push is muted already,
+		// and rewriting it would have two devices that disagree on the end
+		// (one indefinite, one timed) rewrite each other forever. Once it
+		// expires, `have` is null and our own entry goes in.
+		if (have !== null && !client.muteOwned) {
 			return;
 		}
 
+		// Ours: keep it saying what we want. (An indefinite `*:0` is never
+		// ours; we write only timed entries.)
 		const timed = client.globalDnd.active && client.globalDnd.until !== null;
-		const stale = have === null || (timed ? have !== want : have - now < RENEW_BELOW_S);
+		const stale =
+			have === null ||
+			(have !== Number.POSITIVE_INFINITY &&
+				(timed ? have !== want : have - now < RENEW_BELOW_S));
 
 		if (stale) {
 			writeMute(client, withGlobal(client.muteValue, want, now));
@@ -205,9 +221,13 @@ function ownEcho(client: IrcClient, value: string): boolean {
 	const queue = client.mutePending;
 	const cutoff = Date.now() - MUTE_ECHO_TIMEOUT_MS;
 
-	// Writes that never came back (refused) are forgotten.
-	while (queue.length > 0 && !queue[0].echoed && queue[0].at < cutoff) {
-		queue.shift();
+	// Writes that never came back (refused), wherever they sit, are
+	// forgotten, and so are echoed ones as old: this bounds the queue to
+	// the writes of the last MUTE_ECHO_TIMEOUT_MS.
+	for (let i = queue.length - 1; i >= 0; i--) {
+		if (queue[i].at < cutoff) {
+			queue.splice(i, 1);
+		}
 	}
 
 	const index = queue.findIndex((p) => p.value === value);
@@ -233,10 +253,19 @@ export function onMuteValue(client: IrcClient, value: string): void {
 	}
 
 	const now = nowSec();
-	const hadLive = client.muteKnown && globalUntil(client.muteValue, now) !== null;
+	const before = client.muteKnown ? globalUntil(client.muteValue, now) : null;
+	const hadLive = before !== null;
 	client.muteValue = value;
 	client.muteKnown = true;
-	const live = globalUntil(value, now) !== null;
+	const after = globalUntil(value, now);
+	const live = after !== null;
+
+	// Another device's write. Our entry is still ours only if it kept our
+	// `*` exactly (it changed a per-channel entry); a different `*` is theirs
+	// and is adopted (syncPushMute).
+	if (after !== before) {
+		client.muteOwned = false;
+	}
 
 	if (hadLive && !live && desiredUntil(client, now) !== null) {
 		// The entry is gone while we still want one, and we did not remove
@@ -246,8 +275,6 @@ export function onMuteValue(client: IrcClient, value: string): void {
 		client.muteOwned = false;
 		client.muteSuppressed = true;
 		client.dispatchBus("dnd:cleared", {network: client.uuid});
-	} else if (!live) {
-		client.muteOwned = false;
 	}
 
 	syncPresence(client);

@@ -240,7 +240,7 @@ describe("push mute on the wire (irc/pushMute.ts)", function () {
 		expect(h.sent().filter((l) => l.includes("SET"))).to.deep.equal([]);
 		h.transport.line(":irc.test 761 alice alice draft/webpush/mute * :#seance:9999999999");
 		expect(h.sent()).to.deep.equal([
-			`METADATA * SET draft/webpush/mute * :#seance:9999999999;*:${NOW_S + 3600}`,
+			`METADATA * SET draft/webpush/mute private :#seance:9999999999;*:${NOW_S + 3600}`,
 		]);
 	});
 
@@ -251,7 +251,7 @@ describe("push mute on the wire (irc/pushMute.ts)", function () {
 		h.client.setPresenceMode("dnd");
 		expect(h.sent()).to.deep.equal([
 			"AWAY *",
-			`METADATA * SET draft/webpush/mute * :*:${NOW_S + INDEFINITE_MUTE_S}`,
+			`METADATA * SET draft/webpush/mute private :*:${NOW_S + INDEFINITE_MUTE_S}`,
 		]);
 
 		// Any change makes a sync; the global switch on and off is one.
@@ -279,7 +279,7 @@ describe("push mute on the wire (irc/pushMute.ts)", function () {
 		expect(h.client.remoteDnd).to.equal(true);
 		h.sent();
 		h.client.setGlobalDnd(false, null);
-		expect(h.sent()).to.deep.equal(["METADATA * SET draft/webpush/mute", "AWAY"]);
+		expect(h.sent()).to.deep.equal(["METADATA * SET draft/webpush/mute private", "AWAY"]);
 		expect(h.client.remoteDnd).to.equal(false);
 		expect(h.client.presenceSnapshot().dnd).to.equal(false);
 		// The echo of the clear changes nothing.
@@ -300,7 +300,7 @@ describe("push mute on the wire (irc/pushMute.ts)", function () {
 		h.client.setGlobalDnd(false, null);
 		expect(h.sent().filter((l) => l.includes("SET"))).to.deep.equal([]);
 		clearRemoteDnd(h.client);
-		expect(h.sent()).to.deep.equal(["METADATA * SET draft/webpush/mute", "AWAY"]);
+		expect(h.sent()).to.deep.equal(["METADATA * SET draft/webpush/mute private", "AWAY"]);
 	});
 
 	it("another user's entry in a shared channel is not ours", function () {
@@ -368,10 +368,10 @@ describe("push mute on the wire (irc/pushMute.ts)", function () {
 		h.client.setGlobalDnd(false, null);
 		h.client.setGlobalDnd(true, null);
 		expect(h.sent()).to.deep.equal([
-			"METADATA * SET draft/webpush/mute",
+			"METADATA * SET draft/webpush/mute private",
 			"AWAY",
 			"AWAY *",
-			`METADATA * SET draft/webpush/mute * :${on}`,
+			`METADATA * SET draft/webpush/mute private :${on}`,
 		]);
 		h.transport.lines(
 			":irc.test 766 alice alice draft/webpush/mute :key not set",
@@ -429,6 +429,133 @@ describe("push mute on the wire (irc/pushMute.ts)", function () {
 		clock.tick(MUTE_ECHO_TIMEOUT_MS + 1);
 		h.transport.line(`:irc.test METADATA alice draft/webpush/mute * :*:${NOW_S + 3600}`);
 		expect(h.client.remoteDnd).to.equal(true);
+	});
+
+	it("an entry set elsewhere is adopted, never rewritten (no ping-pong)", function () {
+		const cases: {mine: (h: ReturnType<typeof connect>) => void; theirs: string}[] = [
+			// Ours indefinite, theirs timed with under 7 days left.
+			{mine: (h) => h.client.setGlobalDnd(true, null), theirs: `*:${NOW_S + 3600}`},
+			// Ours timed, theirs indefinite.
+			{
+				mine: (h) => h.client.setGlobalDnd(true, NOW_MS + 3600_000),
+				theirs: `*:${NOW_S + INDEFINITE_MUTE_S}`,
+			},
+			// Ours timed, theirs a different timed end.
+			{
+				mine: (h) => h.client.setGlobalDnd(true, NOW_MS + 3600_000),
+				theirs: `*:${NOW_S + 7200}`,
+			},
+		];
+
+		for (const {mine, theirs} of cases) {
+			const h = connect();
+			h.transport.line(":irc.test 766 alice alice draft/webpush/mute :key not set");
+			mine(h);
+			const ours = h.sent().find((l) => l.includes("SET")) as string;
+			const value = ours.slice(ours.indexOf(" :") + 2);
+			h.transport.lines(
+				`:irc.test 761 alice alice draft/webpush/mute private :${value}`,
+				`:irc.test METADATA alice draft/webpush/mute * :${value}`
+			);
+			expect(h.client.muteOwned).to.equal(true);
+			// The other device (the same account) writes its own end.
+			h.transport.line(`:irc.test METADATA alice draft/webpush/mute * :${theirs}`);
+			expect(h.sent().filter((l) => l.includes("SET"))).to.deep.equal([]);
+			expect(h.client.muteOwned).to.equal(false);
+			// Later syncs, and the other device writing again, change nothing.
+			h.client.setGlobalDnd(false, null);
+			mine(h);
+			syncPresence(h.client);
+			h.transport.line(`:irc.test METADATA alice draft/webpush/mute * :${theirs}`);
+			expect(h.sent().filter((l) => l.includes("SET"))).to.deep.equal([]);
+			expect(h.client.presenceSnapshot().dnd).to.equal(true);
+		}
+	});
+
+	it("keeps our entry when another device changes only a channel's mute", function () {
+		const h = connect();
+		h.transport.line(":irc.test 766 alice alice draft/webpush/mute :key not set");
+		h.client.setGlobalDnd(true, null);
+		const on = `*:${NOW_S + INDEFINITE_MUTE_S}`;
+		h.transport.line(`:irc.test 761 alice alice draft/webpush/mute private :${on}`);
+		h.transport.line(`:irc.test METADATA alice draft/webpush/mute * :#seance:9999999999;${on}`);
+		expect(h.client.muteOwned).to.equal(true);
+		h.sent();
+		h.client.setGlobalDnd(false, null);
+		expect(h.sent()).to.deep.equal([
+			"METADATA * SET draft/webpush/mute private :#seance:9999999999",
+			"AWAY",
+		]);
+	});
+
+	it("an adopted timed entry expiring makes room for ours", function () {
+		const h = connect();
+		h.transport.line(`:irc.test 761 alice alice draft/webpush/mute private :*:${NOW_S + 600}`);
+		h.client.setGlobalDnd(true, null);
+		expect(h.sent().filter((l) => l.includes("SET"))).to.deep.equal([]);
+		clock.tick(601_000);
+		syncPresence(h.client);
+		expect(h.sent()).to.deep.equal([
+			`METADATA * SET draft/webpush/mute private :*:${NOW_S + 601 + INDEFINITE_MUTE_S}`,
+		]);
+		expect(h.client.muteOwned).to.equal(true);
+		expect(h.client.presenceSnapshot().dnd).to.equal(true);
+	});
+
+	it("an adopted timed entry cleared elsewhere reports dnd:cleared", function () {
+		const h = connect();
+		h.transport.line(`:irc.test 761 alice alice draft/webpush/mute private :*:${NOW_S + 600}`);
+		h.client.setGlobalDnd(true, NOW_MS + 3600_000);
+		expect(h.sent().filter((l) => l.includes("SET"))).to.deep.equal([]);
+		h.dispatch.resetHistory();
+		h.transport.line(":irc.test METADATA alice draft/webpush/mute *");
+		expect(h.sent().filter((l) => l.includes("SET"))).to.deep.equal([]);
+		expect(h.dispatch.getCalls().some((c) => c.args[0] === "dnd:cleared")).to.equal(true);
+	});
+
+	it("a refused write behind an echoed one stops hiding foreign values", function () {
+		const h = connect();
+		h.transport.line(":irc.test 766 alice alice draft/webpush/mute :key not set");
+		h.client.setGlobalDnd(true, NOW_MS + 3600_000);
+		h.transport.line(`:irc.test 761 alice alice draft/webpush/mute private :*:${NOW_S + 3600}`);
+		// The end moves: a second write, which the server refuses (no echo).
+		h.client.setGlobalDnd(true, NOW_MS + 7200_000);
+		expect(h.sent().filter((l) => l.includes("SET"))).to.have.length(2);
+		expect(h.client.mutePending.map((p) => p.echoed)).to.deep.equal([true, false]);
+		clock.tick(MUTE_ECHO_TIMEOUT_MS + 1);
+		h.dispatch.resetHistory();
+		// Another device turns DND off.
+		h.transport.line(":irc.test METADATA alice draft/webpush/mute *");
+		expect(h.client.remoteDnd).to.equal(false);
+		expect(h.dispatch.getCalls().some((c) => c.args[0] === "dnd:cleared")).to.equal(true);
+		expect(h.client.mutePending).to.deep.equal([]);
+	});
+
+	it("keeps no more pending writes than the last timeout's", function () {
+		const h = connect();
+		h.transport.line(":irc.test 766 alice alice draft/webpush/mute :key not set");
+
+		for (let i = 0; i < 20; i++) {
+			h.client.setGlobalDnd(true, null);
+			h.client.setGlobalDnd(false, null);
+			clock.tick(MUTE_ECHO_TIMEOUT_MS);
+		}
+
+		// Any echo prunes by age: only the newest round's two writes can remain.
+		h.transport.line(":irc.test 766 alice alice draft/webpush/mute :key not set");
+		expect(h.client.mutePending.length).to.be.at.most(2);
+	});
+
+	it("takes a private value under another nick, never a public one", function () {
+		const h = connect();
+		h.transport.line(":irc.test 766 alice alice draft/webpush/mute :key not set");
+		h.sent();
+		h.transport.line(`:irc.test METADATA bob draft/webpush/mute * :*:${NOW_S + 600}`);
+		h.transport.line(`:irc.test 761 alice bob draft/webpush/mute * :*:${NOW_S + 600}`);
+		expect(h.client.remoteDnd).to.equal(false);
+		h.transport.line(`:irc.test METADATA alice_ draft/webpush/mute private :*:${NOW_S + 600}`);
+		expect(h.client.remoteDnd).to.equal(true);
+		expect(h.sent()).to.deep.equal(["AWAY *"]);
 	});
 
 	it("a timed DND ending clears itself", function () {
