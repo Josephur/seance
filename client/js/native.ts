@@ -4,8 +4,9 @@
 // imports nothing and is what the leaf helpers (haptics, keepAlive, appBadge,
 // viewport) talk to; this file is free to pull in the store and the router.
 
-import {leavePage, onStandalonePage} from "./router";
+import {leavePage, onStandalonePage, openTarget} from "./router";
 import {closeOpenImage} from "./helpers/imageViewer";
+import {followSystemTextSize} from "./helpers/systemTextSize";
 import {reconnectAll} from "./irc/manager";
 import {isPhoneLayout} from "./helpers/device";
 import {
@@ -17,6 +18,7 @@ import {
 	isIOSShell,
 } from "./helpers/capacitor";
 import {emitEscape, topEscapeLayer} from "./helpers/escapeLayer";
+import {onNativePushTap} from "./helpers/nativePush";
 import {store} from "./store";
 
 // A link the OS handed the app — `irc:`, `ircs:` or `web+irc:`, the schemes
@@ -111,6 +113,10 @@ export function installNativeHooks(): void {
 		}
 	});
 
+	// The system's text size (iOS's Dynamic Type, Android's Font size)
+	// scales the whole interface (helpers/systemTextSize.ts).
+	followSystemTextSize();
+
 	// Android: the "stay connected" notification's Turn off button stops the
 	// service; the setting follows so Settings shows the truth and the next
 	// launch does not start it again (helpers/keepAlive.ts).
@@ -119,6 +125,16 @@ export function installNativeHooks(): void {
 			void store.dispatch("settings/update", {name: "keepConnected", value: false});
 		});
 	}
+
+	// Android: a tapped push notification (PushService.java) opens its
+	// conversation, now or once the network has joined it — the same path a
+	// service worker's notification click takes. An "activity" notification
+	// names no conversation and only brings the app up.
+	onNativePushTap((network, target) => {
+		if (target) {
+			openTarget(network, target);
+		}
+	});
 
 	launchUrl = nativeCall<{url?: string}>("App", "getLaunchUrl").then((result) => {
 		const href = result?.url || null;
