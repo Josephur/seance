@@ -1301,31 +1301,6 @@ async function unsubscribe(uuid: string): Promise<void> {
 	}
 }
 
-/**
- * Snooze pushes for `ms` (0 = clear the snooze): account-wide, enforced by
- * the ircd's mute gate, so every device stops being woken up. Per-channel
- * mutes ride the same metadata key (see /pushmute).
- */
-function setSnooze(ms: number): void {
-	if (anyVapid() === undefined) {
-		return;
-	}
-
-	const until = ms > 0 ? Math.floor(Date.now() / 1000) + Math.floor(ms / 1000) : 0;
-
-	for (const [uuid, server] of servers) {
-		if (server.vapid === undefined || !pushOn(uuid)) {
-			continue;
-		}
-
-		socket.emit("webpush:metadata", {
-			network: uuid,
-			key: "draft/webpush/mute",
-			value: until > 0 ? `*:${until}` : "",
-		});
-	}
-}
-
 /** Per-network browser-notification flag (the editor's checkbox), reactive
  * so sidebar icons re-render on edits; seeded from storage on first read. */
 const notifyFlags = reactive(new Map<string, boolean>());
@@ -1687,7 +1662,6 @@ export default {
 	subscribe,
 	renew,
 	unsubscribe,
-	setSnooze,
 	refresh,
 	onNetworkSaved,
 	networkPushInfo,

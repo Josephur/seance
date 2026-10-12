@@ -582,7 +582,8 @@ p {
 #chat .oper-report-btn::before,
 .jump-to-input::before,
 .password-container .reveal-password span,
-#sidebar .collapse-network-icon::before {
+#sidebar .collapse-network-icon::before,
+#sidebar .presence-pill-caret::before {
 	font: normal normal normal 14px/1 FontAwesome;
 	font-size: inherit; /* Can't have font-size inherit on line above, so need to override */
 	-webkit-font-smoothing: antialiased;
@@ -1000,6 +1001,80 @@ p {
 
 #sidebar .logo {
 	height: 3rem;
+}
+
+/* The presence pill under the logo (PresencePill.vue): global do not
+ * disturb, its menu on a click. */
+#sidebar .presence-pill-row {
+	display: flex;
+	justify-content: center;
+	margin-block-start: 0.375rem;
+}
+
+#sidebar .presence-pill {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.375rem;
+	max-inline-size: calc(100% - 1rem);
+	padding-block: 0.125rem;
+	padding-inline: 0.625rem;
+	border: 1px solid var(--rail-badge-bg, rgb(255 255 255 / 12%));
+	border-radius: 999px;
+	background: transparent;
+	color: inherit;
+	font-size: 0.8125rem;
+	line-height: 1.25rem;
+	cursor: pointer;
+}
+
+#sidebar .presence-pill.is-dnd {
+	color: var(--rail-accent, #e0a340);
+	border-color: currentcolor;
+}
+
+#sidebar .presence-pill-text {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+#sidebar .presence-pill-caret::before {
+	content: "\f0d7"; /* https://fontawesome.com/icons/caret-down?style=solid */
+}
+
+.presence-dot {
+	display: inline-block;
+	flex: none;
+	inline-size: 0.5rem;
+	block-size: 0.5rem;
+	padding: 0;
+	border: 0;
+	border-radius: 50%;
+	background: #6fbf73;
+	vertical-align: middle;
+}
+
+.presence-dot.is-away {
+	background: #c9a24a;
+}
+
+.presence-dot.is-dnd {
+	background: #d0574d;
+}
+
+/* The lobby's dot before the nick (NetworkLobby.vue): a 1rem box around the
+ * 0.5rem dot so it can be hit, the outline inside the nick's clip. */
+#sidebar .lobby-nick .presence-dot {
+	box-sizing: content-box;
+	padding: 0.25rem;
+	margin-inline-end: 0.0625rem;
+	background-clip: content-box;
+	cursor: pointer;
+}
+
+#sidebar .lobby-nick .presence-dot:focus-visible {
+	outline: 1px solid var(--rail-accent, currentcolor);
+	outline-offset: -1px;
 }
 
 #sidebar .devtools-toggle {
@@ -3089,15 +3164,19 @@ html[data-reduce-motion] #chat .media-veil-main:hover .media-veil-icon {
 	padding: 5px 0 5px 1px;
 }
 
-/* Adjacent buttons in a settings row keep a gap between them (snooze row,
- * prompt actions, anything else that ends up inline). */
+/* Adjacent buttons in a settings row keep a gap between them (prompt
+ * actions, anything else that ends up inline). */
 #settings .opt .btn + .btn {
 	margin-left: 8px;
 }
 
-/* The push snooze buttons sit on their own line under their label. */
-#settings .push-snooze {
-	margin-top: 4px;
+/* The do-not-disturb schedule (Settings/Notifications.vue). */
+#settings .dnd-schedule .dnd-times,
+#settings .dnd-schedule .dnd-days {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5rem 1rem;
+	margin-block: 0.5rem;
 }
 
 #settings .opt input {
@@ -7091,7 +7170,8 @@ html[data-reduce-motion] #form .upload-bar-track.indeterminate .upload-bar-fill 
 }
 
 .push-networks-hint,
-.keepalive-hint {
+.keepalive-hint,
+.dnd-schedule-hint {
 	margin-top: 8px;
 	font-size: 0.8125rem;
 	color: var(--body-color-muted);

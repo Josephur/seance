@@ -74,7 +74,18 @@
 					</span>
 				</div>
 				<span v-if="network.nick" :title="nickLabel" class="lobby-nick"
-					><span class="sr-only">Nickname: </span>{{ network.nick }}</span
+					><button
+						type="button"
+						:class="['presence-dot', presenceClass]"
+						:aria-label="`Presence on ${network.name}: ${presenceText}`"
+						:title="presenceText"
+						aria-haspopup="menu"
+						@click.stop="openPresenceMenu"
+						@contextmenu.stop.prevent="openPresenceMenu"
+						@pointerdown.stop
+						@mousedown.stop
+						@touchstart.stop
+					/><span class="sr-only">Nickname: </span>{{ network.nick }}</span
 				>
 			</div>
 		</div>
@@ -87,11 +98,21 @@ import {useRouter} from "vue-router";
 import collapseNetwork from "../js/helpers/collapseNetwork";
 import roundBadgeNumber from "../js/helpers/roundBadgeNumber";
 import socket from "../js/socket";
+import eventbus from "../js/eventbus";
 import {isOperOn} from "../js/helpers/operMenu";
 import webpush from "../js/webpush";
 import ChannelWrapper from "./ChannelWrapper.vue";
 
 import type {ClientChan, ClientNetwork} from "../js/types";
+import type {PresenceMode} from "../js/helpers/dnd";
+import type {ContextMenuItem} from "../js/helpers/contextMenu";
+
+const MODE_LABELS: Record<PresenceMode, string> = {
+	online: "Online",
+	auto: "Auto",
+	away: "Away",
+	dnd: "Do not disturb",
+};
 
 export default defineComponent({
 	name: "Channel",
@@ -183,6 +204,32 @@ export default defineComponent({
 				: `Your nickname for ${props.network.name} (not connected)`
 		);
 
+		// The presence dot before the nick: what this network shows now, and
+		// a menu of the four modes (network:presence-mode, irc/bus.ts).
+		const presence = computed(() => props.network.presence);
+		const presenceClass = computed(() =>
+			presence.value?.dnd ? "is-dnd" : presence.value?.away ? "is-away" : "is-online"
+		);
+		const presenceText = computed(() => {
+			const p = presence.value;
+			const mode = MODE_LABELS[p?.mode ?? "auto"];
+			return p?.dnd ? "Do not disturb" : p?.away ? `${mode} · away` : mode;
+		});
+
+		const openPresenceMenu = (event: MouseEvent) => {
+			const current = presence.value?.mode ?? "auto";
+			const items: ContextMenuItem[] = (Object.keys(MODE_LABELS) as PresenceMode[]).map(
+				(mode) => ({
+					label: mode === current ? `${MODE_LABELS[mode]} ✓` : MODE_LABELS[mode],
+					type: "item",
+					class: `presence-${mode}`,
+					action: () =>
+						socket.emit("network:presence-mode", {network: props.network.uuid, mode}),
+				})
+			);
+			eventbus.emit("contextmenu:items", {event, items});
+		};
+
 		const unreadCount = computed(() => {
 			return roundBadgeNumber(channel.value.unread);
 		});
@@ -196,6 +243,9 @@ export default defineComponent({
 		};
 
 		return {
+			presenceClass,
+			presenceText,
+			openPresenceMenu,
 			notifyState,
 			channel,
 			editNetwork,

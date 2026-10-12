@@ -276,6 +276,21 @@ the server tab on new connection"
 				</div>
 			</div>
 
+			<div class="connect-row">
+				<label for="connect:presenceMode">Presence</label>
+				<select
+					id="connect:presenceMode"
+					v-model="presenceMode"
+					class="input"
+					name="presenceMode"
+				>
+					<option value="auto">Auto: away when I'm not looking</option>
+					<option value="online">Online: never away</option>
+					<option value="away">Away: always away</option>
+					<option value="dnd">Do not disturb</option>
+				</select>
+			</div>
+
 			<!--
 				Services support (docs/projects/oper-tools.md): shown once this
 				network is connected and opered. The package's conventional names
@@ -453,7 +468,14 @@ import {
 	ref,
 	watch,
 } from "vue";
-import {displayName, parseCommands, SavedNetwork, SERVICE_ROLES} from "../js/irc/saved-networks";
+import {
+	displayName,
+	parseCommands,
+	presenceModeOf,
+	SavedNetwork,
+	SERVICE_ROLES,
+} from "../js/irc/saved-networks";
+import type {PresenceMode} from "../js/helpers/dnd";
 import {SERVICES_PROFILES, servicesProfileById} from "../js/irc/services/index";
 import {describeServiceCheck} from "../js/irc/services";
 import {servicesCheck} from "../js/helpers/operRequest";
@@ -526,6 +548,16 @@ export default defineComponent({
 		const store = useStore();
 		const commandsInput = ref<HTMLTextAreaElement | null>(null);
 		const commandsText = ref((props.defaults.commands ?? []).join("\n"));
+
+		// The network's presence mode (the lobby dot's four, client/js/dnd.ts).
+		// A stored "auto" is no key at all, so the select reads through
+		// presenceModeOf; a pick is posted as is, and "auto" clears the key.
+		const presenceMode = computed<PresenceMode>({
+			get: () => presenceModeOf(props.defaults),
+			set(mode) {
+				props.defaults.presenceMode = mode;
+			},
+		});
 
 		// --- Services support: the package and the bots by role, shown once
 		// this network is connected and opered (nothing to set up before).
@@ -741,6 +773,7 @@ export default defineComponent({
 		};
 
 		return {
+			presenceMode,
 			pushInfo,
 			renewPush,
 			onNotifyToggle,
