@@ -185,7 +185,7 @@ Away mode flashed back until the post-MOTD `AWAY *`). So:
   (`Channel.awayShown`), so a pre-away peer's tab switch (`*` then back)
   shows nothing either way. A 301 carrying `*` — nefarious2 sends the raw
   star to a viewer that speaks pre-away (`away_text_for`) — shows as away
-  with no message: "Away" alone on the whois card, "is away" in a query.
+  with no message: "Away: (no message)" on the whois card, "is away" in a query.
 
 ### The away state of a closed page
 
