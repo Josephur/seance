@@ -276,7 +276,7 @@ interface ClientToServerEvents {
 		keys: {p256dh: string; auth: string};
 	}>;
 	"webpush:unregister": EventHandler<{network: string; endpoint: string}>;
-	/** Account metadata write for webpush settings (payload tier, mute/snooze). An empty value deletes the key. */
+	/** Account metadata write for webpush settings (payload tier; the mute list is irc/pushMute.ts's). An empty value deletes the key. */
 	"webpush:metadata": EventHandler<{network: string; key: string; value: string}>;
 	/** Ask the server for the account's bouncer session(s) (`PERSISTENCE LIST`); the reply arrives as `persistence:sessions`. The network is optional — any connected client sees the same session. */
 	"persistence:sessions:list": EventHandler<{network?: string}>;

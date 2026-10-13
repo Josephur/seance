@@ -1,6 +1,7 @@
 # Do not disturb and per-network presence
 
-Status: built, 2026-10-12. Branch `dnd` (from `origin/develop` `d9ec454d`).
+Status: built 2026-10-12; review rounds 2-4 and the polish round
+2026-10-13. Branch `dnd` (from `origin/develop` `d9ec454d`).
 This describes what was built; where the build changed the first plan, the
 list at the end says so.
 
@@ -61,7 +62,8 @@ interface DndSchedule {
 }
 
 interface DndState {
-	manual: {kind: "off"} | {kind: "until"; until: number} | {kind: "indefinite"};
+	// span: the length picked ("For 1 hour"), so the menu can tick it.
+	manual: {kind: "off"} | {kind: "until"; until: number; span?: number} | {kind: "indefinite"};
 	schedule: DndSchedule;
 	// Off pressed inside a scheduled window: the window's end (ms). The
 	// schedule is ignored until then.
@@ -76,6 +78,20 @@ nextWindow(schedule, now: Date): {start: number; end: number} | null;
 - **Off during a scheduled window** sets `scheduleSkippedUntil` to that
   window's end, so DND resumes with the next window, not the current one.
 - An empty `days` list or `enabled: false` means no schedule.
+- **The same start and end time is a whole day**: the window runs from that
+  time to the same time the next day (a window that ends at or before its
+  start crosses midnight). The editor says so under the fields.
+- **Editing the schedule keeps the skip** only while the window current at
+  that moment stays as it was (`editSchedule`): another weekday, or a time
+  outside tonight's window, leaves Off in force; moving tonight's window
+  drops the skip and it holds afresh. Following the schedule on or off
+  always drops it.
+- The page re-judges the verdict when it can next change (`nextChangeAt`: a
+  timed DND's end, the next window's start, the next minute boundary), so
+  an end or a start takes effect on time, not up to a minute late. Two tabs
+  of one device keep one state through the `storage` event.
+- `parseDndState` resets only the half it cannot read: a bad schedule keeps
+  a good manual switch, and the reverse.
 - A window is judged in local time; a DST change is taken as it falls (the
   window is the wall-clock times, whatever their length that night).
 - Stored in `thelounge.dnd` (JSON), carried by the settings backup (§6).
@@ -202,8 +218,9 @@ a connection that saw `NOTE BOUNCER ALIAS_ATTACHED` (an alias of another
 device's session reads `STATUS ON OFF`: the alias is not held, the session
 is, and closing the last connection leaves it held; a primary reads `ON OFF`
 only when told not to hold, `BOUNCER SET SESSION … HOLD off`), or the cap on
-a SASL login before any STATUS line; `OFF OFF` is believed — and a login in the worker's stash, `webpush.ts`
-`hasStashedLogin`, seeded from IndexedDB at boot and replaced on every write)
+a SASL login before any STATUS line; `OFF OFF` is believed — and a login
+in the worker's stash, `webpush.ts` `hasStashedLogin`, seeded from IndexedDB
+at boot and replaced on every write)
 are posted to the controlling worker as `{type: "away-on-close", networks}`,
 and the unload's `visibilitychange` leaves exactly those alone
 (`setAttendedAll(false, except)`). No controller, nothing handed over. The
@@ -215,7 +232,8 @@ of the app is open (`clients.matchAll({type: "window", includeUncontrolled: true
 other projects' windows too — the reply path's page relay filters the same
 way; a reload's new document is one at once). One run is pending at a time:
 a close, a reopen and a close inside the delay restart its timer and log in
-once. Otherwise, one network
+once; a close that arrives while the run is logging in is queued for one
+more run after it, never a second login alongside. Otherwise, one network
 after another, found by uuid in the stash (never `stashNetwork`'s
 first-network fallback) and only with a stored password, it logs in over its
 throwaway connection (`swIrcOpen`, `draft/pre-away` requested when offered),
@@ -246,7 +264,9 @@ With the worker, one `AWAY :Away` reaches them about 5.3 s after the close.
 - `s_user.c` (~:861) clears `con_pre_away` on the resume-as-primary path, so
   a pre-registration `AWAY` is lost there; the worker repeats it after 001.
 - An alias connection reads `PERSISTENCE STATUS ON OFF` (measured: a second
-  SASL login while another is connected gets `STATUS ON OFF` and `NOTE BOUNCER ALIAS_ATTACHED`, and again after `PERSISTENCE SET ON`), although
+  SASL login while another is connected gets `STATUS ON OFF` and
+  `NOTE BOUNCER ALIAS_ATTACHED`, and again after `PERSISTENCE SET ON`),
+  although
   closing the session's last connection, an alias included, leaves the
   session held. The client reads the setting, not only the effective state.
 - A held session whose last connections went without a usable away (their
@@ -285,10 +305,15 @@ A new Vue-free `client/js/irc/pushMute.ts` (`test/irc/pushMute.ts`):
   pacing: two commands of fake lag. Until the `GET` is answered, another
   device's DND is not known here: for those first ~10 s a network shows no
   shared DND, and nothing is written (a change made meanwhile waits for the
-  answer). The `GET` reply (761, or 766 for no key)
+  answer). A `GET` refused (`FAIL METADATA … RATE_LIMITED`) or lost is
+  asked once more when the resume check's fallback fires
+  (`MUTE_READ_FALLBACK_MS`, 20 s). The `GET` reply (761, or 766 for no key)
   and every later `METADATA` line update `muteValue` and `remoteDnd` (a live
   `*` entry). `handlers/metadata.ts` takes a value when its visibility is
-  `private` or its target is our own nick; every other key stays silent.
+  `private` or its target is our own nick. The replies (761, 766, 770) for
+  the keys this client writes — the mute list and the payload tier — stay
+  silent; a reply for any other key (a raw `/metadata`) is shown as before
+  (`unhandled`). 762 names no key and stays silent.
   Each write comes back twice (the 761/766 and the subscribed `METADATA`
   line) and is recognised as our own echo (`mutePending`, dropped after
   30 s unechoed).
@@ -338,7 +363,16 @@ written before the value has been read.
   page (`client/js/dnd.ts`) then turns its own DND off (`reconcileRemote` →
   `turnOff`, so a scheduled window is skipped to its end), and `bus.ts` sets
   every network of that client in mode `dnd` back to `auto`, saved — Off on
-  another device is Off for the account.
+  another device is Off for the account. The page's DND is one switch for
+  the whole device, so a `dnd:cleared` from any one network ends it
+  everywhere here: the Off that follows removes this device's own entries
+  on every other network too, those of other accounts included. That is on
+  purpose (the user's call, 2026-10-13): an Off seen anywhere means the
+  user is back.
+- **Leaving for good**: `/quit`, and so removing the network, writes our own
+  entry away first, on the same socket (`releaseMute`), or every other device
+  would read the account as in DND for up to 30 days and a re-added network
+  (its memory forgotten) would adopt it as another device's.
 
 **The pill reads shared DND**: when every connected network has `remoteDnd`
 and the local state is off, the pill says "Do not disturb" (set on another
@@ -362,28 +396,41 @@ replaces them.
 ## 5. UI
 
 - **Status pill** (`client/components/PresencePill.vue`, under the logo in
-  `Sidebar.vue`): "Online · auto" (or the mix, "Online"), "Do not disturb ·
-  until 07:00", "Do not disturb" (indefinite or set elsewhere). Times follow
-  the 12/24-hour clock setting, the schedule's window in the menu included. The click opens
-  a menu: Off · For 1 hour · For 8 hours · Until I turn it off · Follow
-  schedule (✓, with the window's text) · Edit schedule… (opens Settings →
-  Notifications). The label wraps to two centred lines, breaking only after
+  `Sidebar.vue`): its own DND first — "Do not disturb · until 07:00", "Do not
+  disturb" (indefinite or set elsewhere) — else what the networks' modes say
+  when they all agree, "Online · auto", "Online", "Away" or "Do not disturb",
+  and "Mixed" when they differ (`presenceSummary`). Its dot follows: red for
+  DND, amber for Away, neutral for Mixed, green otherwise. Times follow the
+  12/24-hour clock setting, the schedule's window in the menu included. The
+  click opens a menu: Off · For 1 hour · For 8 hours · Until I turn it off ·
+  Follow schedule (with the window's text, which never breaks inside the
+  range) · Edit schedule… (opens Settings → Notifications). The current
+  choice carries the menus' check mark (`checked` on the item:
+  `menuitemradio`/`menuitemcheckbox` with `aria-checked`, the mark drawn by
+  CSS), a running timed one also its end ("For 1 hour (until 13:00)"), and
+  the trigger has `aria-expanded`. The label wraps to two centred lines, breaking only after
   its separator ("Do not disturb ·" over "until 10:36 AM"), so the end time is
   never cut off; it is clamped only past two lines, and the whole label is
   also the button's title.
 - **Presence dot** in `NetworkLobby.vue`, before the nick (`.lobby-presence`;
   alone when there is no nick): green present, amber away (`AWAY *` in
-  effect or `/away`), red DND. A click opens Online / Auto /
-  Away / Do not disturb for that network; the dot has its own `aria-label`
-  and does not start a drag or select the row; a right-click on it opens the
-  same menu, not the lobby's.
-- **Network form** (`NetworkForm.vue`): the same four modes as a select; it
-  shows the mode the dot set, and saving keeps it.
+  effect or `/away`), red DND, grey while the network is not connected
+  ("… · not connected"). A thin ring in the rail's own text colour keeps it
+  at 3:1 against any rail. Its hit box is 1.5rem around the 0.5rem dot,
+  without moving the row. A click opens Online / Auto / Away / Do not
+  disturb for that network; the dot has its own `aria-label` and does not
+  start a drag or select the row; a right-click on it opens the same menu,
+  not the lobby's.
+- **Network form** (`NetworkForm.vue`): the same four words as a select,
+  with a hint under it for the mode picked (Online: never away; Auto: away
+  when you're not looking; Away: always away; Do not disturb: away and
+  silenced); it shows the mode the dot set, and saving keeps it.
 - **Settings → Notifications**: the schedule editor (enabled, start, end,
-  weekdays) in place of the snooze buttons.
+  weekdays) in place of the snooze buttons; its fields are dimmed and
+  disabled while the schedule is off.
 - Plain English copy as the surrounding components on this base (no i18n
-  layer on `origin/develop`), sizes in `rem`, logical properties, the menus following the existing
-  context-menu styling and keyboard handling.
+  layer on `origin/develop`), sizes in `rem`, logical properties, the menus
+  following the existing context-menu styling and keyboard handling.
 
 ## 6. Settings backup
 
@@ -397,7 +444,7 @@ resets DND to its default, as for every carried key. `presenceMode` rides in
   decides), manual over schedule, Off inside a window skipping to its end,
   expired `until`, an empty schedule.
 - `test/irc/presence.ts`: each mode × attended/unattended × DND, `/away` on
-  top, a mode change mid-session, nothing before 001.
+  top, a mode change mid-session, nothing before registration.
 - `test/irc/preaway.ts`: the declaration right before `CAP END` (plain and
   SASL, after `PERSISTENCE ATTACH`), a reload from the stored text, `/back`
   and network removal forgetting it, DND / Away mode / a hidden page
@@ -408,8 +455,11 @@ resets DND to its default, as for every carried key. `presenceMode` rides in
   `leavesAwayToWorker`.
 - `test/tests/service-worker.ts` "away on close": a close (no window after
   the delay: `AWAY *` before `CAP END` and after 001, then `QUIT`), without
-  pre-away (after 001 only), a reload (a window: nothing), no stashed
-  password (nothing), only the named networks by uuid.
+  pre-away (after 001 only), a reload (a window that appears inside the
+  delay: nothing), a window of another project at `/other/` (still logs
+  in), two closes inside the delay (one login for both posts' networks), a
+  close during the login (queued for one more run), no stashed password
+  (nothing), only the named networks by uuid, several in the order given.
 - `test/irc/pushMute.ts`: parse/format, the `*` merge keeping other entries,
   expired entries dropped, `remoteDnd` from 761/766/`METADATA`, the private
   write and the bare clear, adoption, ownership across a reconnect and a

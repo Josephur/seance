@@ -53,7 +53,8 @@ export interface CapResult {
  * see multiline.ts), `draft/webpush` likewise needs a `vapid=` value — a
  * server without its VAPID key cannot send pushes (see webpush.ts and
  * docs/projects/push-subscription.md) — and `draft/metadata-2` carries the
- * account settings push needs (payload tier, mute/snooze), and
+ * account settings push needs (payload tier, the push mute list (do not
+ * disturb)), and
  * `draft/pre-away` lets the away state be declared before `CAP END`, so a
  * resumed bouncer session is never announced as back (presence.ts
  * `registrationAwayLine`). Deliberately
