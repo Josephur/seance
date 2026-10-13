@@ -196,7 +196,12 @@ export default async function run(page) {
 		return {
 			pillOffset: (pill.left + pill.right) / 2 - (logo.left + logo.right) / 2,
 			dotOffset: (dot.top + dot.bottom) / 2 - (nick.top + nick.bottom) / 2,
-			dotBeforeNick: dot.right <= nick.left + 0.5,
+			// The hit box overlaps the nick on purpose; the visible 0.5rem
+			// dot at its centre must not.
+			dotBeforeNick:
+				(dot.left + dot.right) / 2 +
+					parseFloat(getComputedStyle(document.documentElement).fontSize) / 4 <=
+				nick.left + 0.5,
 			nickInside: nick.right <= row.right + 0.5,
 			nickShown: nick.width,
 			nickEllipsis:
