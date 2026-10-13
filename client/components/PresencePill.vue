@@ -67,9 +67,12 @@ export default defineComponent({
 			};
 
 			const forSpan = (span: number, text: string, cls: string): ContextMenuItem => {
-				const running = timed?.span === span;
+				// Picked with this span, and no further off than it (an end
+				// moved by hand is no longer "for 1 hour").
+				const running =
+					timed !== null && timed.span === span && timed.until - Date.now() <= span;
 				return {
-					label: running ? `${text} (until ${endText()})` : text,
+					label: running ? `${text} (until\u00a0${endText()})` : text,
 					type: "item",
 					class: cls,
 					checked: running,
