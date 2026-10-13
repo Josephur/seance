@@ -355,10 +355,10 @@ export class IrcClient {
 	account = "";
 	/** The server holds our session across disconnects (`PERSISTENCE STATUS ON`, see persistence.ts). */
 	persistenceHold = false;
-	/** A `PERSISTENCE STATUS` line arrived on this connection (an alias of
-	 * another device's session gets none): {@link persistenceHold} is then
-	 * the server's word, not only the default. */
-	persistenceStatusSeen = false;
+	/** The user's setting from the last `PERSISTENCE STATUS` line (`ON`,
+	 * `OFF`, `DEFAULT`), undefined before one. An alias of another device's
+	 * session reads `ON OFF`: not held itself, though the session is. */
+	persistenceSetting: string | undefined = undefined;
 	/** Our registration-time `PERSISTENCE SET ON` ack is pending (swallowed
 	 * by handlers/persistence.ts until the STATUS echo lands). */
 	persistenceAutoSetPending = false;
@@ -884,7 +884,7 @@ export class IrcClient {
 		this.host = "";
 		this.account = "";
 		this.persistenceHold = false;
-		this.persistenceStatusSeen = false;
+		this.persistenceSetting = undefined;
 		this.attachCursor = undefined;
 		this.serverReplay = false;
 		this.endSasl();

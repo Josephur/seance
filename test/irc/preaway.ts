@@ -456,7 +456,7 @@ describe("a closing page leaves AWAY * to the service worker (presence.ts leaves
 		expect(leavesAwayToWorker(held().client, stashed)).to.equal(true);
 	});
 
-	it("an alias of another device's session (draft/persistence + SASL, no STATUS line)", function () {
+	it("an alias of another device's session (STATUS ON OFF), and before any STATUS", function () {
 		const h = setup({uuid: UUID, sasl: "plain", saslAccount: "alice", saslPassword: "s3cret"});
 		h.client.connect();
 		negotiate(h, SASL_CAPS);
@@ -466,8 +466,10 @@ describe("a closing page leaves AWAY * to the service worker (presence.ts leaves
 			":irc.test 903 alice :SASL authentication successful"
 		);
 		welcome(h);
+		expect(leavesAwayToWorker(h.client, stashed), "no STATUS yet").to.equal(true);
+		h.transport.line(":irc.test PERSISTENCE STATUS ON OFF");
 		expect(h.client.persistenceHold).to.equal(false);
-		expect(leavesAwayToWorker(h.client, stashed)).to.equal(true);
+		expect(leavesAwayToWorker(h.client, stashed), "an alias").to.equal(true);
 
 		// The server says it will not hold the session: believed.
 		h.transport.line(":irc.test PERSISTENCE STATUS OFF OFF");

@@ -354,17 +354,18 @@ export function presenceRegistered(client: IrcClient): void {
  * only when the worker can log in for it (`stashed`, webpush.ts).
  */
 /**
- * The account's session outlives this connection: `PERSISTENCE STATUS ON`,
- * or `draft/persistence` negotiated on a SASL login — the client then asks
- * for `PERSISTENCE SET ON` itself (client.ts), and a connection that
- * attached to the session as an alias of another device never hears a
- * STATUS line (the server's alias path sends none). An explicit
- * `STATUS … OFF` is believed.
+ * The account's session outlives this connection: `PERSISTENCE STATUS`
+ * says ON, effective or as the user's setting — a connection attached as
+ * another device's alias reads `ON OFF` (the alias is not held, the session
+ * is, and closing the last connection leaves it held) — or, before any
+ * STATUS line, `draft/persistence` on a SASL login, where the client asks
+ * for `PERSISTENCE SET ON` itself (client.ts). `OFF OFF` is believed.
  */
 function heldByBouncer(client: IrcClient): boolean {
 	return (
 		client.persistenceHold ||
-		(!client.persistenceStatusSeen &&
+		client.persistenceSetting === "ON" ||
+		(client.persistenceSetting === undefined &&
 			client.caps.hasCapability(PERSISTENCE_CAP) &&
 			client.saslOk)
 	);

@@ -180,8 +180,12 @@ that said `AWAY *` as it went would blink away and back to everyone on a
 reload; one that says nothing leaves the held session as it was. So on
 `pagehide` with `persisted === false` (`foreground.ts`), the networks that
 qualify (`presence.ts` `leavesAwayToWorker`: mode `auto`, connected,
-`!starSent`, no `/away`, no DND, the session held by the bouncer — `PERSISTENCE STATUS ON`, or the cap on a SASL login when no STATUS came, since a connection
-that attached as another device's alias gets none, and an explicit `STATUS … OFF` is believed — and a login in the worker's stash, `webpush.ts`
+`!starSent`, no `/away`, no DND, the session held by the bouncer —
+`PERSISTENCE STATUS` ON as the effective state or as the user's setting (a
+connection attached as another device's alias reads `STATUS ON OFF`: the
+alias is not held, the session is, and closing the last connection leaves it
+held), or the cap on a SASL login before any STATUS line; `OFF OFF` is
+believed — and a login in the worker's stash, `webpush.ts`
 `hasStashedLogin`, seeded from IndexedDB at boot and replaced on every write)
 are posted to the controlling worker as `{type: "away-on-close", networks}`,
 and the unload's `visibilitychange` leaves exactly those alone
@@ -220,7 +224,10 @@ With the worker, one `AWAY :Away` reaches them about 5.3 s after the close.
 
 - `s_user.c` (~:861) clears `con_pre_away` on the resume-as-primary path, so
   a pre-registration `AWAY` is lost there; the worker repeats it after 001.
-- The alias attach path sends no `PERSISTENCE STATUS` line.
+- An alias connection reads `PERSISTENCE STATUS ON OFF` (measured: a second
+  SASL login while another is connected gets `STATUS ON OFF` and `NOTE BOUNCER ALIAS_ATTACHED`, and again after `PERSISTENCE SET ON`), although
+  closing the session's last connection, an alias included, leaves the
+  session held. The client reads the setting, not only the effective state.
 - A held session whose last connections went without a usable away (their
   stars went out after their QUIT) shows `G` in WHO but no 301 and sends no
   `AWAY` to `away-notify` clients.
