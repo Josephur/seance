@@ -158,20 +158,30 @@ Away mode flashed back until the post-MOTD `AWAY *`). So:
   Nothing is declared while the client is quitting (a required login that
   failed inside `beforeEnd`), so `starSent` is set only for a line that goes
   out.
-- **A present client resuming a held session says `AWAY`** after
-  registration, once, its 305 kept quiet (nefarious2 always answers a bare
-  `AWAY` with 305): a held session keeps the away state it was left with —
-  the worker's star below — and a reopened page that declared nothing would
-  inherit it. Only on a SASL connection with `draft/persistence`; it is one
-  more command on the connect path there.
+- **A present client resuming a held session says `AWAY`**, once, its 305
+  kept quiet (nefarious2 always answers a bare `AWAY` with 305): a held
+  session keeps the away state it was left with — the worker's star below —
+  and a reopened page that declared nothing would inherit it
+  (`presence.ts` `presenceResumed`). Only on a real resume (the
+  `draft/persistence` restoration batch, or the cursor's replay batch), not
+  on a fresh session, an alias attach or a connection with no account; and
+  only once the account's mute list was read, 10 s after registration, so
+  another device's DND (`remoteDnd`) is known and turns it into `AWAY *`
+  instead of a back-then-away blink — at once where the list cannot be
+  read (no `draft/metadata-2`). `/away`, DND, Away mode and a hidden page
+  each suppress it. Accepted cost: a reopen after the worker's star stays
+  away to others for up to ~10 s (measured 10.5 s).
 - The `/away` memory is pruned once per page, at autoconnect, to the saved
   networks and the live clients (`pruneUserAway`): a network that was never
   saved is never reconnected after a reload.
 - Other users' `AWAY *` is kept as the star in the model (a query's
   `userAway`, a channel user's `away`), apart from `""` (present), so a peer
-  going "lunch" → `*` → back still gets its "is back" line in a query. A 301
-  carrying `*` — nefarious2 sends the raw star to a viewer that speaks
-  pre-away (`away_text_for`) — reads "away" in a WHOIS and in a query.
+  going "lunch" → `*` → back still gets its "is back" line in a query; and
+  a query shows "is back" only when its last away line was an "is away"
+  (`Channel.awayShown`), so a pre-away peer's tab switch (`*` then back)
+  shows nothing either way. A 301 carrying `*` — nefarious2 sends the raw
+  star to a viewer that speaks pre-away (`away_text_for`) — shows as away
+  with no message: "Away" alone on the whois card, "is away" in a query.
 
 ### The away state of a closed page
 
@@ -181,11 +191,12 @@ reload; one that says nothing leaves the held session as it was. So on
 `pagehide` with `persisted === false` (`foreground.ts`), the networks that
 qualify (`presence.ts` `leavesAwayToWorker`: mode `auto`, connected,
 `!starSent`, no `/away`, no DND, the session held by the bouncer —
-`PERSISTENCE STATUS` ON as the effective state or as the user's setting (a
-connection attached as another device's alias reads `STATUS ON OFF`: the
-alias is not held, the session is, and closing the last connection leaves it
-held), or the cap on a SASL login before any STATUS line; `OFF OFF` is
-believed — and a login in the worker's stash, `webpush.ts`
+`PERSISTENCE STATUS` ON as the effective state, or as the user's setting on
+a connection that saw `NOTE BOUNCER ALIAS_ATTACHED` (an alias of another
+device's session reads `STATUS ON OFF`: the alias is not held, the session
+is, and closing the last connection leaves it held; a primary reads `ON OFF`
+only when told not to hold, `BOUNCER SET SESSION … HOLD off`), or the cap on
+a SASL login before any STATUS line; `OFF OFF` is believed — and a login in the worker's stash, `webpush.ts`
 `hasStashedLogin`, seeded from IndexedDB at boot and replaced on every write)
 are posted to the controlling worker as `{type: "away-on-close", networks}`,
 and the unload's `visibilitychange` leaves exactly those alone
@@ -194,7 +205,11 @@ back/forward cache (`persisted === true`) is a hide, as before.
 
 The worker (`service-worker.js` `awayOnClose`) holds the event with
 `waitUntil`, waits `AWAY_ON_CLOSE_DELAY_MS` (5 s), and stops if any window
-of the app is open (`clients.matchAll({type: "window", includeUncontrolled: true})`; a reload's new document is one at once). Otherwise, one network
+of the app is open (`clients.matchAll({type: "window", includeUncontrolled: true})` filtered to URLs under the app's own, since a github.io origin holds
+other projects' windows too — the reply path's page relay filters the same
+way; a reload's new document is one at once). One run is pending at a time:
+a close, a reopen and a close inside the delay restart its timer and log in
+once. Otherwise, one network
 after another, found by uuid in the stash (never `stashNetwork`'s
 first-network fallback) and only with a stored password, it logs in over its
 throwaway connection (`swIrcOpen`, `draft/pre-away` requested when offered),
@@ -410,9 +425,15 @@ resets DND to its default, as for every carried key. `presenceMode` rides in
 - Live check `tools/scenarios/away-two-devices.mjs`: two real Seance pages on
   one account, B a second Chromium with its own profile
   (`lib/device.mjs`): A closed while B is present (present), A's `/away`
-  under a present B (present), B hidden (A's text), B back (present), DND on
-  A read by B and Off on B turning A's off, A reloaded under B (no AWAY
-  line), both closed (one away), A reopened alone (present).
+  under a present B (present), B hidden (A's text), B back (present); A
+  still on `/away lunch` while B turns DND on ("lunch" to others) and Off
+  (present; A keeps its `/away` through `dnd:cleared`; "lunch" again when B
+  hides); DND on A read by B and Off on B turning A's off, A reloaded under
+  B (no AWAY line), both closed (one away), A reopened alone (present within
+  ~15 s).
+- In `away-live.mjs` the about:blank round trips are back/forward-cache
+  hides (`bfcacheHide`), labelled so; real reloads (`Page.reload`) are
+  checked under `/away`, under DND and for a present Auto page.
 - Browser check `tools/scenarios/dnd.mjs` against the dev ircd (also
   `--mobile --width=390 --height=844`): the pill and its menu, the dot and its
   menu (no navigation, no drag, its own right-click menu), the `AWAY *` /
