@@ -560,6 +560,55 @@ strong,
 	overflow-clip-margin: 0.75rem;
 }
 
+/* The whois card: style.css hangs each label (`dt`) in the gutter left of
+ * the text, where the nick column stands in the default layout. The stacked
+ * rows have no such gutter and the clip above cut every label away, so here
+ * the card is a two-column grid of its own inside the text: label, value. */
+#chat .chat .whois {
+	display: grid;
+	grid-template-columns: max-content minmax(0, 1fr);
+	column-gap: 0.75rem;
+}
+
+#chat .chat .whois > div {
+	display: contents;
+}
+
+#chat .chat .whois dt {
+	position: static;
+	white-space: nowrap;
+}
+
+#chat .chat .whois dd {
+	min-inline-size: 0;
+	overflow-wrap: anywhere;
+}
+
+/* The card's first line is its own block (whois.vue's `<p>`), which the
+ * rows' `text-indent` reset (below) leaves under the icon: step it past
+ * the icon as every other row's first line does. */
+#chat .chat .msg[data-type="whois"] .content > p:first-child {
+	text-indent: calc(1.25em + 0.375rem);
+}
+
+/* A narrow pane has no room for the label column: each label stands over
+ * its value instead of squeezing it into a sliver. */
+/* stylelint-disable-next-line at-rule-no-unknown */
+@container chat (max-width: 32rem) {
+	#chat .chat .whois {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	/* Smaller, not dimmer: the colours are solved for contrast. */
+	#chat .chat .whois dt {
+		font-size: 0.875em;
+	}
+
+	#chat .chat .whois dd + dt {
+		margin-block-start: 0.25rem;
+	}
+}
+
 /* A line inside a run: one row, its time in the column beside the text,
  * kept in place but not drawn until the line is pointed at or opened. */
 #chat .chat .msg.previous-source:is([data-type="message"], [data-type="notice"]) {
