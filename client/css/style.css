@@ -4998,6 +4998,18 @@ html[data-shell="native"] #footer {
 	outline: 0;
 }
 
+/* No wider than the window: past that an item wraps instead of running off
+ * the screen (ContextMenu.vue measures the menu at the left edge). */
+#context-menu {
+	box-sizing: border-box;
+	min-inline-size: min(12rem, 100vw);
+	max-inline-size: 100vw;
+}
+
+#context-menu .context-menu-item {
+	white-space: normal;
+}
+
 .context-menu-divider {
 	height: 1px;
 	margin: 6px 0;

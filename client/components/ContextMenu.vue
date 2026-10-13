@@ -125,12 +125,14 @@ export default defineComponent({
 
 			const offset = {left: event.pageX, top: event.pageY};
 
+			// Never off the left or top edge: a menu as wide as a phone's
+			// screen (the presence pill's at the large step) began 2px off it.
 			if (window.innerWidth - offset.left < menuWidth) {
-				offset.left = window.innerWidth - menuWidth;
+				offset.left = Math.max(0, window.innerWidth - menuWidth);
 			}
 
 			if (window.innerHeight - offset.top < menuHeight) {
-				offset.top = window.innerHeight - menuHeight;
+				offset.top = Math.max(0, window.innerHeight - menuHeight);
 			}
 
 			return offset;
@@ -165,6 +167,10 @@ export default defineComponent({
 			previousActiveElement.value = document.activeElement as HTMLElement;
 			items.value = newItems;
 			activeItem.value = 0;
+			// Measured at the left edge, so the width is the menu's own and
+			// not what the last menu's place left of the window.
+			style.value.left = 0;
+			style.value.top = 0;
 			isOpen.value = true;
 
 			// Position the menu and set the focus on the first item after it's size has updated
