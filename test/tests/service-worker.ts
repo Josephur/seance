@@ -237,6 +237,7 @@ class FakeWS {
  * `ack` is given, answers a reply request through its MessageChannel port
  * (no `ack` = a frozen page that never answers). */
 interface FakeClient {
+	url: string;
 	focused: boolean;
 	visibilityState: string;
 	posted: any[];
@@ -246,8 +247,9 @@ interface FakeClient {
 	focus(): void;
 }
 
-function makeClient(ack?: (msg: any) => boolean): FakeClient {
+function makeClient(ack?: (msg: any) => boolean, url = "https://app.test/#/chan-1"): FakeClient {
 	const client: FakeClient = {
+		url,
 		focused: true,
 		visibilityState: "visible",
 		posted: [],
@@ -1793,6 +1795,37 @@ describe("service worker away on close", function () {
 		const sw = makeSW({fastTimers: true, script: {preAway: true}, clients: [makeClient()]});
 		await closePage(sw, ["net-1"]);
 		expect(sw.socketsOpened()).to.equal(0);
+	});
+
+	it("a window of another project on the origin does not stop it", async function () {
+		// A github.io origin: this app at /seance/, another project at /other/.
+		const other = makeClient(undefined, "https://app.test/other/");
+		const sw = makeSW({
+			fastTimers: true,
+			script: {preAway: true},
+			clients: [other],
+			scope: "https://app.test/seance/",
+		});
+		await closePage(sw, ["net-1"]);
+		expect(sw.socketsOpened()).to.equal(1);
+	});
+
+	it("a close, a reopen and a close inside the delay log in once", async function () {
+		const sw = makeSW({fastTimers: true, script: {preAway: true}});
+		const promises: Promise<unknown>[] = [];
+		const post = (networks: string[]) => {
+			for (const h of sw.handlers.message) {
+				h({
+					data: {type: "away-on-close", networks},
+					waitUntil: (p: Promise<unknown>) => promises.push(p),
+				});
+			}
+		};
+		post(["net-1"]);
+		await new Promise((r) => setTimeout(r, 20)); // 2 s of the worker's 5
+		post(["net-1"]);
+		await Promise.all(promises);
+		expect(sw.socketsOpened()).to.equal(1);
 	});
 
 	it("no stashed password: it does nothing", async function () {

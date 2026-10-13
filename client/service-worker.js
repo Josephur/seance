@@ -882,10 +882,43 @@ const AWAY_REPLY_MS = 2000;
 /** Mirrors PRE_AWAY_CAP in client/js/irc/presence.ts. */
 const PRE_AWAY_CAP = "draft/pre-away";
 
-async function awayOnClose(uuids) {
-	await new Promise((resolve) => setTimeout(resolve, AWAY_ON_CLOSE_DELAY_MS));
+/** Windows of this app: `includeUncontrolled` reports every window on the
+ * origin, and a github.io origin holds other projects' pages too. */
+async function appWindows() {
+	const all = await self.clients.matchAll({type: "window", includeUncontrolled: true});
+	return all.filter((c) => typeof c.url === "string" && c.url.startsWith(appUrl));
+}
 
-	const windows = await self.clients.matchAll({type: "window", includeUncontrolled: true});
+/** The one pending run: a close, a reopen and a close again inside the
+ * delay restart its timer instead of logging in twice. */
+let closeRun = null;
+
+function awayOnClose(uuids) {
+	if (closeRun) {
+		for (const uuid of uuids) {
+			closeRun.networks.add(uuid);
+		}
+
+		clearTimeout(closeRun.timer);
+		closeRun.timer = setTimeout(closeRun.fire, AWAY_ON_CLOSE_DELAY_MS);
+		return closeRun.promise;
+	}
+
+	const run = {networks: new Set(uuids), timer: null, fire: null, promise: null};
+	run.promise = new Promise((resolve) => {
+		run.fire = () => {
+			closeRun = null;
+			resolve(awayOnCloseNow([...run.networks]));
+		};
+
+		run.timer = setTimeout(run.fire, AWAY_ON_CLOSE_DELAY_MS);
+	});
+	closeRun = run;
+	return run.promise;
+}
+
+async function awayOnCloseNow(uuids) {
+	const windows = await appWindows();
 
 	if (windows.length > 0) {
 		return; // a reload, or the app was opened again: that page speaks for itself
@@ -1554,7 +1587,9 @@ function askPage(client, message) {
  * first — until one does. Asking them all at once would post a reply
  * once per window. Resolves true when a page sent it. */
 async function viaPage(message) {
-	const cs = await self.clients.matchAll({includeUncontrolled: true, type: "window"});
+	// Only this app's windows answer; another project's on the origin
+	// would only cost its timeout.
+	const cs = await appWindows();
 
 	if (cs.length === 0 || typeof MessageChannel !== "function") {
 		return false;

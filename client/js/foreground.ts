@@ -109,6 +109,10 @@ export function installForegroundHooks(): void {
 	});
 
 	window.addEventListener("pageshow", (ev: PageTransitionEvent) => {
+		// A page restored from the back/forward cache is this document again:
+		// whatever it handed over is its own to say once more.
+		handedOff = new Set();
+
 		if (ev.persisted) {
 			wake();
 		}
