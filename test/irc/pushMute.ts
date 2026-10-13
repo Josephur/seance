@@ -249,9 +249,9 @@ describe("push mute on the wire (irc/pushMute.ts)", function () {
 			const h = connect(opts);
 			h.client.setGlobalDnd(true, null);
 			clock.tick(MUTE_READ_DELAY_MS);
-			const lines = h.sent();
-			expect(lines.filter((l) => l.includes("METADATA"))).to.deep.equal([]);
-			expect(lines).to.include("AWAY *");
+			// The raw lines: sent() hides SUB and GET, the very lines this pins.
+			expect(h.transport.sent.filter((l) => l.includes("METADATA"))).to.deep.equal([]);
+			expect(h.sent()).to.include("AWAY *");
 		}
 	});
 
@@ -563,9 +563,10 @@ describe("push mute on the wire (irc/pushMute.ts)", function () {
 			clock.tick(MUTE_ECHO_TIMEOUT_MS);
 		}
 
-		// Any echo prunes by age: only the newest round's two writes can remain.
+		// Any echo prunes by age: only the newest round's two writes remain,
+		// and this echo of its clear drops the write before it.
 		h.transport.line(":irc.test 766 alice alice draft/webpush/mute :key not set");
-		expect(h.client.mutePending.length).to.be.at.most(2);
+		expect(h.client.mutePending.map((p) => p.value)).to.deep.equal([""]);
 	});
 
 	it("stays bounded when no write is ever echoed", function () {
@@ -576,7 +577,8 @@ describe("push mute on the wire (irc/pushMute.ts)", function () {
 			h.client.setGlobalDnd(true, null);
 			h.client.setGlobalDnd(false, null);
 			clock.tick(MUTE_ECHO_TIMEOUT_MS + 1);
-			expect(h.client.mutePending.length).to.be.at.most(2);
+			// This round's two writes; each write pruned the round before.
+			expect(h.client.mutePending.length).to.equal(2);
 		}
 
 		expect(h.sent().filter((l) => l.includes("SET"))).to.have.length(40);
@@ -723,6 +725,80 @@ describe("push mute on the wire (irc/pushMute.ts)", function () {
 			":irc.test 766 alice alice draft/webpush/mute :key not set"
 		);
 		expect(h.dispatch.getCalls().filter((c) => c.args[0] === "msg")).to.deep.equal([]);
+	});
+
+	it("a timed DND past its end, before the minute tick: mode dnd's entry is not rewritten", function () {
+		const h = connect();
+		h.transport.line(":irc.test 766 alice alice draft/webpush/mute :key not set");
+		h.client.setPresenceMode("dnd");
+		h.client.setGlobalDnd(true, NOW_MS + 60_000);
+		clock.tick(61_000);
+		syncPresence(h.client);
+		const sets = h.sent().filter((l) => l.includes(" SET "));
+		const last = sets[sets.length - 1];
+		expect(last).to.equal(
+			`METADATA * SET draft/webpush/mute private :*:${NOW_S + 61 + INDEFINITE_MUTE_S}`
+		);
+		h.transport.line(
+			`:irc.test METADATA alice draft/webpush/mute private :${last.split(" :")[1]}`
+		);
+
+		for (let i = 0; i < 3; i++) {
+			clock.tick(1000);
+			syncPresence(h.client);
+		}
+
+		expect(h.sent().filter((l) => l.includes(" SET "))).to.deep.equal([]);
+	});
+
+	it("keeps the payload tier's replies quiet too", function () {
+		const h = connect();
+		h.dispatch.resetHistory();
+		h.transport.lines(
+			":irc.test 761 alice alice draft/webpush/payload * :full",
+			":irc.test 766 alice alice draft/webpush/payload :key not set",
+			":irc.test 770 alice draft/webpush/mute draft/webpush/payload"
+		);
+		expect(h.dispatch.getCalls().filter((c) => c.args[0] === "msg")).to.deep.equal([]);
+	});
+
+	it("shows the replies for any other key, as a raw /metadata asked", function () {
+		const h = connect();
+		h.dispatch.resetHistory();
+		h.transport.lines(
+			":irc.test 761 alice alice avatar * :https://example.test/a.png",
+			":irc.test 766 alice alice display-name :key not set",
+			":irc.test 770 alice avatar"
+		);
+		const shown = h.dispatch.getCalls().filter((c) => c.args[0] === "msg");
+		expect(shown).to.have.length(3);
+		expect(shown.map((c) => (c.args[1] as {msg: {command: string}}).msg.command)).to.deep.equal(
+			["761", "766", "770"]
+		);
+	});
+
+	it("/quit takes our own entry with it, before the QUIT", function () {
+		const h = connect();
+		h.transport.line(":irc.test 766 alice alice draft/webpush/mute :key not set");
+		h.client.setGlobalDnd(true, null);
+		h.transport.line(
+			`:irc.test METADATA alice draft/webpush/mute * :*:${NOW_S + INDEFINITE_MUTE_S}`
+		);
+		const from = h.transport.sent.length;
+		h.client.quit();
+		const lines = h.transport.sent.slice(from);
+		expect(lines[0]).to.equal("METADATA * SET draft/webpush/mute");
+		expect(lines[1]).to.match(/^QUIT /);
+	});
+
+	it("/quit leaves another device's entry alone", function () {
+		const h = connect();
+		h.transport.line(`:irc.test 761 alice alice draft/webpush/mute * :*:${NOW_S + 600}`);
+		const from = h.transport.sent.length;
+		h.client.quit();
+		expect(h.transport.sent.slice(from).filter((l) => l.includes("METADATA"))).to.deep.equal(
+			[]
+		);
 	});
 });
 

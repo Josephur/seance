@@ -9,7 +9,9 @@
  * See docs/projects/do-not-disturb.md.
  */
 
-export type PresenceMode = "online" | "auto" | "away" | "dnd";
+import type {SharedPresenceMode} from "../../../shared/types/network";
+
+export type PresenceMode = SharedPresenceMode;
 export const PRESENCE_MODES: readonly PresenceMode[] = ["online", "auto", "away", "dnd"];
 
 export interface DndSchedule {

@@ -14,15 +14,10 @@
  */
 
 import storage from "../localStorage";
+// Type only: saved-networks.ts imports this module for its forget function.
+import type {StorageBackend} from "./saved-networks";
 
 export const USER_AWAY_KEY = "thelounge.state.away";
-
-/** The subset of the localStorage wrapper this module needs. */
-export interface StorageBackend {
-	get(key: string): string | null;
-	set(key: string, value: string): void;
-	remove(key: string): void;
-}
 
 let backend: StorageBackend = storage;
 

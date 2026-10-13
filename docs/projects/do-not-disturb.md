@@ -111,8 +111,9 @@ changes (`manager.syncPresenceAll()`), and at registration
   Its reply is the user's acknowledgement, so it is not counted as a quiet
   one. `userAwayChanged` only records and reports the state; it sends
   nothing, so a `/back` in DND never sends an `AWAY *` + `AWAY` pair.
-- Nothing is sent before 001 (`canSend`), except the one declaration
-  below, which rides in the `CAP END` flush.
+- Nothing is sent before registration (end of MOTD, `canSend` is
+  `isConnected`), except the one declaration below, which rides in the
+  `CAP END` flush.
 - A MARKREAD for the open channel is still scheduled only while the page is
   attended — attention, not presence mode, decides "the user has seen it".
 
@@ -152,9 +153,10 @@ Away mode flashed back until the post-MOTD `AWAY *`). So:
   retry is ACKed before 001 the cap is on, but the pipelined `AWAY` went in
   under the refused REQ and was dropped. `registrationAwayLine` records
   whether the cap was ACKed (or already being retried on its own) when the
-  line went out, and `presenceRegistered` says it again after 001 when it
-  rode on the refused REQ (`CapNegotiator.wasNakRetried`). The SASL path,
-  whose `CAP END` follows 903, normally rides on the ACKed retry and stands.
+  line went out, and `presenceRegistered` says it again after registration
+  (end of MOTD) when it rode on the refused REQ
+  (`CapNegotiator.wasNakRetried`). The SASL path, whose `CAP END` follows
+  903, normally rides on the ACKed retry and stands.
   Nothing is declared while the client is quitting (a required login that
   failed inside `beforeEnd`), so `starSent` is set only for a line that goes
   out.

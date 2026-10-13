@@ -259,6 +259,12 @@ export function networksLeavingAwayToWorker(stashed: (uuid: string) => boolean):
 		.map((client) => client.uuid);
 }
 
+/**
+ * The page's do not disturb (client/js/dnd.ts) changed: remember it for
+ * networks created later and hand it to every client, which says it to its
+ * server (`AWAY *`, the push mute) through syncPresence. `until` is a
+ * Date.now() time for a timed DND, null for an indefinite one or none.
+ */
 export function setGlobalDndAll(active: boolean, until: number | null): void {
 	globalDnd.active = active;
 	globalDnd.until = until;

@@ -206,8 +206,10 @@ export function syncPushMute(client: IrcClient): void {
 		}
 
 		// Ours: keep it saying what we want. (An indefinite `*:0` is never
-		// ours; we write only timed entries.)
-		const timed = client.globalDnd.active && client.globalDnd.until !== null;
+		// ours; we write only timed entries.) A timed DND already over is
+		// not timed: desiredUntil fell through to the mode's renewing end.
+		const g = client.globalDnd;
+		const timed = g.active && g.until !== null && Math.floor(g.until / 1000) > now;
 		const stale =
 			have === null ||
 			(have !== Number.POSITIVE_INFINITY &&
@@ -259,6 +261,21 @@ export function clearRemoteDnd(client: IrcClient): void {
 	writeMute(client, withoutGlobal(client.muteValue, now));
 	client.muteOwnedUntil = null;
 	syncPresence(client);
+}
+
+/**
+ * The network is going away for good (`/quit`, removing it): take this
+ * client's own `*` entry with it, or every other device would read it as a
+ * do not disturb set here for up to INDEFINITE_MUTE_S, and a re-added
+ * network (its muteMemory forgotten) would adopt it as another device's.
+ */
+export function releaseMute(client: IrcClient): void {
+	if (!client.muteOwned || !canWriteMute(client)) {
+		return;
+	}
+
+	writeMute(client, withoutGlobal(client.muteValue, nowSec()));
+	client.muteOwnedUntil = null;
 }
 
 /**

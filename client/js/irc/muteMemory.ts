@@ -14,19 +14,14 @@
  */
 
 import storage from "../localStorage";
+// Type only: saved-networks.ts imports this module for its forget function.
+import type {StorageBackend} from "./saved-networks";
 
 export const MUTE_MEMORY_KEY = "thelounge.state.dndMute";
 
 export interface MuteMemory {
 	ownedUntil: number | null;
 	confirmedUntil: number | null;
-}
-
-/** The subset of the localStorage wrapper this module needs. */
-export interface StorageBackend {
-	get(key: string): string | null;
-	set(key: string, value: string): void;
-	remove(key: string): void;
 }
 
 let backend: StorageBackend = storage;

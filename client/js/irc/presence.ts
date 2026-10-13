@@ -17,6 +17,21 @@
  * there — `IrcClient.pushMessage` only schedules a MARKREAD for the open
  * channel while attended, and the return of attention marks it then.
  *
+ * Presence modes and do not disturb (docs/projects/do-not-disturb.md):
+ * each network has a mode (`auto`, `online`, `away`, `dnd`), and do not
+ * disturb is in force when the page's global switch, the network's mode or
+ * another device's push mute (`remoteDnd`) says so. `syncPresence` is the
+ * one place that turns all of that, and attention, into `AWAY *` or `AWAY`
+ * (`wantsStar`), reports the snapshot to the store and keeps the push mute
+ * in step (pushMute.ts).
+ *
+ * The away state is declared before `CAP END` (`registrationAwayLine`,
+ * `draft/pre-away`), so a held bouncer session is never counted present
+ * while a reload or a reconnect registers. A connection that resumes such
+ * a session says `AWAY` once it knows it is present (`armResumeCheck`), and
+ * a page that closes leaves its networks' `AWAY *` to the service worker
+ * (`leavesAwayToWorker`).
+ *
  * Vue-free and DOM-free: foreground.ts translates visibility and focus
  * into `setAttended`, tests call it directly.
  */
@@ -26,7 +41,7 @@ import {formatLine} from "./message";
 import {trailingLine} from "./wire";
 import {forgetUserAway, setUserAway} from "./userAwayStore";
 import {scheduleMarkRead} from "./handlers/markread";
-import {MUTE_READ_DELAY_MS, syncPushMute} from "./pushMute";
+import {MUTE_KEY, MUTE_READ_DELAY_MS, syncPushMute} from "./pushMute";
 import {PERSISTENCE_CAP} from "./persistence";
 import type {SharedNetworkPresence} from "../../../shared/types/network";
 
@@ -96,6 +111,7 @@ export function initialPresence(): PresenceState {
 	};
 }
 
+/** Registration is over (end of MOTD): before it, only registrationAwayLine speaks. */
 function canSend(client: IrcClient): boolean {
 	return client.transport.state === "open" && client.isConnected;
 }
@@ -384,6 +400,14 @@ function armResumeCheck(client: IrcClient): void {
 		const timer = setTimeout(() => {
 			p.resumeTimer = null;
 			p.muteReadTimedOut = true;
+
+			// The read was refused (a rate limit) or its reply lost: ask once
+			// more, or this connection would never mute push for this
+			// device's DND, nor show another device's.
+			if (!client.muteKnown && canSend(client)) {
+				client.send(`METADATA * GET ${MUTE_KEY}`);
+			}
+
 			syncPresence(client);
 		}, MUTE_READ_FALLBACK_MS);
 		// Never what keeps a process (mocha) alive.

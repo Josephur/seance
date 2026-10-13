@@ -61,9 +61,12 @@ export type ServicesConfig = {
 	};
 };
 
+/** A network's presence mode (docs/projects/do-not-disturb.md §2). */
+export type SharedPresenceMode = "online" | "auto" | "away" | "dnd";
+
 /** What this client tells the server about the user (docs/projects/do-not-disturb.md). */
 export type SharedNetworkPresence = {
-	mode: "online" | "auto" | "away" | "dnd";
+	mode: SharedPresenceMode;
 	/** Do not disturb in force here: global, this network's mode, or another device's. */
 	dnd: boolean;
 	/** The server shows the user away from this connection (`AWAY *` or `/away`). */

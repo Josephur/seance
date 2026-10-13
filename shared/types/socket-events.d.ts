@@ -1,6 +1,12 @@
 import {SharedMention} from "./mention";
 import {ChanState, SharedChan} from "./chan";
-import {ServicesConfig, SharedNetwork, SharedNetworkPresence, SharedServerOptions} from "./network";
+import {
+	ServicesConfig,
+	SharedNetwork,
+	SharedNetworkPresence,
+	SharedPresenceMode,
+	SharedServerOptions,
+} from "./network";
 import {SharedMsg, LinkPreview, TypingState} from "./msg";
 import {SharedUser} from "./user";
 import {SharedChangelogData} from "./changelog";
@@ -347,10 +353,7 @@ interface ClientToServerEvents {
 	"network:get": (uuid: string) => void;
 	// TODO typing
 	"network:edit": (data: Record<string, any>) => void;
-	"network:presence-mode": (data: {
-		network: string;
-		mode: "online" | "auto" | "away" | "dnd";
-	}) => void;
+	"network:presence-mode": (data: {network: string; mode: SharedPresenceMode}) => void;
 	"network:new": (data: Record<string, any>) => void;
 
 	"sign-out": (token?: string) => void;

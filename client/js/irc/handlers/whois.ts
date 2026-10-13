@@ -352,15 +352,15 @@ const away: Handler = (client, msg) => {
 	// kept as the star: the whois card shows "Away" with no message for it,
 	// the query "is away" with none.
 	const star = raw === AWAY_STAR;
+	const state = star ? AWAY_STAR : raw || "is away";
 	const inProgress = pendingFor(client).get(client.casefold(nick));
 
 	if (inProgress) {
-		inProgress.away = star ? AWAY_STAR : raw || "is away";
+		inProgress.away = state;
 		return;
 	}
 
 	const chan = client.findChannel(nick);
-	const state = star ? AWAY_STAR : raw || "is away";
 	const text = star ? "" : state;
 
 	// The query keeps the star as the AWAY handler does (handlers/away.ts).

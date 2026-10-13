@@ -233,7 +233,7 @@ describe("the away state across reloads and reconnects (draft/pre-away)", functi
 		});
 	}
 
-	it("an attended page in online mode declares nothing", function () {
+	it("a hidden page in online mode declares nothing", function () {
 		const h = client();
 		h.client.setPresenceMode("online");
 		h.client.setAttended(false);
@@ -375,8 +375,17 @@ describe("the away state across reloads and reconnects (draft/pre-away)", functi
 });
 
 describe("another user's AWAY * (draft/pre-away)", function () {
+	const open: Harness[] = [];
+
+	// The JOIN's CHATHISTORY is never answered: close the socket so its
+	// 15 s timeout does not keep mocha waiting.
+	afterEach(function () {
+		open.splice(0).forEach((h) => h.transport.closed());
+	});
+
 	function registered(): Harness {
 		const h = setup();
+		open.push(h);
 		connect(h);
 		h.transport.line(":alice!a@host JOIN #seance");
 		h.transport.lines(
@@ -595,22 +604,14 @@ describe("a held session says AWAY once remote DND is known (presence.ts armResu
 	// batch when nothing was missed. So every primary connection to a held
 	// session says it once after the read; a fresh one only gets a quiet 305
 	// (the rule changed in round 3: it used to say nothing).
+	// A fresh session is arranged the same way (STATUS ON ON, no batch), and
+	// its 305 is kept quiet as in "says AWAY once after the read" above.
 	it("a held session with no channels (no batch at all) says AWAY after the read", function () {
 		const h = register(META_CAPS, undefined, []);
 		expect(aways(h.sent())).to.deep.equal([]);
 		clock.tick(10_000);
 		h.transport.line(EMPTY);
 		expect(aways(h.sent())).to.deep.equal(["AWAY"]);
-	});
-
-	it("a fresh session gets the same quiet AWAY: its 305 is not shown", function () {
-		const h = register(META_CAPS, undefined, []);
-		clock.tick(10_000);
-		h.transport.line(EMPTY);
-		expect(aways(h.sent())).to.deep.equal(["AWAY"]);
-		h.dispatch.resetHistory();
-		h.transport.line(":irc.test 305 alice :You are no longer marked as being away");
-		expect(h.messages(h.client.lobby.id)).to.deep.equal([]);
 	});
 
 	it("goes ahead without the read after MUTE_READ_FALLBACK_MS (a FAIL METADATA, say)", function () {
@@ -621,7 +622,21 @@ describe("a held session says AWAY once remote DND is known (presence.ts armResu
 		);
 		expect(aways(h.sent())).to.deep.equal([]);
 		clock.tick(MUTE_READ_FALLBACK_MS - 10_000);
-		expect(aways(h.sent())).to.deep.equal(["AWAY"]);
+		const after = h.sent();
+		expect(aways(after)).to.deep.equal(["AWAY"]);
+		// ...and asks for the list once more: without it this connection
+		// would never mute push for this device's DND.
+		expect(after.filter((l) => l.includes("METADATA"))).to.deep.equal([
+			"METADATA * GET draft/webpush/mute",
+		]);
+		h.transport.line(OTHER_DND);
+		expect(h.client.muteKnown).to.equal(true);
+		expect(aways(h.sent())).to.deep.equal(["AWAY *"]);
+		clock.tick(MUTE_READ_FALLBACK_MS);
+		expect(
+			h.sent().filter((l) => l.includes("METADATA")),
+			"once"
+		).to.deep.equal([]);
 	});
 
 	it("a session the bouncer does not hold (STATUS OFF OFF) says nothing", function () {
@@ -651,25 +666,31 @@ describe("a held session says AWAY once remote DND is known (presence.ts armResu
 		expect(aways(h.sent())).to.deep.equal([]);
 	});
 
-	for (const [label, arrange, expected] of [
+	for (const [label, arrange, declared] of [
 		[
 			"/away",
-			(h: Harness) => {
-				// What the constructor loads after a reload's /away.
-				h.client.presence.userAway = true;
-				h.client.presence.userAwayText = "x";
-			},
-			[],
+			// What a reload's constructor loads after a /away.
+			() => backend.set(USER_AWAY_KEY, JSON.stringify({[UUID]: "x"})),
+			"AWAY :x",
 		],
-		["do not disturb", (h: Harness) => h.client.setGlobalDnd(true, null), []],
-		["away mode", (h: Harness) => h.client.setPresenceMode("away"), []],
-		["a hidden page", (h: Harness) => h.client.setAttended(false), []],
+		["do not disturb", (h?: Harness) => h?.client.setGlobalDnd(true, null), "AWAY *"],
+		["away mode", (h?: Harness) => h?.client.setPresenceMode("away"), "AWAY *"],
+		["a hidden page", (h?: Harness) => h?.client.setAttended(false), "AWAY *"],
 	] as const) {
 		it(`${label} suppresses it`, function () {
-			const h = register(META_CAPS, arrange);
+			if (label === "/away") {
+				arrange();
+			}
+
+			const h = register(META_CAPS, label === "/away" ? undefined : arrange);
+			const end = h.transport.sent.indexOf("CAP END");
+			expect(h.transport.sent.slice(0, end), "declared before CAP END").to.include(declared);
 			clock.tick(10_000);
+			expect(h.sent(), "the resume check was armed").to.include(
+				"METADATA * GET draft/webpush/mute"
+			);
 			h.transport.line(EMPTY);
-			expect(aways(h.sent()).filter((l) => l === "AWAY")).to.deep.equal(expected);
+			expect(aways(h.sent()).filter((l) => l === "AWAY")).to.deep.equal([]);
 		});
 	}
 });

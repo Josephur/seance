@@ -64,7 +64,7 @@ import {
 	syncPresence,
 } from "./presence";
 import {abortHistory, retryLostHistory} from "./history";
-import {globalUntil, MUTE_KEY, MUTE_READ_DELAY_MS, type PendingMute} from "./pushMute";
+import {globalUntil, MUTE_KEY, MUTE_READ_DELAY_MS, type PendingMute, releaseMute} from "./pushMute";
 import {getMuteMemory, setMuteMemory, type MuteMemory} from "./muteMemory";
 import {getUserAway} from "./userAwayStore";
 import {
@@ -667,6 +667,8 @@ export class IrcClient {
 
 	/** `/quit`: remove the network from the UI, then disconnect for good. */
 	quit(reason?: string): void {
+		// Before the QUIT, on the same socket: our do not disturb goes too.
+		releaseMute(this);
 		this.bus.dispatch("quit", {network: this.uuid});
 		this.disconnect(reason);
 	}
@@ -2052,6 +2054,8 @@ export class IrcClient {
 				this.send(`METADATA * GET ${MUTE_KEY}`);
 			}
 		}, MUTE_READ_DELAY_MS);
+		// Never what keeps a process (mocha) alive.
+		(this.muteReadTimer as {unref?: () => void}).unref?.();
 	}
 
 	private clearMuteRead(): void {
