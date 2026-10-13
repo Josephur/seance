@@ -173,13 +173,30 @@ export default async function run(page) {
 		return {aways, ...s};
 	};
 
-	// Reload the page (the saved network autoconnects and attaches to the
-	// held session) and return the AWAY lines others saw meanwhile.
-	const reload = async (label) => {
+	// Leave the page for about:blank and come back: Chromium keeps the page
+	// in the back/forward cache (pagehide persisted = true), so this is a
+	// HIDE and a fresh page load, not a reload; the saved network
+	// autoconnects and attaches to the held session. Returns the AWAY lines
+	// others saw meanwhile. A real reload is realReload below.
+	const bfcacheHide = async (label) => {
 		const t = Date.now();
 		await page.goto("about:blank");
 		await page.sleep(2000);
 		await page.goto(BASE, {waitForSelector: "#chat-container"});
+		await page.waitFor(joined("#seance"), {
+			timeout: 25000,
+			label: `${label}: session restored`,
+		});
+		await page.evaluate(SHOW);
+		await page.sleep(4000);
+		const lines = obs.awaysSince(me, t);
+		return {lines, ...(await state(label))};
+	};
+	// A real reload (Page.reload: pagehide persisted = false, the page
+	// unloads); the saved network autoconnects to the held session.
+	const realReload = async (label) => {
+		const t = Date.now();
+		await page.send("Page.reload");
 		await page.waitFor(joined("#seance"), {
 			timeout: 25000,
 			label: `${label}: session restored`,
@@ -200,7 +217,7 @@ export default async function run(page) {
 		// These checks pass on the round-1 build without pre-away too (seen
 		// 2026-10-13): a cut socket gets no star out, and the resumed
 		// session keeps its state, so they guard against a regression but
-		// do not tell old from new; the reload checks do.
+		// do not tell old from new; the real-close checks (section 10) do.
 		proxy.refuse();
 		page.expectWsErrors = true;
 		setTimeout(() => proxy.accept(), 3000);
@@ -382,6 +399,8 @@ export default async function run(page) {
 		);
 
 		// --- 6. Persistence: /away survives the socket going and coming. ------
+		// The page leaves for about:blank (a bfcache hide) and a new load
+		// comes back to the held session.
 		r = await step("/away before reload", () => command("/away gone fishing"));
 		page.check("before reload: away 'gone fishing'", r.away === "gone fishing");
 		const t6 = Date.now();
@@ -399,20 +418,27 @@ export default async function run(page) {
 		await page.evaluate(SHOW);
 		await page.sleep(4000);
 		const after = obs.awaysSince(me, t6b);
-		s = await state("after reload");
+		s = await state("after a bfcache hide and a new load");
 		page.check(
-			`after reload: still away 'gone fishing' to others (${s.flag}, ${JSON.stringify(
-				s.away
-			)}, lines ${JSON.stringify(after)})`,
+			`bfcache hide + new load: still away 'gone fishing' to others (${
+				s.flag
+			}, ${JSON.stringify(s.away)}, lines ${JSON.stringify(after)})`,
 			s.flag === "G" && s.away === "gone fishing"
 		);
 		page.check(
-			`after reload: never shown back in between (${JSON.stringify(after)})`,
+			`bfcache hide + new load: never shown back in between (${JSON.stringify(after)})`,
 			!after.some((l) => /AWAY\s*$/.test(l))
 		);
 
-		// --- 7. ... and a same-page reconnect. -----------------------------
-		let x = await reconnect("/away, reconnected");
+		// --- 7. ... a real reload and a same-page reconnect. --------------
+		let x = await realReload("/away, real reload");
+		page.check(
+			`/away, real reload: still 'gone fishing', never back (${x.flag}, ${JSON.stringify(
+				x.away
+			)}, lines ${JSON.stringify(x.lines)})`,
+			x.flag === "G" && x.away === "gone fishing" && noBack(x.lines)
+		);
+		x = await reconnect("/away, reconnected");
 		page.check(
 			`/away, same-page reconnect: still 'gone fishing', never back (${
 				x.flag
@@ -424,20 +450,30 @@ export default async function run(page) {
 			`/back after the reconnect: present (${JSON.stringify(r.aways)})`,
 			r.flag === "H" && r.away === null
 		);
-		x = await reload("reload after /back");
+		x = await bfcacheHide("bfcache hide after /back");
+		// The hidden page's own AWAY * then back, by design (a hide).
 		page.check(
-			`reload after /back: present, the old away not declared again (${
+			`bfcache hide + new load after /back: present, the old away not declared again (${
 				x.flag
 			}, ${JSON.stringify(x.lines)})`,
 			x.flag === "H" && x.away === null && !x.lines.some((l) => /gone fishing/.test(l))
 		);
 
-		// --- 8. DND across a reload and a reconnect. ------------------------
+		// --- 8. DND across a hide, a real reload and a reconnect. ----------
 		r = await step("DND on before reload", () => menu(PILL, "dnd-indefinite"));
 		page.check("DND on before reload: away", r.flag === "G");
-		x = await reload("DND, after reload");
+		x = await bfcacheHide("DND, bfcache hide + new load");
 		page.check(
-			`DND, reload: never back, still away (${x.flag}, lines ${JSON.stringify(x.lines)})`,
+			`DND, bfcache hide + new load: never back, still away (${
+				x.flag
+			}, lines ${JSON.stringify(x.lines)})`,
+			x.flag === "G" && x.away !== null && noBack(x.lines)
+		);
+		x = await realReload("DND, real reload");
+		page.check(
+			`DND, real reload: never back, still away (${x.flag}, lines ${JSON.stringify(
+				x.lines
+			)})`,
 			x.flag === "G" && x.away !== null && noBack(x.lines)
 		);
 		x = await reconnect("DND, reconnected");
@@ -450,14 +486,14 @@ export default async function run(page) {
 		r = await step("DND off after reload", () => menu(PILL, "dnd-off"));
 		page.check("DND off after reload: present", r.flag === "H" && r.away === null);
 
-		// --- 9. Away mode across a reload and a reconnect. -------------------
+		// --- 9. Away mode across a hide and a reconnect. --------------------
 		r = await step("away mode before reload", () => menu(DOT, "presence-away"));
 		page.check("away mode before reload: away", r.flag === "G");
-		x = await reload("away mode, after reload");
+		x = await bfcacheHide("away mode, bfcache hide + new load");
 		page.check(
-			`away mode, reload: never back, still away (${x.flag}, lines ${JSON.stringify(
-				x.lines
-			)})`,
+			`away mode, bfcache hide + new load: never back, still away (${
+				x.flag
+			}, lines ${JSON.stringify(x.lines)})`,
 			x.flag === "G" && x.away !== null && noBack(x.lines)
 		);
 		x = await reconnect("away mode, reconnected");
@@ -475,8 +511,8 @@ export default async function run(page) {
 		// finds the new window and says nothing. Long enough for the worker's
 		// 5 s delay to run out. (Chromium's real reload never blinked here:
 		// the pagehide QUIT goes out before the unload's star. The blink is
-		// the back/forward cache's — `reload()` above, by about:blank — which
-		// is a hide and keeps its star on purpose.) The close is what the
+		// the back/forward cache's — `bfcacheHide()` above — which is a hide
+		// and keeps its star on purpose.) The close is what the
 		// old build got wrong: its star never got out, and the held session
 		// showed WHO G with no 301 and no AWAY to away-notify clients.
 		let t10 = Date.now();
@@ -524,12 +560,26 @@ export default async function run(page) {
 		await page.goto(BASE, {waitForSelector: "#chat-container"});
 		await page.waitFor(joined("#seance"), {timeout: 25000, label: "reopen: session restored"});
 		await page.evaluate(SHOW);
-		await page.sleep(4000);
+		// The resumed session says AWAY only once the account's mute list
+		// was read (another device's DND), 10 s after registration: up to
+		// ~10 s away to others after a worker's star (accepted).
+		const opened = Date.now();
+		let back = false;
+
+		for (let waited = 0; waited < 16000 && !back; waited += 500) {
+			back = obs.awaysSince(me, t10).some((l) => /AWAY\s*$/.test(l));
+			await page.sleep(500);
+		}
+
+		const backAfter = Date.now() - opened;
+		await page.sleep(SETTLE);
 		lines = obs.awaysSince(me, t10);
 		s = await state("reopened");
 		page.check(
-			`reopen after the close: present (${s.flag}, ${JSON.stringify(lines)})`,
-			s.flag === "H" && s.away === null
+			`reopen after the close: present within ~15 s of the page (${backAfter} ms, ${
+				s.flag
+			}, ${JSON.stringify(lines)})`,
+			s.flag === "H" && s.away === null && backAfter < 16000
 		);
 	} finally {
 		await command("/back").catch(() => undefined);

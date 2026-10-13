@@ -214,11 +214,58 @@ export default async function run(page) {
 			`3. B shown again: the account present (${r.flag}, ${JSON.stringify(r.lines)})`,
 			r.flag === "H" && r.away === null && r.lines.some((l) => /AWAY\s*$/.test(l))
 		);
-		// A's /away would keep A away through case 4's Off; take it back.
+		// --- 4. A on /away lunch while B turns DND on, then Off. -----------
+		// What a user expects: A's own message is what others read through
+		// the DND, Off brings the account back, and A's /away survives the
+		// dnd:cleared that Off raises on A.
+		const dotIsAway = (dev) =>
+			dev.evaluate(`!!document.querySelector('${DOT}')?.classList.contains("is-away")`);
+		const storedAway = (dev) =>
+			dev.evaluate(`JSON.parse(localStorage.getItem("thelounge.state.away") || "{}")`);
+		const t4a = Date.now();
+		await menu(b, PILL, "dnd-indefinite");
+		let aSawDnd = false;
+
+		for (let waited = 0; waited < 15000 && !aSawDnd; waited += 250) {
+			aSawDnd = await dotIsDnd(page);
+			await page.sleep(250);
+		}
+
+		await page.sleep(SETTLE);
+		s = await state("A /away lunch, B in DND");
+		page.check(`4a. A reads B's DND (A's pill ${await pillText(page)})`, aSawDnd);
+		page.check(
+			`4a. while B is in DND the account reads "lunch" (${s.flag}, ${JSON.stringify(
+				s.away
+			)}, ${JSON.stringify(obs.awaysSince(me, t4a))})`,
+			s.flag === "G" && s.away === "lunch"
+		);
+		r = await step("Off on B, A still /away", () => menu(b, PILL, "dnd-off"), 3000);
+		page.check(
+			`4a. after Off the account is present (${r.flag}, ${JSON.stringify(r.lines)})`,
+			r.flag === "H" && r.away === null
+		);
+		const aStill = {
+			dnd: await dotIsDnd(page),
+			away: await dotIsAway(page),
+			stored: await storedAway(page),
+		};
+		page.check(
+			`4a. A keeps its /away through dnd:cleared (${JSON.stringify(aStill)})`,
+			!aStill.dnd && aStill.away && Object.values(aStill.stored).includes("lunch")
+		);
+		r = await step("B hidden, A still /away", () => b.evaluate(HIDE));
+		page.check(
+			`4a. B hides: "lunch" shows again to others (${r.flag}, ${JSON.stringify(
+				r.away
+			)}, ${JSON.stringify(r.lines)})`,
+			r.flag === "G" && r.away === "lunch"
+		);
+		await b.evaluate(SHOW);
 		r = await step("A /back", () => command(page, "/back"));
 		page.check(`A /back: present (${r.flag})`, r.flag === "H");
 
-		// --- 4. DND on A reaches B; Off on B reaches A. --------------------
+		// --- 4b. DND on A reaches B; Off on B reaches A. -------------------
 		const t4 = Date.now();
 		r = await step("DND on A", () => menu(page, PILL, "dnd-indefinite"));
 		let bDnd = false;
@@ -231,13 +278,13 @@ export default async function run(page) {
 		await page.sleep(SETTLE);
 		s = await state("DND on A, read by B");
 		const dndLines = obs.awaysSince(me, t4);
-		page.check(`4. B's pill and network show "Do not disturb" (${await pillText(b)})`, bDnd);
+		page.check(`4b. B's pill and network show "Do not disturb" (${await pillText(b)})`, bDnd);
 		page.check(
-			`4. B silences its notifications (its network's presence says dnd)`,
+			`4b. B silences its notifications (its network's presence says dnd)`,
 			await dotIsDnd(b)
 		);
 		page.check(
-			`4. the account away to others (${s.flag}, ${JSON.stringify(s.away)}, ${JSON.stringify(
+			`4b. the account away to others (${s.flag}, ${JSON.stringify(s.away)}, ${JSON.stringify(
 				dndLines
 			)})`,
 			s.flag === "G" && s.away !== null
@@ -245,9 +292,9 @@ export default async function run(page) {
 		r = await step("Off on B", () => menu(b, PILL, "dnd-off"), 3000);
 		const aOff =
 			!/Do not disturb/i.test((await pillText(page)) ?? "") && !(await dotIsDnd(page));
-		page.check(`4. Off on B turns A's DND off (A's pill ${await pillText(page)})`, aOff);
+		page.check(`4b. Off on B turns A's DND off (A's pill ${await pillText(page)})`, aOff);
 		page.check(
-			`4. both present, the account present (${r.flag}, ${JSON.stringify(r.lines)})`,
+			`4b. both present, the account present (${r.flag}, ${JSON.stringify(r.lines)})`,
 			r.flag === "H" && r.away === null && !(await dotIsDnd(b))
 		);
 
@@ -293,12 +340,27 @@ export default async function run(page) {
 		// --- 7. A alone reopens. ---------------------------------------------
 		const t7 = Date.now();
 		await reopen(page);
-		await page.sleep(4000);
+
+		// The resumed session says AWAY only once the account's mute list
+		// was read (another device's DND), 10 s after registration: up to
+		// ~10 s away to others after a worker's star (accepted).
+		const opened = Date.now();
+		let back = false;
+
+		for (let waited = 0; waited < 16000 && !back; waited += 500) {
+			back = obs.awaysSince(me, t7).some((l) => /AWAY\s*$/.test(l));
+			await page.sleep(500);
+		}
+
+		const backAfter = Date.now() - opened;
+		await page.sleep(SETTLE);
 		lines = obs.awaysSince(me, t7);
-		s = await state("A reopened alone");
+		s = await state("reopened");
 		page.check(
-			`7. A reopened alone: present (${s.flag}, ${JSON.stringify(lines)})`,
-			s.flag === "H" && s.away === null
+			`7. A reopened alone: present within ~15 s of the page (${backAfter} ms, ${
+				s.flag
+			}, ${JSON.stringify(lines)})`,
+			s.flag === "H" && s.away === null && backAfter < 16000
 		);
 	} finally {
 		await b.close();
