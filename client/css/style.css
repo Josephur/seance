@@ -1025,9 +1025,16 @@ p {
 	cursor: pointer;
 }
 
+/* Do not disturb marks the edge, not the words: the rail's accent is no text
+ * colour in every theme (3.4:1 on ps's day glass, on day and on princess), so
+ * the label keeps the rail's own text colour. */
 #sidebar .presence-pill.is-dnd {
-	color: var(--rail-accent, #e0a340);
-	border-color: currentcolor;
+	border-color: var(--rail-accent, currentcolor);
+}
+
+#sidebar .presence-pill:focus-visible {
+	outline: 2px solid var(--rail-accent, currentcolor);
+	outline-offset: 2px;
 }
 
 /* The label always says the state, the end time included: up to two centred
