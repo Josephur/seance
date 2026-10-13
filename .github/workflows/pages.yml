@@ -143,6 +143,12 @@ jobs:
           # A PR's commits are reachable in this repository through
           # refs/pull/<n>/head, fork or not, so the sha is enough.
           ref: ${{ matrix.build.sha }}
+          # Since checkout v4.4.0 a fork's PR head is refused under
+          # pull_request_target unless the step says so. We mean it: `plan`
+          # only lists PRs by the repository's own people or ones somebody
+          # with write access labelled `preview`, and this job holds a
+          # read-only token (see the header).
+          allow-unsafe-pr-checkout: true
 
       - name: Setup Node.js
         if: steps.cached.outputs.cache-hit != 'true'
