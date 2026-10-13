@@ -147,6 +147,83 @@ Away mode flashed back until the post-MOTD `AWAY *`). So:
   `syncPresence` as before.
 - A same-page reconnect goes through the same paths; `userAway` survives the
   close because it is declared again.
+- **The declaration counts only if the server read it with the cap on.** A
+  multi-cap REQ that is NAKed is asked for again one cap at a time; if the
+  retry is ACKed before 001 the cap is on, but the pipelined `AWAY` went in
+  under the refused REQ and was dropped. `registrationAwayLine` records
+  whether the cap was ACKed (or already being retried on its own) when the
+  line went out, and `presenceRegistered` says it again after 001 when it
+  rode on the refused REQ (`CapNegotiator.wasNakRetried`). The SASL path,
+  whose `CAP END` follows 903, normally rides on the ACKed retry and stands.
+  Nothing is declared while the client is quitting (a required login that
+  failed inside `beforeEnd`), so `starSent` is set only for a line that goes
+  out.
+- **A present client resuming a held session says `AWAY`** after
+  registration, once, its 305 kept quiet (nefarious2 always answers a bare
+  `AWAY` with 305): a held session keeps the away state it was left with —
+  the worker's star below — and a reopened page that declared nothing would
+  inherit it. Only on a SASL connection with `draft/persistence`; it is one
+  more command on the connect path there.
+- The `/away` memory is pruned once per page, at autoconnect, to the saved
+  networks and the live clients (`pruneUserAway`): a network that was never
+  saved is never reconnected after a reload.
+- Other users' `AWAY *` is kept as the star in the model (a query's
+  `userAway`, a channel user's `away`), apart from `""` (present), so a peer
+  going "lunch" → `*` → back still gets its "is back" line in a query. A 301
+  carrying `*` — nefarious2 sends the raw star to a viewer that speaks
+  pre-away (`away_text_for`) — reads "away" in a WHOIS and in a query.
+
+### The away state of a closed page
+
+A page that unloads cannot tell a reload from a close. A present Auto page
+that said `AWAY *` as it went would blink away and back to everyone on a
+reload; one that says nothing leaves the held session as it was. So on
+`pagehide` with `persisted === false` (`foreground.ts`), the networks that
+qualify (`presence.ts` `leavesAwayToWorker`: mode `auto`, connected,
+`!starSent`, no `/away`, no DND, the session held by the bouncer — `PERSISTENCE STATUS ON`, or the cap on a SASL login when no STATUS came, since a connection
+that attached as another device's alias gets none, and an explicit `STATUS … OFF` is believed — and a login in the worker's stash, `webpush.ts`
+`hasStashedLogin`, seeded from IndexedDB at boot and replaced on every write)
+are posted to the controlling worker as `{type: "away-on-close", networks}`,
+and the unload's `visibilitychange` leaves exactly those alone
+(`setAttendedAll(false, except)`). No controller, nothing handed over. The
+back/forward cache (`persisted === true`) is a hide, as before.
+
+The worker (`service-worker.js` `awayOnClose`) holds the event with
+`waitUntil`, waits `AWAY_ON_CLOSE_DELAY_MS` (5 s), and stops if any window
+of the app is open (`clients.matchAll({type: "window", includeUncontrolled: true})`; a reload's new document is one at once). Otherwise, one network
+after another, found by uuid in the stash (never `stashNetwork`'s
+first-network fallback) and only with a stored password, it logs in over its
+throwaway connection (`swIrcOpen`, `draft/pre-away` requested when offered),
+sends `AWAY *` before `CAP END` when the cap was ACKed (the alias path keeps
+it) and again after 001 (resuming a held session as its primary drops the
+pre-registration one), waits for the 306 (2 s at most) and QUITs, which the
+bouncer holds. A network that does not qualify keeps the star at unload, or
+its QUIT.
+
+Accepted limits: others see the user present for about 5 s longer after a
+close; a reopen within 5 s sends nothing; a reopen while the worker's
+connection is up can show one away→back. A network whose push is off, or
+whose password is not remembered, has no stashed login and keeps the old
+behaviour.
+
+What was measured (2026-10-13, testnet, `away-live.mjs` against the round-1
+build and this one): in Chromium a real reload never blinked — `pagehide`
+comes first and `manager.ts` sends `QUIT :page closed` there, so the star
+the unload's `visibilitychange` sent behind it went nowhere. The blink the
+scenario's `reload()` shows is the back/forward cache's: navigating to
+`about:blank` keeps the page (`persisted === true`), which is a hide. What the
+old build got wrong was the close: the star never got out, and the held
+session showed `WHO … G` with no 301 and no `AWAY` to `away-notify` clients.
+With the worker, one `AWAY :Away` reaches them about 5.3 s after the close.
+
+### Server notes (candidate upstream issues, not changed here)
+
+- `s_user.c` (~:861) clears `con_pre_away` on the resume-as-primary path, so
+  a pre-registration `AWAY` is lost there; the worker repeats it after 001.
+- The alias attach path sends no `PERSISTENCE STATUS` line.
+- A held session whose last connections went without a usable away (their
+  stars went out after their QUIT) shows `G` in WHO but no 301 and sends no
+  `AWAY` to `away-notify` clients.
 
 ## 3. Browser notifications — `client/js/socket-events/msg.ts`
 
@@ -297,7 +374,14 @@ resets DND to its default, as for every carried key. `presenceMode` rides in
   SASL, after `PERSISTENCE ATTACH`), a reload from the stored text, `/back`
   and network removal forgetting it, DND / Away mode / a hidden page
   declaring `AWAY *` with no second one, the fallback without the cap (or
-  with it NAKed).
+  with it NAKed), a NAKed REQ whose retry is ACKed before 001 (said again;
+  with SASL it stands), a failed required login declaring nothing, the
+  `AWAY` on resuming a held session, the prune, other users' star, and
+  `leavesAwayToWorker`.
+- `test/tests/service-worker.ts` "away on close": a close (no window after
+  the delay: `AWAY *` before `CAP END` and after 001, then `QUIT`), without
+  pre-away (after 001 only), a reload (a window: nothing), no stashed
+  password (nothing), only the named networks by uuid.
 - `test/irc/pushMute.ts`: parse/format, the `*` merge keeping other entries,
   expired entries dropped, `remoteDnd` from 761/766/`METADATA`, the private
   write and the bare clear, adoption, ownership across a reconnect and a
@@ -308,8 +392,20 @@ resets DND to its default, as for every carried key. `presenceMode` rides in
   setting a network in mode `dnd` back to `auto`.
 - Live check `tools/scenarios/away-live.mjs` against the testnet rig (SASL,
   `draft/persistence`, `draft/pre-away`; through `lib/irc-proxy.mjs` so a
-  same-page reconnect is a socket cut): what other users see — `/away`, DND
-  and Away mode across a reload and a reconnect, never back in between.
+  same-page reconnect is a socket cut, with the redials refused for 3 s so
+  they resume the held session): what other users see — `/away`, DND and
+  Away mode across a reload and a reconnect, never back in between; a
+  present Auto page reloaded (no AWAY line), closed for real (one away from
+  the worker after ~5 s, WHO G and a 301) and reopened (present). The Push
+  API is faked (`lib/fake-push.mjs`) with notifications granted so the
+  network subscribes and the worker stashes its login. The reconnect checks
+  pass on the round-1 build too.
+- Live check `tools/scenarios/away-two-devices.mjs`: two real Seance pages on
+  one account, B a second Chromium with its own profile
+  (`lib/device.mjs`): A closed while B is present (present), A's `/away`
+  under a present B (present), B hidden (A's text), B back (present), DND on
+  A read by B and Off on B turning A's off, A reloaded under B (no AWAY
+  line), both closed (one away), A reopened alone (present).
 - Browser check `tools/scenarios/dnd.mjs` against the dev ircd (also
   `--mobile --width=390 --height=844`): the pill and its menu, the dot and its
   menu (no navigation, no drag, its own right-click menu), the `AWAY *` /
@@ -354,3 +450,6 @@ resets DND to its default, as for every carried key. `presenceMode` rides in
   `AWAY`.
 - The pill's label wraps to two lines rather than being cut off.
 - Copy is plain English, not `t()`: the base has no i18n layer.
+- A closing page's `AWAY *` goes through the service worker (round 2 of the
+  away fix), and a present client says `AWAY` when it resumes a held
+  session.
