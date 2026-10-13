@@ -290,6 +290,8 @@ interface SWHarness {
 	kv: Map<string, unknown>;
 	socketsOpened(): number;
 	lastSent(): string[];
+	/** What each socket opened since the harness was made sent, in order. */
+	sentBySocket(): string[][];
 }
 
 interface HarnessOptions {
@@ -493,6 +495,7 @@ function makeSW(options: HarnessOptions = {}): SWHarness {
 		kv,
 		socketsOpened: (): number => wsInstances.length - socketsBefore,
 		lastSent: (): string[] => wsInstances[wsInstances.length - 1].sent,
+		sentBySocket: (): string[][] => wsInstances.slice(socketsBefore).map((w) => w.sent),
 	};
 }
 
@@ -1792,8 +1795,14 @@ describe("service worker away on close", function () {
 	});
 
 	it("a reload: a window of the app is open again, so it does nothing", async function () {
-		const sw = makeSW({fastTimers: true, script: {preAway: true}, clients: [makeClient()]});
-		await closePage(sw, ["net-1"]);
+		// The reload's new document appears after the close was posted: the
+		// worker must look only once the delay is over.
+		const windows: FakeClient[] = [];
+		const sw = makeSW({fastTimers: true, script: {preAway: true}, clients: windows});
+		const done = closePage(sw, ["net-1"]);
+		await new Promise((r) => setTimeout(r, 10)); // 1 s of the worker's 5
+		windows.push(makeClient());
+		await done;
 		expect(sw.socketsOpened()).to.equal(0);
 	});
 
@@ -1810,8 +1819,7 @@ describe("service worker away on close", function () {
 		expect(sw.socketsOpened()).to.equal(1);
 	});
 
-	it("a close, a reopen and a close inside the delay log in once", async function () {
-		const sw = makeSW({fastTimers: true, script: {preAway: true}});
+	const poster = (sw: SWHarness) => {
 		const promises: Promise<unknown>[] = [];
 
 		const post = (networks: string[]) => {
@@ -1823,11 +1831,51 @@ describe("service worker away on close", function () {
 			}
 		};
 
+		return {post, done: () => Promise.all(promises)};
+	};
+
+	const accountOf = (sent: string[]) => {
+		const auth = sent.find((l) => l.startsWith("AUTHENTICATE ") && l.length > 20) as string;
+		return Buffer.from(auth.slice(13), "base64").toString().split("\0")[1];
+	};
+
+	const NET_2 = {...STASH.networks[0], uuid: "net-2", saslAccount: "pushtest2"};
+
+	it("two closes inside the delay log in once, for both posts' networks", async function () {
+		const sw = makeSW({
+			fastTimers: true,
+			script: {preAway: true},
+			stash: {vapid: STASH.vapid, networks: [...STASH.networks, NET_2]},
+		});
+		const {post, done} = poster(sw);
 		post(["net-1"]);
-		await new Promise((r) => setTimeout(r, 20)); // 2 s of the worker's 5
+		await new Promise((r) => setTimeout(r, 10)); // 1 s of the worker's 5
+		post(["net-1", "net-2"]);
+		await done();
+		// One run: each network once, not net-1 twice.
+		expect(sw.sentBySocket().map(accountOf)).to.deep.equal([
+			STASH.networks[0].saslAccount,
+			"pushtest2",
+		]);
+	});
+
+	it("a close while the run is logging in is queued for one more run after it", async function () {
+		const sw = makeSW({
+			fastTimers: true,
+			script: {preAway: true},
+			stash: {vapid: STASH.vapid, networks: [...STASH.networks, NET_2]},
+		});
+		const {post, done} = poster(sw);
 		post(["net-1"]);
-		await Promise.all(promises);
-		expect(sw.socketsOpened()).to.equal(1);
+		// Past the delay (50 ms here): the login has begun.
+		await new Promise((r) => setTimeout(r, 60));
+		expect(sw.socketsOpened(), "the first run is logging in").to.equal(1);
+		post(["net-2"]);
+		await done();
+		expect(sw.sentBySocket().map(accountOf)).to.deep.equal([
+			STASH.networks[0].saslAccount,
+			"pushtest2",
+		]);
 	});
 
 	it("no stashed password: it does nothing", async function () {
@@ -1837,16 +1885,26 @@ describe("service worker away on close", function () {
 		expect(sw.socketsOpened()).to.equal(0);
 	});
 
-	it("only the networks it was given, by uuid, one after another", async function () {
-		const other = {...STASH.networks[0], uuid: "net-2", saslAccount: "pushtest2"};
+	it("only the networks it was given, by uuid", async function () {
 		const sw = makeSW({
 			fastTimers: true,
 			script: {preAway: true},
-			stash: {vapid: STASH.vapid, networks: [...STASH.networks, other]},
+			stash: {vapid: STASH.vapid, networks: [...STASH.networks, NET_2]},
 		});
 		await closePage(sw, ["net-2", "unknown"]);
-		expect(sw.socketsOpened()).to.equal(1);
-		const auth = sw.lastSent().find((l) => l.startsWith("AUTHENTICATE ") && l.length > 20);
-		expect(Buffer.from(auth!.slice(13), "base64").toString()).to.include("pushtest2");
+		expect(sw.sentBySocket().map(accountOf)).to.deep.equal(["pushtest2"]);
+	});
+
+	it("several networks one after another, in the order given", async function () {
+		const sw = makeSW({
+			fastTimers: true,
+			script: {preAway: true},
+			stash: {vapid: STASH.vapid, networks: [...STASH.networks, NET_2]},
+		});
+		await closePage(sw, ["net-2", "net-1"]);
+		const sockets = sw.sentBySocket();
+		expect(sockets.map(accountOf)).to.deep.equal(["pushtest2", STASH.networks[0].saslAccount]);
+		// One after another: the first had QUIT before the second was opened.
+		expect(sockets[0][sockets[0].length - 1]).to.equal("QUIT :done");
 	});
 });

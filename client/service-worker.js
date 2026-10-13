@@ -458,8 +458,9 @@ function randomNick() {
  * but before CAP END.  `ctx.nick` is what the server calls us after
  * registration (the account's session nick when the bouncer attached us to
  * it); `ctx.onLine(fn)` sees every later line.  `pre` may be a function of
- * `ctx`, called at 903 once the optional caps' answer is known.  Resolves through done(ok):
- * false on any SASL/registration failure, a close, or the timeout.
+ * `ctx`, called at 903 once the optional caps' answer is known.  Resolves
+ * through done(ok): false on any SASL/registration failure, a close, or the
+ * timeout.
  */
 function swIrcOpen(net, pre, onReady, optional = []) {
 	return new Promise((resolve) => {
@@ -889,11 +890,23 @@ async function appWindows() {
 	return all.filter((c) => typeof c.url === "string" && c.url.startsWith(appUrl));
 }
 
-/** The one pending run: a close, a reopen and a close again inside the
- * delay restart its timer instead of logging in twice. */
+/**
+ * The one pending run: a close, a reopen and a close again inside the delay
+ * restart its timer instead of logging in twice. A close that arrives while
+ * the run is logging in (SASL, then up to AWAY_REPLY_MS) is queued for one
+ * more run after it, and the run's promise waits for that one too.
+ */
 let closeRun = null;
 
 function awayOnClose(uuids) {
+	if (closeRun && closeRun.running) {
+		for (const uuid of uuids) {
+			closeRun.queued.add(uuid);
+		}
+
+		return closeRun.promise;
+	}
+
 	if (closeRun) {
 		for (const uuid of uuids) {
 			closeRun.networks.add(uuid);
@@ -904,11 +917,24 @@ function awayOnClose(uuids) {
 		return closeRun.promise;
 	}
 
-	const run = {networks: new Set(uuids), timer: null, fire: null, promise: null};
+	const run = {
+		networks: new Set(uuids),
+		queued: new Set(),
+		running: false,
+		timer: null,
+		fire: null,
+		promise: null,
+	};
 	run.promise = new Promise((resolve) => {
 		run.fire = () => {
-			closeRun = null;
-			resolve(awayOnCloseNow([...run.networks]));
+			run.running = true;
+			awayOnCloseNow([...run.networks])
+				.catch(() => undefined)
+				.finally(() => {
+					closeRun = null;
+					// Resolving with the next run's promise waits for it too.
+					resolve(run.queued.size > 0 ? awayOnClose([...run.queued]) : undefined);
+				});
 		};
 
 		run.timer = setTimeout(run.fire, AWAY_ON_CLOSE_DELAY_MS);
