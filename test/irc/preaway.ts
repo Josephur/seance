@@ -349,6 +349,22 @@ describe("the away state across reloads and reconnects (draft/pre-away)", functi
 		});
 	});
 
+	it("a present client resuming a held session says AWAY once after 001, its 305 unshown", function () {
+		const h = client({sasl: "plain", saslAccount: "alice", saslPassword: "s3cret"});
+		h.client.connect();
+		negotiate(h, SASL_CAPS);
+		h.transport.lines(
+			"AUTHENTICATE +",
+			":irc.test 900 alice alice!alice@host alice :You are now logged in as alice",
+			":irc.test 903 alice :SASL authentication successful"
+		);
+		expect(aways(h.sent()), "nothing declared: present").to.deep.equal([]);
+		expect(aways(welcome(h))).to.deep.equal(["AWAY"]);
+		h.dispatch.resetHistory();
+		h.transport.line(":irc.test 305 alice :You are no longer marked as being away");
+		expect(h.messages(h.client.lobby.id)).to.deep.equal([]);
+	});
+
 	it("a required login that fails declares nothing and leaves no star counted", function () {
 		const h = client({sasl: "plain", saslAccount: "alice", saslPassword: "s3cret"});
 		h.client.setAttended(false);
@@ -438,6 +454,20 @@ describe("a closing page leaves AWAY * to the service worker (presence.ts leaves
 
 	it("a present Auto connection whose session is held and whose login is stashed", function () {
 		expect(leavesAwayToWorker(held().client, stashed)).to.equal(true);
+	});
+
+	it("an alias of another device's session (draft/persistence + SASL, no STATUS line)", function () {
+		const h = setup({uuid: UUID, sasl: "plain", saslAccount: "alice", saslPassword: "s3cret"});
+		h.client.connect();
+		negotiate(h, SASL_CAPS);
+		h.transport.lines(
+			"AUTHENTICATE +",
+			":irc.test 900 alice alice!alice@host alice :You are now logged in as alice",
+			":irc.test 903 alice :SASL authentication successful"
+		);
+		welcome(h);
+		expect(h.client.persistenceHold).to.equal(false);
+		expect(leavesAwayToWorker(h.client, stashed)).to.equal(true);
 	});
 
 	for (const [label, arrange] of [

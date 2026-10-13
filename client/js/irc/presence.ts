@@ -27,6 +27,7 @@ import {trailingLine} from "./wire";
 import {forgetUserAway, setUserAway} from "./userAwayStore";
 import {scheduleMarkRead} from "./handlers/markread";
 import {syncPushMute} from "./pushMute";
+import {PERSISTENCE_CAP} from "./persistence";
 import type {SharedNetworkPresence} from "../../../shared/types/network";
 
 /** `draft/pre-away`: away for an unspecified reason. */
@@ -319,6 +320,22 @@ export function presenceRegistered(client: IrcClient): void {
 		}
 	}
 
+	// A bouncer session this connection resumed keeps the away state it was
+	// left with: the `AWAY *` the service worker said for a closed page
+	// (`leavesAwayToWorker`), or a star a dying socket got out. A present
+	// client says so; when the session was present already the server only
+	// answers 305, which stays quiet.
+	if (
+		client.caps.hasCapability(PERSISTENCE_CAP) &&
+		client.saslOk &&
+		!p.userAway &&
+		!wantsStar(client) &&
+		canSend(client)
+	) {
+		p.quietReplies++;
+		client.send(formatLine({command: "AWAY", params: []}));
+	}
+
 	syncPresence(client);
 }
 
@@ -333,9 +350,20 @@ export function presenceRegistered(client: IrcClient): void {
  *
  * Only a present connection on Auto qualifies (anything else is already
  * away, or never automatic), only while nefarious2's bouncer holds the
- * session (`PERSISTENCE STATUS ON`; without it the close is a QUIT), and
+ * session ({@link heldByBouncer}; without it the close is a QUIT), and
  * only when the worker can log in for it (`stashed`, webpush.ts).
  */
+/**
+ * The account's session outlives this connection: `PERSISTENCE STATUS ON`,
+ * or `draft/persistence` negotiated on a SASL login — the client then asks
+ * for `PERSISTENCE SET ON` itself (client.ts), and a connection that
+ * attached to the session as an alias of another device never hears a
+ * STATUS line (the server's alias path sends none).
+ */
+function heldByBouncer(client: IrcClient): boolean {
+	return client.persistenceHold || (client.caps.hasCapability(PERSISTENCE_CAP) && client.saslOk);
+}
+
 export function leavesAwayToWorker(client: IrcClient, stashed: (uuid: string) => boolean): boolean {
 	const p = client.presence;
 
@@ -343,7 +371,7 @@ export function leavesAwayToWorker(client: IrcClient, stashed: (uuid: string) =>
 		client.presenceMode === "auto" &&
 		client.isConnected &&
 		client.transport.state === "open" &&
-		client.persistenceHold &&
+		heldByBouncer(client) &&
 		!p.starSent &&
 		!p.userAway &&
 		!effectiveDnd(client) &&
