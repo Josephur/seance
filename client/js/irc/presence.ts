@@ -358,10 +358,16 @@ export function presenceRegistered(client: IrcClient): void {
  * or `draft/persistence` negotiated on a SASL login — the client then asks
  * for `PERSISTENCE SET ON` itself (client.ts), and a connection that
  * attached to the session as an alias of another device never hears a
- * STATUS line (the server's alias path sends none).
+ * STATUS line (the server's alias path sends none). An explicit
+ * `STATUS … OFF` is believed.
  */
 function heldByBouncer(client: IrcClient): boolean {
-	return client.persistenceHold || (client.caps.hasCapability(PERSISTENCE_CAP) && client.saslOk);
+	return (
+		client.persistenceHold ||
+		(!client.persistenceStatusSeen &&
+			client.caps.hasCapability(PERSISTENCE_CAP) &&
+			client.saslOk)
+	);
 }
 
 export function leavesAwayToWorker(client: IrcClient, stashed: (uuid: string) => boolean): boolean {

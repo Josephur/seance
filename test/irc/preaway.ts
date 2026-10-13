@@ -468,6 +468,10 @@ describe("a closing page leaves AWAY * to the service worker (presence.ts leaves
 		welcome(h);
 		expect(h.client.persistenceHold).to.equal(false);
 		expect(leavesAwayToWorker(h.client, stashed)).to.equal(true);
+
+		// The server says it will not hold the session: believed.
+		h.transport.line(":irc.test PERSISTENCE STATUS OFF OFF");
+		expect(leavesAwayToWorker(h.client, stashed)).to.equal(false);
 	});
 
 	for (const [label, arrange] of [

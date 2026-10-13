@@ -75,6 +75,7 @@ const persistence: Handler = (client, msg) => {
 		const effective = (rest[rest.length - 1] ?? "").toUpperCase();
 		const setting = rest.length > 1 ? rest[0].toUpperCase() : "";
 		client.persistenceHold = effective === "ON";
+		client.persistenceStatusSeen = true;
 
 		if (client.state === "registering" || client.persistenceAutoSetPending) {
 			// The unsolicited line, or the echo of our registration-time
