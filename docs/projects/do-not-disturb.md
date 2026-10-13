@@ -158,19 +158,23 @@ Away mode flashed back until the post-MOTD `AWAY *`). So:
   Nothing is declared while the client is quitting (a required login that
   failed inside `beforeEnd`), so `starSent` is set only for a line that goes
   out.
-- **A present client resuming a held session says `AWAY`**, once, its 305
-  kept quiet (nefarious2 always answers a bare `AWAY` with 305): a held
-  session keeps the away state it was left with — the worker's star below —
-  and a reopened page that declared nothing would inherit it
-  (`presence.ts` `presenceResumed`). Only on a real resume (the
-  `draft/persistence` restoration batch, or the cursor's replay batch), not
-  on a fresh session, an alias attach or a connection with no account; and
-  only once the account's mute list was read, 10 s after registration, so
-  another device's DND (`remoteDnd`) is known and turns it into `AWAY *`
-  instead of a back-then-away blink — at once where the list cannot be
-  read (no `draft/metadata-2`). `/away`, DND, Away mode and a hidden page
-  each suppress it. Accepted cost: a reopen after the worker's star stays
-  away to others for up to ~10 s (measured 10.5 s).
+- **A present client on a held session says `AWAY`**, once, its 305 kept
+  quiet (nefarious2 always answers a bare `AWAY` with 305): a held session
+  keeps the away state it was left with — the worker's star below — and a
+  reopened page that declared nothing would inherit it (`presence.ts`
+  `armResumeCheck`, at registration). Every connection that holds a bouncer
+  session as its primary (`heldByBouncer`, never an alias, never without an
+  account) does it, since no batch tells a resume: nefarious2 sends no
+  restoration batch for a held session with no channels and no replay batch
+  when nothing was missed; a fresh session just gets a quiet 305. It waits
+  for the account's mute list, read 10 s after registration, so another
+  device's DND (`remoteDnd`) is known and turns it into `AWAY *` instead of
+  a back-then-away blink — at once where the list cannot be read (no
+  `draft/metadata-2`), and after `MUTE_READ_FALLBACK_MS` (20 s) without a
+  read (a `FAIL METADATA` for the GET, say) as if no other device were in
+  DND. `/away`, DND, Away mode and a hidden page each suppress it. Accepted
+  cost: a reopen after the worker's star stays away to others for up to
+  ~10 s (measured 10.5 s).
 - The `/away` memory is pruned once per page, at autoconnect, to the saved
   networks and the live clients (`pruneUserAway`): a network that was never
   saved is never reconnected after a reload.

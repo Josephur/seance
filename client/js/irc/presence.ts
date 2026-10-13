@@ -26,7 +26,7 @@ import {formatLine} from "./message";
 import {trailingLine} from "./wire";
 import {forgetUserAway, setUserAway} from "./userAwayStore";
 import {scheduleMarkRead} from "./handlers/markread";
-import {syncPushMute} from "./pushMute";
+import {MUTE_READ_DELAY_MS, syncPushMute} from "./pushMute";
 import {PERSISTENCE_CAP} from "./persistence";
 import type {SharedNetworkPresence} from "../../../shared/types/network";
 
@@ -56,8 +56,12 @@ export interface PresenceState {
 	userAwayText: string | null;
 	/** This client sent `AWAY *` and has not cleared it. */
 	starSent: boolean;
-	/** A resumed session's away state is still to be confirmed (presenceResumed). */
+	/** A held session's away state is still to be confirmed (armResumeCheck). */
 	resumeUnsure: boolean;
+	/** The mute read did not land in time: go on as if no other device were in DND. */
+	muteReadTimedOut: boolean;
+	/** Arms {@link muteReadTimedOut}. */
+	resumeTimer: ReturnType<typeof setTimeout> | null;
 	/**
 	 * The away state was declared before `CAP END` on this connection
 	 * ({@link registrationAwayLine}); `safe` when `draft/pre-away` was then
@@ -84,6 +88,8 @@ export function initialPresence(): PresenceState {
 		userAwayText: null,
 		starSent: false,
 		resumeUnsure: false,
+		muteReadTimedOut: false,
+		resumeTimer: null,
 		declaration: null,
 		quietReplies: 0,
 		lastReported: "",
@@ -236,6 +242,8 @@ export function presenceClosed(client: IrcClient): void {
 	client.presence.starSent = false;
 	client.presence.declaration = null;
 	client.presence.resumeUnsure = false;
+	client.presence.muteReadTimedOut = false;
+	clearResumeTimer(client);
 	client.presence.quietReplies = 0;
 	reportPresence(client);
 }
@@ -325,29 +333,71 @@ export function presenceRegistered(client: IrcClient): void {
 		}
 	}
 
+	armResumeCheck(client);
 	syncPresence(client);
 }
 
 /**
- * This connection resumed a held bouncer session (the server's
- * `draft/persistence` restoration batch, or its replay batch for our
- * cursor). The session keeps the away state it was left with — the
- * `AWAY *` the service worker said for a closed page (`leavesAwayToWorker`),
- * or a star a dying socket got out — and a present client that declared
- * nothing would inherit it. So it says `AWAY` once, but only when it knows
- * it is present: after the account's mute list was read (another device's
- * do not disturb, `remoteDnd`, comes from it 10 s after registration), or at
- * once where the list cannot be read (no `draft/metadata-2`). Until then a
- * reopen after a worker's star stays away to others. Not on a fresh
- * session, an alias attach, or a connection with no account (nothing can be
- * held for it).
+ * How long after registration the held session's `AWAY` waits for the mute
+ * read before going ahead without it (a `FAIL METADATA` for our GET, a rate
+ * limit, a lost reply); the read itself goes out at MUTE_READ_DELAY_MS.
  */
+export const MUTE_READ_FALLBACK_MS = MUTE_READ_DELAY_MS + 10_000;
+
+function clearResumeTimer(client: IrcClient): void {
+	const p = client.presence;
+
+	if (p.resumeTimer !== null) {
+		clearTimeout(p.resumeTimer);
+		p.resumeTimer = null;
+	}
+}
+
+/**
+ * Registration done. A bouncer session this connection holds as its
+ * primary keeps the away state it was left with — the `AWAY *` the service
+ * worker said for a closed page (`leavesAwayToWorker`), or a star a dying
+ * socket got out — and a present client that declared nothing would
+ * inherit it. A batch cannot tell a resume (nefarious2 sends no restoration
+ * batch for a session with no channels, and no replay batch when nothing
+ * was missed), so every such connection says `AWAY` once (a fresh session
+ * just gets a quiet 305), but only when it knows it is present: after the
+ * account's mute list was read (another device's do not disturb,
+ * `remoteDnd`, comes from it 10 s after registration), at once where the
+ * list cannot be read (no `draft/metadata-2`), or after
+ * {@link MUTE_READ_FALLBACK_MS} without a read. Until then a reopen after a
+ * worker's star stays away to others. Never on an alias of another
+ * device's session, or a connection with no account.
+ */
+function armResumeCheck(client: IrcClient): void {
+	const p = client.presence;
+	clearResumeTimer(client);
+	p.muteReadTimedOut = false;
+
+	if (client.account === "") {
+		return;
+	}
+
+	p.resumeUnsure = true;
+
+	if (client.caps.hasCapability("draft/metadata-2")) {
+		const timer = setTimeout(() => {
+			p.resumeTimer = null;
+			p.muteReadTimedOut = true;
+			syncPresence(client);
+		}, MUTE_READ_FALLBACK_MS);
+		// Never what keeps a process (mocha) alive.
+		(timer as {unref?: () => void}).unref?.();
+		p.resumeTimer = timer;
+	}
+}
+
+/** The restoration or replay batch closed: look again (armResumeCheck). */
 export function presenceResumed(client: IrcClient): void {
-	client.presence.resumeUnsure = true;
 	syncPresence(client);
 }
 
-/** {@link presenceResumed}'s `AWAY`, once remote DND is known. */
+/** {@link armResumeCheck}'s `AWAY`, once remote DND is known. */
 function confirmResumed(client: IrcClient): void {
 	const p = client.presence;
 
@@ -355,18 +405,21 @@ function confirmResumed(client: IrcClient): void {
 		return;
 	}
 
-	if (client.bouncerAlias || client.account === "") {
+	if (client.bouncerAlias || client.account === "" || !heldByBouncer(client)) {
 		// Another device's live session, where this connection counts
-		// present; or no account, and so no held session to inherit from.
+		// present; no account, so no held session to inherit from; or a
+		// session the bouncer does not hold.
 		p.resumeUnsure = false;
+		clearResumeTimer(client);
 		return;
 	}
 
-	if (client.caps.hasCapability("draft/metadata-2") && !client.muteKnown) {
+	if (client.caps.hasCapability("draft/metadata-2") && !client.muteKnown && !p.muteReadTimedOut) {
 		return;
 	}
 
 	p.resumeUnsure = false;
+	clearResumeTimer(client);
 
 	if (!p.userAway && !p.starSent && !wantsStar(client)) {
 		// The server answers 305 even when the session was present: quiet.

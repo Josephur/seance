@@ -20,7 +20,7 @@ import {
 	useStorageBackend,
 	type StorageBackend,
 } from "../../client/js/irc/userAwayStore";
-import {leavesAwayToWorker} from "../../client/js/irc/presence";
+import {leavesAwayToWorker, MUTE_READ_FALLBACK_MS} from "../../client/js/irc/presence";
 import {MessageType} from "../../shared/types/msg";
 import {ALL_CAPS, Harness, setup} from "./support";
 
@@ -514,7 +514,7 @@ describe("a closing page leaves AWAY * to the service worker (presence.ts leaves
 	}
 });
 
-describe("a resumed held session says AWAY once remote DND is known (presence.ts presenceResumed)", function () {
+describe("a held session says AWAY once remote DND is known (presence.ts armResumeCheck)", function () {
 	const META_CAPS = `${SASL_CAPS} draft/metadata-2`;
 	const RESTORE = [
 		":irc.test BATCH +r1 draft/persistence",
@@ -552,8 +552,14 @@ describe("a resumed held session says AWAY once remote DND is known (presence.ts
 			":irc.test 903 alice :SASL authentication successful"
 		);
 		h.sent();
-		welcome(h);
-		h.transport.lines(":irc.test PERSISTENCE STATUS ON ON", ...lines);
+		// The server's order: STATUS inside the MOTD burst, before its end.
+		h.transport.lines(
+			":irc.test 001 alice :Welcome to the SeanceDev IRC Network, alice",
+			":irc.test 005 alice CHANTYPES=#& PREFIX=(ov)@+ CASEMAPPING=rfc1459 :are supported by this server",
+			":irc.test PERSISTENCE STATUS ON ON",
+			":irc.test 422 alice :MOTD File is missing",
+			...lines
+		);
 		return h;
 	}
 
@@ -584,8 +590,52 @@ describe("a resumed held session says AWAY once remote DND is known (presence.ts
 		expect(aways(h.sent())).to.deep.equal(["AWAY"]);
 	});
 
-	it("a fresh session (no restoration batch) says nothing", function () {
+	// No batch tells a resume from a fresh session: nefarious2 sends no
+	// restoration batch for a held session with no channels, and no replay
+	// batch when nothing was missed. So every primary connection to a held
+	// session says it once after the read; a fresh one only gets a quiet 305
+	// (the rule changed in round 3: it used to say nothing).
+	it("a held session with no channels (no batch at all) says AWAY after the read", function () {
 		const h = register(META_CAPS, undefined, []);
+		expect(aways(h.sent())).to.deep.equal([]);
+		clock.tick(10_000);
+		h.transport.line(EMPTY);
+		expect(aways(h.sent())).to.deep.equal(["AWAY"]);
+	});
+
+	it("a fresh session gets the same quiet AWAY: its 305 is not shown", function () {
+		const h = register(META_CAPS, undefined, []);
+		clock.tick(10_000);
+		h.transport.line(EMPTY);
+		expect(aways(h.sent())).to.deep.equal(["AWAY"]);
+		h.dispatch.resetHistory();
+		h.transport.line(":irc.test 305 alice :You are no longer marked as being away");
+		expect(h.messages(h.client.lobby.id)).to.deep.equal([]);
+	});
+
+	it("goes ahead without the read after MUTE_READ_FALLBACK_MS (a FAIL METADATA, say)", function () {
+		const h = register(META_CAPS);
+		clock.tick(10_000);
+		h.transport.line(
+			"FAIL METADATA RATE_LIMITED draft/webpush/mute :Too many requests, slow down"
+		);
+		expect(aways(h.sent())).to.deep.equal([]);
+		clock.tick(MUTE_READ_FALLBACK_MS - 10_000);
+		expect(aways(h.sent())).to.deep.equal(["AWAY"]);
+	});
+
+	it("a session the bouncer does not hold (STATUS OFF OFF) says nothing", function () {
+		const h = setup({uuid: UUID, sasl: "plain", saslAccount: "alice", saslPassword: "s3cret"});
+		h.client.connect();
+		negotiate(h, META_CAPS);
+		h.transport.lines(
+			"AUTHENTICATE +",
+			":irc.test 900 alice alice!alice@host alice :You are now logged in as alice",
+			":irc.test 903 alice :SASL authentication successful",
+			":irc.test 001 alice :Welcome",
+			":irc.test PERSISTENCE STATUS OFF OFF",
+			":irc.test 422 alice :MOTD File is missing"
+		);
 		clock.tick(10_000);
 		h.transport.line(EMPTY);
 		expect(aways(h.sent())).to.deep.equal([]);
