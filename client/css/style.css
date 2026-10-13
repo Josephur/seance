@@ -1016,7 +1016,10 @@ p {
 	max-inline-size: calc(100% - 0.5rem);
 	padding-block: 0.125rem;
 	padding-inline: 0.5rem;
-	border: 1px solid var(--rail-badge-bg, rgb(255 255 255 / 12%));
+
+	/* A field's quiet edge at rest: --rail-badge-bg is an accent fill in some
+	 * themes (ps, princess), which made Online look like do not disturb. */
+	border: 1px solid var(--rail-input-border, rgb(255 255 255 / 12%));
 	border-radius: 1rem;
 	background: transparent;
 	color: inherit;
