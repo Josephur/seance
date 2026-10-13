@@ -3516,6 +3516,11 @@ html[data-reduce-motion] #chat .media-veil-main:hover .media-veil-icon {
 	margin: 0;
 }
 
+/* An away with no message (a pre-away star): a value, muted like the labels. */
+.whois .whois-no-message {
+	color: var(--body-color-muted);
+}
+
 .whois-oper-actions {
 	margin: 0.4em 0 0;
 }
