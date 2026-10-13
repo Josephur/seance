@@ -7,6 +7,9 @@
 //
 //   node tools/pages-site.mjs <plan.json> <artifacts dir> <out dir> [run url]
 //
+// `SITE_BASE` (the Pages base path, `/seance/`) makes every link on the
+// index absolute; without it they are relative to `previews/`.
+//
 // `plan.json` is the workflow's build list: `[{name, path, title, sha,
 // version, url?, number?}]`, `path` being where the build lives on the site
 // ("" for the root). `<artifacts dir>/<name>/` holds each build's `public/`
@@ -24,9 +27,18 @@ export function escapeHtml(text) {
 	);
 }
 
-/** The site-relative link to a build: `../` from `previews/`, then its path. */
-export function linkTo(entry) {
-	return entry.path ? `../${entry.path}/` : "../";
+/**
+ * The link to a build from the index: absolute when the site's base path is
+ * known (`/seance/pr103/`), else `../` from `previews/` and the path.
+ */
+export function linkTo(entry, base) {
+	const dir = entry.path ? `${entry.path}/` : "";
+
+	if (base) {
+		return `${base.endsWith("/") ? base : `${base}/`}${dir}`;
+	}
+
+	return `../${dir}`;
 }
 
 /** What a build is, in a word: a release, the develop branch, or a PR. */
@@ -56,7 +68,7 @@ code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.9em; 
 `;
 
 /** The `previews/index.html` page: every build, newest PR first. */
-export function renderIndex(entries, {repo, builtAt, runUrl} = {}) {
+export function renderIndex(entries, {repo, builtAt, runUrl, base} = {}) {
 	const order = (e) => (kindOf(e) === "release" ? 0 : kindOf(e) === "develop" ? 1 : 2);
 	const sorted = [...entries].sort(
 		(a, b) => order(a) - order(b) || (b.number ?? 0) - (a.number ?? 0)
@@ -77,7 +89,7 @@ export function renderIndex(entries, {repo, builtAt, runUrl} = {}) {
 			  }`
 			: "";
 
-		return `<li><a class="open" href="${escapeHtml(linkTo(e))}">${escapeHtml(
+		return `<li><a class="open" href="${escapeHtml(linkTo(e, base))}">${escapeHtml(
 			label
 		)}</a><code>${escapeHtml(where)}</code><span class="meta"><code>${escapeHtml(
 			(e.sha ?? "").slice(0, 8)
@@ -112,7 +124,7 @@ ${rows.join("\n")}
 }
 
 /** The page that stands in for a build whose job failed. */
-export function renderStub(entry, {runUrl} = {}) {
+export function renderStub(entry, {runUrl, base} = {}) {
 	const label = entry.number !== undefined ? `#${entry.number} ${entry.title ?? ""}` : entry.name;
 
 	return `<!doctype html>
@@ -129,7 +141,7 @@ export function renderStub(entry, {runUrl} = {}) {
 <p>Commit <code>${escapeHtml((entry.sha ?? "").slice(0, 8))}</code> did not build.${
 		runUrl ? ` <a href="${escapeHtml(runUrl)}">The run's log</a> says why.` : ""
 	} The last good build was not kept; push a fix and this page is replaced.</p>
-<p><a href="../previews/">Every preview</a></p>
+<p><a href="${escapeHtml(linkTo({path: "previews"}, base))}">Every preview</a></p>
 </main>
 </body>
 </html>
@@ -140,7 +152,7 @@ export function renderStub(entry, {runUrl} = {}) {
  * Copy each build into place and write the index. Returns the entries with
  * `failed` set where no build was found.
  */
-export function assemble(plan, artifactsDir, outDir, {repo, runUrl, now = new Date()} = {}) {
+export function assemble(plan, artifactsDir, outDir, {repo, runUrl, base, now = new Date()} = {}) {
 	mkdirSync(outDir, {recursive: true});
 	const entries = plan.map((entry) => {
 		const from = join(artifactsDir, entry.name);
@@ -152,7 +164,7 @@ export function assemble(plan, artifactsDir, outDir, {repo, runUrl, now = new Da
 		if (built) {
 			cpSync(from, to, {recursive: true});
 		} else {
-			writeFileSync(join(to, "index.html"), renderStub(entry, {runUrl}));
+			writeFileSync(join(to, "index.html"), renderStub(entry, {runUrl, base}));
 		}
 
 		return {...entry, failed: !built};
@@ -162,7 +174,7 @@ export function assemble(plan, artifactsDir, outDir, {repo, runUrl, now = new Da
 	mkdirSync(join(outDir, "previews"), {recursive: true});
 	writeFileSync(
 		join(outDir, "previews", "index.html"),
-		renderIndex(entries, {repo, builtAt, runUrl})
+		renderIndex(entries, {repo, builtAt, runUrl, base})
 	);
 	writeFileSync(
 		join(outDir, "previews.json"),
@@ -185,6 +197,7 @@ if (invoked) {
 	const plan = JSON.parse(readFileSync(planFile, "utf8"));
 	const entries = assemble(plan, artifactsDir, outDir, {
 		repo: process.env.GITHUB_REPOSITORY,
+		base: process.env.SITE_BASE,
 		runUrl,
 	});
 

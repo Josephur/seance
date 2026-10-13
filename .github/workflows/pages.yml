@@ -187,6 +187,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      pages: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -198,10 +199,16 @@ jobs:
           pattern: site-*
           path: artifacts
 
+      # The site's base path (`/seance/` for a project site), so the index
+      # can link every build absolutely.
+      - id: pages
+        uses: actions/configure-pages@v5
+
       - name: Put each build in its directory
         env:
           BUILDS: ${{ needs.plan.outputs.builds }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SITE_BASE: ${{ steps.pages.outputs.base_path }}/
         run: |
           set -euo pipefail
           printf '%s' "$BUILDS" > plan.json
