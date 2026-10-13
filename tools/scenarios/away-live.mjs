@@ -21,9 +21,17 @@
 // radio drop. Reloads and reconnects must never show the user back to
 // others while /away, do not disturb or away mode is in force: the client
 // declares its away state before CAP END (draft/pre-away).
+//
+// A present Auto page that reloads must not blink away and back either: its
+// AWAY * is handed to the service worker as it unloads, which says it only
+// when no window of the app is open 5 s later (a close). That needs the
+// worker's stashed login, which the page writes for a push-enabled network
+// with a remembered password: the Push API is faked (lib/fake-push.mjs) and
+// notifications granted, so the network subscribes without a prompt.
 
 import {observe} from "./lib/irc-observer.mjs";
 import {startProxy} from "./lib/irc-proxy.mjs";
+import {FAKE_PUSH_API} from "./lib/fake-push.mjs";
 
 const ACCOUNT = process.env.SEANCE_SASL_ACCOUNT;
 const PASSWORD = process.env.SEANCE_SASL_PASSWORD;
@@ -46,6 +54,32 @@ const MENU_ITEM = (cls) => `#context-menu .context-menu-${cls}`;
 const joined = (name) =>
 	`!!document.querySelector('.channel-list-item[data-name="${name}"]:not(.parted-channel)')`;
 const OUR_NICK = `document.querySelector('${LOBBY} .lobby-nick')?.textContent.replace(/^\\s*Nickname:\\s*/, "").trim()`;
+
+// about:blank has no ServiceWorkerRegistration to patch.
+const PUSH_API = `if (typeof ServiceWorkerRegistration !== "undefined") ${FAKE_PUSH_API}`;
+
+// Navigating away puts the page in the back/forward cache (pagehide with
+// persisted = true), which is a hide, not a close. An unload listener makes
+// Chromium unload it for real, as closing the tab does.
+const CLOSE_FOR_REAL = `addEventListener("unload", () => {})`;
+
+// The page has a controlling worker and the stash (IndexedDB seance-push)
+// carries a remembered password for a network.
+const STASHED_LOGIN = `(async () => {
+	if (!navigator.serviceWorker.controller) return false;
+	const db = await new Promise((res, rej) => {
+		const r = indexedDB.open("seance-push", 1);
+		r.onsuccess = () => res(r.result);
+		r.onerror = () => rej(r.error);
+	});
+	const stash = await new Promise((res) => {
+		const g = db.transaction("kv").objectStore("kv").get("stash");
+		g.onsuccess = () => res(g.result);
+		g.onerror = () => res(undefined);
+	});
+	db.close();
+	return (stash?.networks ?? []).some((n) => n.saslPassword);
+})()`;
 
 const HIDE = `(() => {
 	Object.defineProperty(document, "visibilityState", {configurable: true, get: () => "hidden"});
@@ -91,6 +125,8 @@ export default async function run(page) {
 	};
 
 	// --- 1. Seance logs in; an ordinary user watches from #seance. ----------
+	await page.addInitScript(PUSH_API);
+	await page.grantPermissions(["notifications"], new URL(BASE).origin);
 	await page.goto(page.url, {waitForSelector: "#connect form"});
 	// A link never carries the password into the form (link approval).
 	await page.fill('#connect input[name="saslPassword"]', PASSWORD);
@@ -110,6 +146,13 @@ export default async function run(page) {
 	await dismissPushPrompt();
 	const me = await page.evaluate(OUR_NICK);
 	page.check(`logged in as ${me}`, !!me);
+	// The worker that takes a closing page's AWAY * over: controlling the
+	// page, with this network's login in its stash.
+	await page.waitFor(STASHED_LOGIN, {
+		timeout: 20000,
+		label: "the worker's stash holds the login",
+	});
+	page.check("the service worker controls the page and holds the login", true);
 
 	const obs = await observe(IRCD, `obs${RUN.slice(-6)}`, {
 		caps: ["away-notify", "draft/metadata-2"],
@@ -151,6 +194,16 @@ export default async function run(page) {
 	const reconnect = async (label) => {
 		const t = Date.now();
 		proxy.cut();
+		// Refuse the redials for a while so the bouncer holds the session
+		// and the next dial resumes it as its primary connection — the path
+		// a reload takes — rather than racing the old socket's teardown.
+		// These checks pass on the round-1 build without pre-away too (seen
+		// 2026-10-13): a cut socket gets no star out, and the resumed
+		// session keeps its state, so they guard against a regression but
+		// do not tell old from new; the reload checks do.
+		proxy.refuse();
+		page.expectWsErrors = true;
+		setTimeout(() => proxy.accept(), 3000);
 		let sawDown = false;
 
 		for (let waited = 0; waited < 5000 && !sawDown; waited += 50) {
@@ -163,6 +216,7 @@ export default async function run(page) {
 			timeout: 30000,
 			label: `${label}: reconnected`,
 		});
+		page.expectWsErrors = false;
 		await page.sleep(4000);
 		const lines = obs.awaysSince(me, t);
 		return {lines, ...(await state(label))};
@@ -415,6 +469,68 @@ export default async function run(page) {
 		);
 		r = await step("away mode → auto", () => menu(DOT, "presence-auto"));
 		page.check("auto after away mode: present", r.flag === "H");
+
+		// --- 10. A present Auto page: reload, close, reopen. ---------------
+		// A reload: the unloading page hands its AWAY * to the worker, which
+		// finds the new window and says nothing. Long enough for the worker's
+		// 5 s delay to run out. (Chromium's real reload never blinked here:
+		// the pagehide QUIT goes out before the unload's star. The blink is
+		// the back/forward cache's — `reload()` above, by about:blank — which
+		// is a hide and keeps its star on purpose.) The close is what the
+		// old build got wrong: its star never got out, and the held session
+		// showed WHO G with no 301 and no AWAY to away-notify clients.
+		let t10 = Date.now();
+		await page.send("Page.reload");
+		await page.waitFor(joined("#seance"), {timeout: 25000, label: "reload: session restored"});
+		await page.evaluate(SHOW);
+		await page.sleep(8000);
+		let lines = obs.awaysSince(me, t10);
+		s = await state("present, reloaded");
+		page.check(
+			`present Auto, reload: no AWAY line at all (${s.flag}, ${JSON.stringify(lines)})`,
+			lines.length === 0 && s.flag === "H" && s.away === null
+		);
+
+		// A close: no window of the app left, so the worker logs in and says
+		// AWAY * to the held session.
+		t10 = Date.now();
+		await page.evaluate(CLOSE_FOR_REAL);
+		await page.goto("about:blank");
+		for (let waited = 0; waited < 8000 && obs.awaysSince(me, t10).length === 0; waited += 250) {
+			await page.sleep(250);
+		}
+		const closedAfter = Date.now() - t10;
+		await page.sleep(2500); // nothing more may follow
+		lines = obs.awaysSince(me, t10);
+		s = await state("present, closed");
+		page.check(
+			`present Auto, close: one away, the worker's after its delay, within 8 s (${closedAfter} ms, ${JSON.stringify(
+				lines
+			)})`,
+			lines.length === 1 &&
+				/ AWAY :\S/.test(lines[0]) &&
+				closedAfter >= 4000 &&
+				closedAfter < 8000
+		);
+		page.check(
+			`present Auto, close: held session WHO G with a 301 (${s.flag}, ${JSON.stringify(
+				s.away
+			)})`,
+			s.flag === "G" && s.away !== null
+		);
+
+		// Reopen: present again, on Auto, on a visible page.
+		t10 = Date.now();
+		await page.goto(BASE, {waitForSelector: "#chat-container"});
+		await page.waitFor(joined("#seance"), {timeout: 25000, label: "reopen: session restored"});
+		await page.evaluate(SHOW);
+		await page.sleep(4000);
+		lines = obs.awaysSince(me, t10);
+		s = await state("reopened");
+		page.check(
+			`reopen after the close: present (${s.flag}, ${JSON.stringify(lines)})`,
+			s.flag === "H" && s.away === null
+		);
 	} finally {
 		await command("/back").catch(() => undefined);
 		await page.sleep(500);
