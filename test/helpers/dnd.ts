@@ -3,7 +3,10 @@ import {
 	defaultDndState,
 	describeDnd,
 	dndAt,
+	editSchedule,
+	nextChangeAt,
 	nextWindow,
+	presenceSummary,
 	parseDndState,
 	reconcileRemote,
 	scheduleTimeText,
@@ -42,6 +45,8 @@ describe("do not disturb model (helpers/dnd.ts)", function () {
 			until,
 			source: "manual",
 		});
+		expect(dndAt(s, at(2026, 10, 9, 12, 59)).active).to.equal(true);
+		expect(dndAt(s, at(2026, 10, 9, 13)).active, "off on the minute it ends").to.equal(false);
 		expect(dndAt(s, at(2026, 10, 9, 13, 1)).active).to.equal(false);
 	});
 
@@ -125,6 +130,108 @@ describe("do not disturb model (helpers/dnd.ts)", function () {
 		expect(
 			parseDndState(JSON.stringify({manual: {kind: "until"}, schedule: {start: "25:99"}}))
 		).to.deep.equal(defaultDndState());
+	});
+
+	it("one bad half resets only itself", function () {
+		const s = scheduled([1, 2]);
+		s.manual = {kind: "indefinite"};
+		const raw = JSON.parse(serializeDndState(s)) as Record<string, unknown>;
+		const badSchedule = parseDndState(JSON.stringify({...raw, schedule: {start: "25:99"}}));
+		expect(badSchedule.manual).to.deep.equal({kind: "indefinite"});
+		expect(badSchedule.schedule).to.deep.equal(defaultDndState().schedule);
+		const badManual = parseDndState(JSON.stringify({...raw, manual: {kind: "until"}}));
+		expect(badManual.manual).to.deep.equal({kind: "off"});
+		expect(badManual.schedule).to.deep.equal(s.schedule);
+	});
+
+	it("keeps the span a timed DND was picked with", function () {
+		const s = defaultDndState();
+		s.manual = {kind: "until", until: 123, span: 3600_000};
+		expect(parseDndState(serializeDndState(s)).manual).to.deep.equal(s.manual);
+		const bad = parseDndState(
+			JSON.stringify({...s, manual: {kind: "until", until: 5, span: -1}})
+		);
+		expect(bad.manual).to.deep.equal({kind: "until", until: 5});
+	});
+
+	it("the same start and end is a whole day, from that time to the next day's", function () {
+		const s = scheduled([FRI], "09:00", "09:00");
+		expect(dndAt(s, at(2026, 10, 9, 8, 59)).active, "Thursday's is no window").to.equal(false);
+		expect(dndAt(s, at(2026, 10, 9, 9))).to.deep.equal({
+			active: true,
+			until: at(2026, 10, 10, 9).getTime(),
+			source: "schedule",
+		});
+		expect(dndAt(s, at(2026, 10, 10, 8, 59)).active, "Friday's, across midnight").to.equal(
+			true
+		);
+		expect(dndAt(s, at(2026, 10, 10, 9)).active).to.equal(false);
+	});
+
+	it("a night window across a clock change keeps its wall-clock edges", function () {
+		// The DST nights of the US and the EU in 2026; whatever zone the run
+		// is in, the window runs from 23:00 to 07:00 on the wall clock.
+		for (const [mo, d] of [
+			[3, 7],
+			[3, 28],
+			[10, 24],
+			[10, 31],
+		]) {
+			const day = at(2026, mo, d, 12).getDay();
+			const s = scheduled([day]);
+			const w = windowAt(s.schedule, at(2026, mo, d, 23, 30));
+			expect(w, `${mo}-${d}`).to.not.equal(null);
+			const start = new Date(w!.start);
+			const end = new Date(w!.end);
+			expect([start.getDate(), start.getHours(), start.getMinutes()]).to.deep.equal([
+				d,
+				23,
+				0,
+			]);
+			expect([end.getDate(), end.getHours(), end.getMinutes()]).to.deep.equal([
+				at(2026, mo, d + 1, 12).getDate(),
+				7,
+				0,
+			]);
+			expect(dndAt(s, at(2026, mo, d + 1, 6, 59)).active).to.equal(true);
+			expect(dndAt(s, at(2026, mo, d + 1, 7)).active).to.equal(false);
+		}
+	});
+
+	it("a schedule edit keeps the skip only while the current window stays as it was", function () {
+		const now = at(2026, 10, 9, 23, 30);
+		const off = turnOff(scheduled([FRI]), now);
+		const skip = at(2026, 10, 10, 7).getTime();
+		expect(off.scheduleSkippedUntil).to.equal(skip);
+		// Another weekday: tonight's window is unchanged, DND stays off.
+		const days = editSchedule(off, {...off.schedule, days: [1, FRI]}, now);
+		expect(days.scheduleSkippedUntil).to.equal(skip);
+		expect(dndAt(days, now).active).to.equal(false);
+		// The end moved: tonight's window changed, it holds afresh.
+		const end = editSchedule(off, {...off.schedule, end: "08:00"}, now);
+		expect(end.scheduleSkippedUntil).to.equal(null);
+		expect(dndAt(end, now).active).to.equal(true);
+		// Outside any window an edit changes nothing current.
+		const day = at(2026, 10, 9, 12);
+		const plain = editSchedule(off, {...off.schedule, start: "22:00"}, day);
+		expect(plain.scheduleSkippedUntil).to.equal(skip);
+	});
+
+	it("knows when the verdict can next change", function () {
+		const s = defaultDndState();
+		const now = new Date(at(2026, 10, 9, 12).getTime() + 15_000);
+		expect(nextChangeAt(s, now), "the minute boundary").to.equal(
+			at(2026, 10, 9, 12, 1).getTime()
+		);
+		s.manual = {kind: "until", until: now.getTime() + 20_000};
+		expect(nextChangeAt(s, now), "a timed end off the minute").to.equal(now.getTime() + 20_000);
+	});
+
+	it("sums the networks' modes", function () {
+		expect(presenceSummary([])).to.equal("auto");
+		expect(presenceSummary(["away", "away"])).to.equal("away");
+		expect(presenceSummary(["dnd"])).to.equal("dnd");
+		expect(presenceSummary(["auto", "online"])).to.equal("mixed");
 	});
 
 	it("a shared DND cleared elsewhere turns the local manual DND off", function () {

@@ -24,7 +24,11 @@ export interface DndSchedule {
 	days: number[];
 }
 
-export type DndManual = {kind: "off"} | {kind: "until"; until: number} | {kind: "indefinite"};
+export type DndManual =
+	| {kind: "off"}
+	/** `span`: the length picked (ms, "For 1 hour"), so the menu can tick it. */
+	| {kind: "until"; until: number; span?: number}
+	| {kind: "indefinite"};
 
 export interface DndState {
 	manual: DndManual;
@@ -41,7 +45,8 @@ export interface DndVerdict {
 }
 
 const OFF: DndVerdict = {active: false, until: null, source: null};
-const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
+/** A schedule time as stored: "HH:MM", 24-hour. */
+export const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
 export function defaultDndState(): DndState {
 	return {
@@ -159,7 +164,9 @@ function asManual(raw: unknown): DndManual | undefined {
 	}
 
 	if (r.kind === "until" && typeof r.until === "number" && Number.isFinite(r.until)) {
-		return {kind: "until", until: r.until};
+		return typeof r.span === "number" && Number.isFinite(r.span) && r.span > 0
+			? {kind: "until", until: r.until, span: r.span}
+			: {kind: "until", until: r.until};
 	}
 
 	return undefined;
@@ -195,15 +202,20 @@ export function parseDndState(raw: string | null): DndState {
 	}
 
 	try {
-		const v = JSON.parse(raw) as Record<string, unknown>;
-		const manual = asManual(v.manual);
-		const schedule = asSchedule(v.schedule);
+		const v = JSON.parse(raw) as Record<string, unknown> | null;
 
-		if (!manual || !schedule) {
+		if (!v || typeof v !== "object") {
 			return defaultDndState();
 		}
 
-		const skipped = typeof v.scheduleSkippedUntil === "number" ? v.scheduleSkippedUntil : null;
+		const def = defaultDndState();
+		// One bad half resets only itself.
+		const manual = asManual(v.manual) ?? def.manual;
+		const schedule = asSchedule(v.schedule) ?? def.schedule;
+		const skipped =
+			typeof v.scheduleSkippedUntil === "number" && Number.isFinite(v.scheduleSkippedUntil)
+				? v.scheduleSkippedUntil
+				: null;
 		return {manual, schedule, scheduleSkippedUntil: skipped};
 	} catch {
 		return defaultDndState();
@@ -214,14 +226,42 @@ export function serializeDndState(state: DndState): string {
 	return JSON.stringify(state);
 }
 
+/**
+ * A schedule edit. Off pressed inside a window skips the rest of it; the skip
+ * survives an edit that leaves the window current now as it was (another
+ * weekday, a time outside it) and is dropped by one that changes it: the
+ * user moved tonight's window, so it holds afresh.
+ */
+export function editSchedule(state: DndState, schedule: DndSchedule, now: Date): DndState {
+	const before = windowAt(state.schedule, now);
+	const after = windowAt(schedule, now);
+	const same =
+		before === after ||
+		(before !== null &&
+			after !== null &&
+			before.start === after.start &&
+			before.end === after.end);
+	return {...state, schedule, scheduleSkippedUntil: same ? state.scheduleSkippedUntil : null};
+}
+
 /** Another device turned the shared DND off: do the same here, if it is on. */
 export function reconcileRemote(state: DndState, now: Date): DndState {
 	return dndAt(state, now).active ? turnOff(state, now) : state;
 }
 
-const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+/** Short weekday names, Sunday = 0 (DndSchedule.days). */
+export const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+/** Full weekday names, Sunday = 0, for accessible names. */
+export const DAY_FULL_NAMES = [
+	"Sunday",
+	"Monday",
+	"Tuesday",
+	"Wednesday",
+	"Thursday",
+	"Friday",
+	"Saturday",
+];
 
-/** The pill's words while DND is on, from the verdict. */
 /** A wall-clock time as the clock setting writes it: "07:05" or "7:05 AM". */
 export function clockText(h: number, m: number, hour12: boolean): string {
 	const mm = String(m).padStart(2, "0");
@@ -236,6 +276,7 @@ export function scheduleTimeText(hhmm: string, hour12: boolean): string {
 	return match ? clockText(Number(match[1]), Number(match[2]), hour12) : hhmm;
 }
 
+/** The pill's words while DND is on, from the verdict. */
 export function describeDnd(verdict: DndVerdict, now: Date, hour12: boolean): string {
 	if (verdict.until === null) {
 		return "Do not disturb";
@@ -246,3 +287,53 @@ export function describeDnd(verdict: DndVerdict, now: Date, hour12: boolean): st
 	const sameDay = end.toDateString() === now.toDateString();
 	return `Do not disturb · until ${sameDay ? "" : `${DAYS[end.getDay()]} `}${time}`;
 }
+
+/**
+ * When the verdict can next change on its own: the end of the DND in force,
+ * the next window's start, or at the latest the next minute boundary (a
+ * window's edges are whole minutes, the pill's clock too). Epoch ms.
+ */
+export function nextChangeAt(state: DndState, now: Date): number {
+	const t = now.getTime();
+	const minute = Math.floor(t / 60_000) * 60_000 + 60_000;
+	const candidates = [minute];
+	const verdict = dndAt(state, now);
+
+	if (verdict.until !== null && verdict.until > t) {
+		candidates.push(verdict.until);
+	}
+
+	if (state.manual.kind === "until" && state.manual.until > t) {
+		candidates.push(state.manual.until);
+	}
+
+	const next = nextWindow(state.schedule, now);
+
+	if (next) {
+		candidates.push(next.start);
+	}
+
+	return Math.min(...candidates);
+}
+
+/** What every network's presence mode says together; `mixed` when they differ. */
+export type PresenceSummary = PresenceMode | "mixed";
+
+export function presenceSummary(modes: PresenceMode[]): PresenceSummary {
+	const set = new Set(modes);
+
+	if (set.size === 0) {
+		return "auto";
+	}
+
+	return set.size === 1 ? modes[0] : "mixed";
+}
+
+/** The pill's words for a summary, while no do not disturb of the page's own is on. */
+export const SUMMARY_LABELS: Record<PresenceSummary, string> = {
+	auto: "Online · auto",
+	online: "Online",
+	away: "Away",
+	dnd: "Do not disturb",
+	mixed: "Mixed",
+};
