@@ -30,6 +30,8 @@ describe("Pages site assembly (tools/pages-site.mjs)", function () {
 		expect(kindOf({name: "develop", path: ""}), "a fork with no release").to.equal("develop");
 		expect(linkTo(release)).to.equal("../");
 		expect(linkTo(pr)).to.equal("../pr103/");
+		expect(linkTo(release, "/seance/"), "absolute with the base path").to.equal("/seance/");
+		expect(linkTo(pr, "/seance")).to.equal("/seance/pr103/");
 	});
 
 	it("lists the release, then develop, then PRs newest first, and escapes", function () {
@@ -53,6 +55,10 @@ describe("Pages site assembly (tools/pages-site.mjs)", function () {
 		expect([...order].sort((a, b) => a - b)).to.deep.equal(order);
 		expect(html).to.include("a &lt;b&gt; &amp; c");
 		expect(html).to.include('href="../pr103/"');
+		expect(
+			renderIndex([pr, release], {base: "/seance/"}),
+			"absolute links on Pages"
+		).to.include('href="/seance/pr103/"');
 		expect(html).to.include("github.com/evilnet/seance/pulls");
 	});
 
@@ -72,6 +78,7 @@ describe("Pages site assembly (tools/pages-site.mjs)", function () {
 			const entries = assemble([release, develop, pr], artifacts, out, {
 				repo: "evilnet/seance",
 				runUrl: "https://github.com/evilnet/seance/actions/runs/1",
+				base: "/seance/",
 				now: new Date("2026-10-13T12:00:00Z"),
 			});
 
@@ -88,11 +95,16 @@ describe("Pages site assembly (tools/pages-site.mjs)", function () {
 			expect(stub).to.include("the build failed");
 			expect(stub).to.include("actions/runs/1");
 			expect(stub).to.equal(
-				renderStub(pr, {runUrl: "https://github.com/evilnet/seance/actions/runs/1"})
+				renderStub(pr, {
+					runUrl: "https://github.com/evilnet/seance/actions/runs/1",
+					base: "/seance/",
+				})
 			);
 
 			const index = readFileSync(join(out, "previews", "index.html"), "utf8");
 			expect(index).to.include("build failed");
+			expect(index).to.include('href="/seance/develop/"');
+			expect(stub).to.include('href="/seance/previews/"');
 			expect(index).to.include("Assembled 2026-10-13T12:00:00Z");
 
 			const json = JSON.parse(readFileSync(join(out, "previews.json"), "utf8")) as {
