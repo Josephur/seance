@@ -87,7 +87,12 @@ interface ServerScript {
 	failMarkRead?: boolean;
 	/** Offer `draft/pre-away` (the testnet's ircv3.2-upgrade build does). */
 	preAway?: boolean;
+	/** Hold the first login's 900/903 until `release` resolves (a slow SASL). */
+	holdLogin?: {release: Promise<void>; used?: boolean};
 }
+
+/** A clock of events across every socket: when each opened and sent QUIT. */
+let socketSeq = 0;
 
 /** What the scripted ircd advertises in CAP LS. */
 function capsOffered(script: ServerScript): string[] {
@@ -156,8 +161,17 @@ function serve(ws: any, line: string): void {
 	} else if (line === "AUTHENTICATE PLAIN") {
 		reply("AUTHENTICATE +");
 	} else if (line.startsWith("AUTHENTICATE ")) {
-		reply(":irc.testnet.local 900 * :logged in");
-		reply(":irc.testnet.local 903 * :SASL authentication successful");
+		const answer = (): void => {
+			reply(":irc.testnet.local 900 * :logged in");
+			reply(":irc.testnet.local 903 * :SASL authentication successful");
+		};
+
+		if (script.holdLogin && !script.holdLogin.used) {
+			script.holdLogin.used = true;
+			void script.holdLogin.release.then(answer);
+		} else {
+			answer();
+		}
 	} else if (line === "CAP END") {
 		ws.capEnded = true;
 		tryRegister();
@@ -198,7 +212,13 @@ function serve(ws: any, line: string): void {
 /** Every FakeWS the harness created, newest last.  Typed structurally:
  * declaring it as FakeWS[] after the class (or before it) trips
  * no-use-before-define either way. */
-const wsInstances: Array<{sent: string[]; closed: boolean; nicks: string[]}> = [];
+const wsInstances: Array<{
+	sent: string[];
+	closed: boolean;
+	nicks: string[];
+	bornAt: number;
+	quitAt: number | null;
+}> = [];
 
 class FakeWS {
 	sent: string[] = [];
@@ -209,6 +229,8 @@ class FakeWS {
 	registered = false;
 	refused = false;
 	closed = false;
+	bornAt = socketSeq++;
+	quitAt: number | null = null;
 	onopen: () => void = () => {};
 	onmessage: (e: {data: string}) => void = () => {};
 	onclose: () => void = () => {};
@@ -225,6 +247,11 @@ class FakeWS {
 
 	send(line: string): void {
 		this.sent.push(line);
+
+		if (line.startsWith("QUIT")) {
+			this.quitAt = socketSeq++;
+		}
+
 		serve(this, line);
 	}
 
@@ -292,6 +319,8 @@ interface SWHarness {
 	lastSent(): string[];
 	/** What each socket opened since the harness was made sent, in order. */
 	sentBySocket(): string[][];
+	/** When each socket opened and sent its QUIT, on one clock. */
+	socketTimeline(): {bornAt: number; quitAt: number | null}[];
 }
 
 interface HarnessOptions {
@@ -496,6 +525,8 @@ function makeSW(options: HarnessOptions = {}): SWHarness {
 		socketsOpened: (): number => wsInstances.length - socketsBefore,
 		lastSent: (): string[] => wsInstances[wsInstances.length - 1].sent,
 		sentBySocket: (): string[][] => wsInstances.slice(socketsBefore).map((w) => w.sent),
+		socketTimeline: () =>
+			wsInstances.slice(socketsBefore).map((w) => ({bornAt: w.bornAt, quitAt: w.quitAt})),
 	};
 }
 
@@ -1860,22 +1891,34 @@ describe("service worker away on close", function () {
 	});
 
 	it("a close while the run is logging in is queued for one more run after it", async function () {
+		let release = (): void => undefined;
+		const held = new Promise<void>((r) => (release = r));
 		const sw = makeSW({
 			fastTimers: true,
-			script: {preAway: true},
+			script: {preAway: true, holdLogin: {release: held}},
 			stash: {vapid: STASH.vapid, networks: [...STASH.networks, NET_2]},
 		});
 		const {post, done} = poster(sw);
 		post(["net-1"]);
-		// Past the delay (50 ms here): the login has begun.
+		// Past the delay (50 ms here): the login has begun, its 903 held.
 		await new Promise((r) => setTimeout(r, 60));
 		expect(sw.socketsOpened(), "the first run is logging in").to.equal(1);
 		post(["net-2"]);
+		// Longer than another delay (a second run of its own would have
+		// dialled by now), shorter than the login's 150 ms timeout.
+		await new Promise((r) => setTimeout(r, 70));
+		expect(sw.socketsOpened(), "no second login beside the held one").to.equal(1);
+		release();
 		await done();
 		expect(sw.sentBySocket().map(accountOf)).to.deep.equal([
 			STASH.networks[0].saslAccount,
 			"pushtest2",
 		]);
+		const [first, second] = sw.socketTimeline();
+		expect(first.quitAt, "the first login QUIT").to.not.equal(null);
+		expect(second.bornAt, "the queued run dials after that QUIT").to.be.greaterThan(
+			first.quitAt as number
+		);
 	});
 
 	it("no stashed password: it does nothing", async function () {
@@ -1905,6 +1948,8 @@ describe("service worker away on close", function () {
 		const sockets = sw.sentBySocket();
 		expect(sockets.map(accountOf)).to.deep.equal(["pushtest2", STASH.networks[0].saslAccount]);
 		// One after another: the first had QUIT before the second was opened.
-		expect(sockets[0][sockets[0].length - 1]).to.equal("QUIT :done");
+		const [first, second] = sw.socketTimeline();
+		expect(first.quitAt).to.not.equal(null);
+		expect(second.bornAt).to.be.greaterThan(first.quitAt as number);
 	});
 });
