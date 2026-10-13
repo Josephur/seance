@@ -170,6 +170,14 @@ function setUp(): void {
 }
 
 function tearDown(): void {
+	// Close every socket: a registered client holds timers (the mute read,
+	// the resume check) that would keep a lone run of this file waiting.
+	for (const t of manager?.transports.values() ?? []) {
+		if (t.state === "open") {
+			t.closed(1000);
+		}
+	}
+
 	if (ownsSpy) {
 		dispatch.restore();
 	}

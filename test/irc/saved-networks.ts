@@ -437,6 +437,7 @@ describe("saved-networks", function () {
 			bots: {oper: "", account: "", channel: "", report: "", snoop: ""},
 		});
 	});
+
 	it("keeps a presence mode, reads a missing or bad one as auto", function () {
 		const net = saved.normalize({uuid: "p1", host: "irc.test", presenceMode: "away"});
 		expect(net?.presenceMode).to.equal("away");
@@ -445,6 +446,7 @@ describe("saved-networks", function () {
 		expect(plain?.presenceMode).to.equal(undefined);
 		expect(saved.presenceModeOf(plain)).to.equal("auto");
 		const bad = saved.normalize({uuid: "p3", host: "irc.test", presenceMode: "busy"});
+		expect(bad?.presenceMode, "normalize drops an unknown mode").to.equal(undefined);
 		expect(saved.presenceModeOf(bad)).to.equal("auto");
 	});
 
@@ -462,7 +464,7 @@ describe("saved-networks", function () {
 	it("saving auto drops a stored presence mode", function () {
 		const net = saved.save({uuid: "p5", host: "irc.test", presenceMode: "dnd"} as any);
 		expect(saved.get(net.uuid)?.presenceMode).to.equal("dnd");
-		saved.save({...net, presenceMode: undefined});
+		saved.save({...net, presenceMode: "auto"});
 		expect(saved.get(net.uuid)?.presenceMode).to.equal(undefined);
 		expect(saved.presenceModeOf(saved.get(net.uuid))).to.equal("auto");
 	});

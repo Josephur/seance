@@ -3,7 +3,7 @@
 // account needed: a pre-away helper connection says `AWAY *`, the page
 // messages it (the server answers with a 301 carrying `*`) and asks WHOIS.
 //
-//   CHROME_BIN=/seance/tmp/chrome-pw.sh node tools/browser-drive.mjs \
+//   CHROME_BIN=<chromium> node tools/browser-drive.mjs \
 //     tools/scenarios/away-star-render.mjs --no-ws
 //
 // SEANCE_URL (default http://localhost:8001/) and SEANCE_IRC_WS (default

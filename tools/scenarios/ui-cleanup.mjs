@@ -10,9 +10,11 @@
 //   3. "Never" closes it and it stays closed across reloads (device-local);
 //   4. the Settings → Notifications screen no longer renders the Session
 //      panel (list / Refresh / Force logout are gone);
-//   5. the snooze buttons sit in their own block with margins between the
-//      buttons (a fake subscription is planted in localStorage to reach the
-//      subscribed state — headless Chromium has no FCM to make a real one).
+//   5. subscribed, Settings still only hints at the network editor (a fake
+//      subscription is planted in localStorage to reach the subscribed
+//      state — headless Chromium has no FCM to make a real one). The snooze
+//      row it used to measure is gone: do not disturb replaced it
+//      (docs/projects/do-not-disturb.md).
 
 const IRCD = "ws://127.0.0.1:8067/";
 
@@ -114,7 +116,7 @@ export default async function run(page) {
 	);
 	await page.screenshot("2-settings-unsubscribed");
 
-	// --- snooze block with margins (fake subscription → subscribed) -------
+	// --- subscribed (fake subscription) ---------------------------------
 	await page.evaluate(
 		`localStorage.setItem("thelounge.push", JSON.stringify({
 			"fake-vapid-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef": {
@@ -129,13 +131,13 @@ export default async function run(page) {
 	await page.waitFor(`!(${promptOpened})`, {label: "no prompt while subscribed"});
 	await page.waitFor(openSettings, {label: "the settings window again"});
 
-	await page.waitFor(`!!document.querySelector(".push-snooze")`, {
-		label: "the snooze row to render",
+	await page.waitFor(`!!document.querySelector(".dnd-schedule")`, {
+		label: "the notification settings to render",
 	});
 
 	// Enrollment moved into the network editor: the panel keeps only the
-	// hint, the snooze row and the browser-level warnings - no rows, no
-	// global toggle, no status dot.
+	// hint, the do-not-disturb schedule and the browser-level warnings - no
+	// rows, no global toggle, no status dot.
 	const pushPanel = await page.evaluate(
 		`(() => JSON.stringify({
 			rows: document.querySelectorAll(".push-network").length,
@@ -153,23 +155,6 @@ export default async function run(page) {
 		})()
 	);
 
-	const spacing = await page.evaluate(
-		`(() => {
-			const row = document.querySelector(".push-snooze");
-			const btns = row ? [...row.querySelectorAll("button")] : [];
-			const second = btns[1];
-
-			return JSON.stringify({
-				count: btns.length,
-				block: row ? getComputedStyle(row).display !== "inline" : false,
-				gap: second ? getComputedStyle(second).marginLeft : "none",
-			});
-		})()`
-	);
-	page.check(
-		"snooze buttons render as their own block with margins between them",
-		spacing === JSON.stringify({count: 4, block: true, gap: "8px"})
-	);
 	await page.screenshot("3-settings-subscribed");
 
 	// Leave the profile clean of the fake subscription.

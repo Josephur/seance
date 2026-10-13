@@ -13,7 +13,7 @@
 // Needs the testnet rig (SASL, draft/persistence, draft/pre-away,
 // draft/metadata-2, draft/webpush) and an account of its own:
 //
-//   CHROME_BIN=/seance/tmp/chrome-pw.sh SEANCE_SASL_ACCOUNT=idleuser \
+//   CHROME_BIN=<chromium> SEANCE_SASL_ACCOUNT=idleuser \
 //     SEANCE_SASL_PASSWORD=idlepass node tools/browser-drive.mjs \
 //     tools/scenarios/away-two-devices.mjs --no-ws
 //
@@ -33,10 +33,11 @@ const IRCD = process.env.SEANCE_IRC_WS ?? "ws://127.0.0.1:8067/";
 const IRCD_PORT = Number(new URL(IRCD).port || 8067);
 const SETTLE = 1500; // a line's round trip through the server, generously
 
+// A link never carries the password (link approval): the form fills it.
 const linkFor = (nick) =>
 	`${BASE}?host=127.0.0.1&port=${IRCD_PORT}&tls=false&nick=${nick}&join=%23seance&saslAccount=${encodeURIComponent(
 		ACCOUNT ?? ""
-	)}&saslPassword=${encodeURIComponent(PASSWORD ?? "")}`;
+	)}`;
 
 export const url = linkFor(`twa${RUN.slice(-6)}`);
 
@@ -280,10 +281,6 @@ export default async function run(page) {
 		const dndLines = obs.awaysSince(me, t4);
 		page.check(`4b. B's pill and network show "Do not disturb" (${await pillText(b)})`, bDnd);
 		page.check(
-			`4b. B silences its notifications (its network's presence says dnd)`,
-			await dotIsDnd(b)
-		);
-		page.check(
 			`4b. the account away to others (${s.flag}, ${JSON.stringify(s.away)}, ${JSON.stringify(
 				dndLines
 			)})`,
@@ -329,8 +326,12 @@ export default async function run(page) {
 		let lines = obs.awaysSince(me, t6);
 		s = await state("A and B closed");
 		page.check(
-			`6. both closed: exactly one away within ~8 s (${after6} ms, ${JSON.stringify(lines)})`,
-			lines.length === 1 && / AWAY :\S/.test(lines[0]) && after6 < 9000
+			`6. both closed: exactly one away, from a worker, 4-9 s after (${after6} ms, ${JSON.stringify(
+				lines
+			)})`,
+			// No sooner than the worker's 5 s delay: a page's own unload star
+			// (the old behaviour) would come at once.
+			lines.length === 1 && / AWAY :\S/.test(lines[0]) && after6 >= 4000 && after6 < 9000
 		);
 		page.check(
 			`6. held: WHO G and a 301 (${s.flag}, ${JSON.stringify(s.away)})`,

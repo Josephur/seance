@@ -43,9 +43,10 @@ const IRCD_PORT = Number(new URL(IRCD).port || 8067);
 const PROXY_PORT = Number(process.env.SEANCE_PROXY_PORT ?? 9876);
 const SETTLE = 1500; // a line's round trip through the server, generously
 
+// A link never carries the password (link approval): the form fills it.
 export const url = `${BASE}?host=127.0.0.1&port=${PROXY_PORT}&tls=false&nick=${NICK}&join=%23seance&saslAccount=${encodeURIComponent(
 	ACCOUNT ?? ""
-)}&saslPassword=${encodeURIComponent(PASSWORD ?? "")}`;
+)}`;
 
 const LOBBY = '.channel-list-item[data-type="lobby"]';
 const PILL = "#sidebar .presence-pill";
@@ -112,10 +113,12 @@ export default async function run(page) {
 		await page.click(MENU_ITEM(cls));
 		await page.sleep(200);
 	};
-	const dismissPushPrompt = async (waitMs = 8000) => {
+	// Yes, so the network subscribes (the fake Push API grants it) and the
+	// worker gets the login the close steps need; Never would leave it out.
+	const answerPushPrompt = async (waitMs = 8000) => {
 		for (let waited = 0; waited <= waitMs; waited += 250) {
 			if ((await page.count("#push-prompt[data-armed]")) > 0) {
-				await page.click("#pushPromptNever");
+				await page.click("#pushPromptYes");
 				await page.sleep(300);
 				return;
 			}
@@ -143,7 +146,7 @@ export default async function run(page) {
 
 	await page.click('#connect button[type="submit"]');
 	await page.waitFor(joined("#seance"), {timeout: 25000, label: "joined #seance (SASL)"});
-	await dismissPushPrompt();
+	await answerPushPrompt();
 	const me = await page.evaluate(OUR_NICK);
 	page.check(`logged in as ${me}`, !!me);
 	// The worker that takes a closing page's AWAY * over: controlling the
@@ -152,7 +155,10 @@ export default async function run(page) {
 		timeout: 20000,
 		label: "the worker's stash holds the login",
 	});
-	page.check("the service worker controls the page and holds the login", true);
+	page.check(
+		"the service worker controls the page and holds the login",
+		(await page.evaluate(STASHED_LOGIN)) === true
+	);
 
 	const obs = await observe(IRCD, `obs${RUN.slice(-6)}`, {
 		caps: ["away-notify", "draft/metadata-2"],
@@ -345,7 +351,15 @@ export default async function run(page) {
 			caps: ["draft/metadata-2"],
 			sasl: {account: ACCOUNT, password: PASSWORD},
 		});
-		const ownRead = await other.metadataGet("*", "draft/webpush/mute");
+		let ownRead;
+
+		try {
+			ownRead = await other.metadataGet("*", "draft/webpush/mute");
+		} catch (e) {
+			other.close();
+			throw e;
+		}
+
 		const strangerRead = await obs.metadataGet(me, "draft/webpush/mute");
 		console.log(`  own device reads: ${JSON.stringify(ownRead)}`);
 		console.log(`  stranger reads: ${JSON.stringify(strangerRead)}`);
@@ -372,7 +386,7 @@ export default async function run(page) {
 		r = await step("DND off", () => menu(PILL, "dnd-off"));
 		page.check(
 			`DND off: observer sees back (${JSON.stringify(r.aways)})`,
-			r.flag === "H" && r.away === null
+			r.flag === "H" && r.away === null && r.aways.some((l) => / AWAY\s*$/.test(l))
 		);
 
 		// --- 5. Per-network modes. --------------------------------------------
@@ -406,9 +420,11 @@ export default async function run(page) {
 		const t6 = Date.now();
 		await page.goto("about:blank");
 		await page.sleep(3000);
-		s = await state("page closed, session held");
+		s = await state("page hidden (bfcache), session held");
 		page.check(
-			`page closed: others see no QUIT, still away (${s.flag}, ${JSON.stringify(s.away)})`,
+			`page hidden (bfcache): others see no QUIT, still away (${s.flag}, ${JSON.stringify(
+				s.away
+			)})`,
 			!obs.since(t6).some((l) => new RegExp(`:${me}!\\S+ QUIT`, "i").test(l)) &&
 				s.flag === "G"
 		);

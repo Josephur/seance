@@ -516,9 +516,19 @@ describe("PERSISTENCE ATTACH catch-up cursor (irc/persistence.ts)", function () 
 
 			expect(h.client.serverReplay).to.equal(false);
 			expect(chathistory(h.sent())).to.have.length(1);
-			// The resumed session's AWAY (presence.ts presenceResumed: no
-			// mute list to wait for here) follows the catch-up; leave it out.
-			const sent = h.transport.sent.filter((l) => l !== "AWAY");
+			// The resumed session's AWAY (presence.ts: no mute list to wait
+			// for here) goes out once on the reconnect, at registration: after
+			// CAP END and before what the registration starts (PERSISTENCE
+			// SET, the catch-up).
+			const all = h.transport.sent;
+			const end = all.lastIndexOf("CAP END");
+			expect(all.slice(end).filter((l) => l === "AWAY")).to.have.length(1);
+			expect(all.slice(end, end + 3)).to.deep.equal([
+				"CAP END",
+				"AWAY",
+				"PERSISTENCE SET ON",
+			]);
+			const sent = all.filter((l) => l !== "AWAY");
 			expect(sent[sent.length - 2]).to.match(/CHATHISTORY LATEST #seance \* \d+$/);
 		});
 

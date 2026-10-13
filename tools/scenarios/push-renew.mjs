@@ -195,10 +195,6 @@ export default async function run(page) {
 		label: "the stale warning in Settings",
 	});
 	page.check(
-		"3. Settings hides the snooze row while stale",
-		(await page.count(".push-snooze")) === 0
-	);
-	page.check(
 		"3. Settings points at the network settings instead of renewing itself",
 		(await page.count("#pushRenew")) === 0 &&
 			String(
@@ -253,9 +249,12 @@ export default async function run(page) {
 		label: "the Renew row to leave the form",
 	});
 	await page.evaluate(`location.hash = "#/settings/notifications"`);
-	await page.waitFor(`!!document.querySelector(".push-snooze")`, {
-		label: "Settings back to subscribed",
-	});
+	await page.waitFor(
+		`!!document.querySelector(".dnd-schedule") && !document.querySelector("#pushStale") &&
+		document.querySelector("[data-v-app]").__vue_app__.config.globalProperties.$store.state
+			.pushNotificationState === "subscribed"`,
+		{label: "Settings back to subscribed"}
+	);
 	page.check("3. the stale warning is gone", (await page.count("#pushStale")) === 0);
 	await page.screenshot("4-settings-renewed");
 

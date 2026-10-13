@@ -17,6 +17,7 @@ import {registerBusHandlers} from "../../client/js/irc/bus";
 import {dispatchInput} from "../../client/js/irc/commands";
 import {MARKREAD_DEBOUNCE_MS} from "../../client/js/irc/handlers/markread";
 import {AWAY_STAR} from "../../client/js/irc/presence";
+import {MessageType} from "../../shared/types/msg";
 import type {Transport} from "../../client/js/irc/types";
 import type {TransportEvent, TransportState} from "../../client/js/irc/transport";
 
@@ -287,7 +288,40 @@ describe("presence modes and do not disturb (presence.ts)", function () {
 
 	afterEach(function () {
 		clock.restore();
+		socket.removeAllListeners();
 	});
+
+	// Every mode × attention × the page's DND, on the wire: the last AWAY
+	// line says what the server shows. (A visible but unfocused page is
+	// unattended too: foreground.ts calls setAttended(false) after
+	// UNFOCUSED_AWAY_MS, the same call as a hidden page.)
+	for (const mode of ["online", "auto", "away", "dnd"] as const) {
+		for (const attended of [true, false]) {
+			for (const dnd of [false, true]) {
+				const star =
+					dnd || mode === "dnd" || mode === "away" || (mode === "auto" && !attended);
+				it(`${mode}, ${attended ? "attended" : "unattended"}, page DND ${
+					dnd ? "on" : "off"
+				}: ${star ? "AWAY *" : "present"}`, function () {
+					const h = connect();
+					h.client.setPresenceMode(mode);
+					h.client.setAttended(attended);
+					h.client.setGlobalDnd(dnd, null);
+					const aways = h.transport.sent.filter(
+						(l) => l === "AWAY" || l === `AWAY ${AWAY_STAR}`
+					);
+					const last = aways[aways.length - 1];
+					expect(last ?? "AWAY").to.equal(star ? `AWAY ${AWAY_STAR}` : "AWAY");
+					expect(h.client.presence.starSent).to.equal(star);
+					expect(h.client.presenceSnapshot()).to.deep.equal({
+						mode,
+						dnd: dnd || mode === "dnd",
+						away: star,
+					});
+				});
+			}
+		}
+	}
 
 	it("online never sends AWAY *, even hidden", function () {
 		const h = connect();
@@ -419,7 +453,13 @@ describe("presence modes and do not disturb (presence.ts)", function () {
 			expect(h.client.presence.starSent).to.equal(true);
 			h.dispatch.resetHistory();
 			h.transport.line(":irc.test 306 alice :You have been marked as being away");
-			expect(h.dispatch.getCalls().some((c) => c.args[0] === "msg")).to.equal(true);
+			const shown = h.dispatch
+				.getCalls()
+				.filter((c) => c.args[0] === "msg")
+				.map((c) => c.args[1] as {chan: number; msg: {type: string}});
+			expect(shown.map((m) => [m.chan, m.msg.type])).to.deep.equal([
+				[h.client.lobby.id, MessageType.AWAY],
+			]);
 		});
 
 		it("on an attended auto page sends only AWAY", function () {

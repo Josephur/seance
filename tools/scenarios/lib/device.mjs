@@ -14,7 +14,7 @@
 // are. Page exceptions and console errors are collected in `consoleErrors`.
 
 import {spawn} from "node:child_process";
-import {mkdtempSync, rmSync} from "node:fs";
+import {mkdtempSync, readFileSync, rmSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 
@@ -28,7 +28,6 @@ export async function startDevice({
 	height = 900,
 	timeout = 20000,
 } = {}) {
-	const port = 10300 + Math.floor(Math.random() * 1000);
 	const profile = mkdtempSync(join(tmpdir(), `seance-${name}-`));
 	const proc = spawn(
 		chrome,
@@ -41,7 +40,9 @@ export async function startDevice({
 			"--ignore-certificate-errors",
 			`--window-size=${width},${height}`,
 			"--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4",
-			`--remote-debugging-port=${port}`,
+			// Port 0: Chromium picks a free one and writes it to
+			// DevToolsActivePort, so this never attaches to another browser.
+			"--remote-debugging-port=0",
 			`--user-data-dir=${profile}`,
 			"about:blank",
 		],
@@ -52,14 +53,30 @@ export async function startDevice({
 		exited = true;
 	});
 
+	// A start-up that fails must not leave the browser and its profile behind.
+	const abandon = (error) => {
+		try {
+			proc.kill();
+		} catch {
+			// already gone
+		}
+
+		rmSync(profile, {recursive: true, force: true});
+		throw error;
+	};
+
 	let target;
+	let port = 0;
 
 	for (let i = 0; i < 100 && !target; i++) {
 		if (exited) {
-			throw new Error(`${name}: ${chrome} exited before DevTools came up`);
+			abandon(new Error(`${name}: ${chrome} exited before DevTools came up`));
 		}
 
 		try {
+			port ||= Number(
+				readFileSync(join(profile, "DevToolsActivePort"), "utf8").split("\n")[0]
+			);
 			const targets = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
 			target = targets.find((t) => t.type === "page")?.webSocketDebuggerUrl;
 		} catch {
@@ -72,14 +89,19 @@ export async function startDevice({
 	}
 
 	if (!target) {
-		throw new Error(`${name}: no DevTools target on port ${port}`);
+		abandon(new Error(`${name}: no DevTools target (port ${port || "unknown"})`));
 	}
 
 	const socket = new WebSocket(target);
-	await new Promise((res, rej) => {
-		socket.onopen = res;
-		socket.onerror = () => rej(new Error(`${name}: could not attach to DevTools`));
-	});
+
+	try {
+		await new Promise((res, rej) => {
+			socket.onopen = res;
+			socket.onerror = () => rej(new Error(`${name}: could not attach to DevTools`));
+		});
+	} catch (e) {
+		abandon(e);
+	}
 
 	const pending = new Map();
 	const consoleErrors = [];

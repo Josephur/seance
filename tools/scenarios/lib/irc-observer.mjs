@@ -34,14 +34,23 @@ export async function observe(url, nick, {caps = [], sasl = null, join = null} =
 
 	const waitFor = (pred, ms = 10000, label = "line") =>
 		new Promise((resolve, reject) => {
-			const w = {pred, resolve};
-			waiters.add(w);
-			setTimeout(() => {
+			const timer = setTimeout(() => {
 				if (waiters.delete(w)) {
 					reject(new Error(`observer ${nick}: timed out waiting for ${label}`));
 				}
 			}, ms);
+			const w = {
+				pred,
+				resolve(line) {
+					clearTimeout(timer);
+					resolve(line);
+				},
+			};
+			waiters.add(w);
 		});
+
+	/** A nick as a literal inside a RegExp. */
+	const literal = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 	await new Promise((resolve, reject) => {
 		ws.addEventListener("open", resolve, {once: true});
@@ -70,7 +79,14 @@ export async function observe(url, nick, {caps = [], sasl = null, join = null} =
 				"base64"
 			);
 			send(`AUTHENTICATE ${blob}`);
-			await waitFor((l) => / 90[3-7] /.test(l), 15000, "SASL result");
+			const result = await waitFor((l) => / 90[3-7] /.test(l), 15000, "SASL result");
+
+			// Only 903 is a login: going on unauthenticated would fail later
+			// checks for a misleading reason.
+			if (!/ 903 /.test(result)) {
+				ws.close();
+				throw new Error(`observer ${nick}: SASL failed: ${result}`);
+			}
 		}
 
 		send("CAP END");
@@ -101,7 +117,7 @@ export async function observe(url, nick, {caps = [], sasl = null, join = null} =
 		/** AWAY lines about `who` received at or after time `t`. */
 		awaysSince(who, t) {
 			return since(t).filter((l) =>
-				new RegExp(`^(@\\S+ )?:${who}!\\S+ AWAY( |$)`, "i").test(l)
+				new RegExp(`^(@\\S+ )?:${literal(who)}!\\S+ AWAY( |$)`, "i").test(l)
 			);
 		},
 		async whois(who) {
@@ -109,7 +125,7 @@ export async function observe(url, nick, {caps = [], sasl = null, join = null} =
 			send(`WHOIS ${who}`);
 			await waitFor((l) => / 318 /.test(l), 10000, "318 end of WHOIS");
 			const got = since(t);
-			const away = got.find((l) => new RegExp(` 301 \\S+ ${who} `, "i").test(l));
+			const away = got.find((l) => new RegExp(` 301 \\S+ ${literal(who)} `, "i").test(l));
 			return {
 				exists: !got.some((l) => / 401 /.test(l)),
 				away: away ? away.slice(away.indexOf(" :", away.indexOf(" 301 ")) + 2) : null,
@@ -124,8 +140,9 @@ export async function observe(url, nick, {caps = [], sasl = null, join = null} =
 			if (!row) {
 				return null;
 			}
-			// :server 352 me #chan user host server nick FLAGS :hops real
-			const f = row.split(" ")[8] ?? "";
+			// :server 352 me #chan user host server nick FLAGS :hops real,
+			// counted without a leading tag prefix.
+			const f = row.replace(/^@\S+ /, "").split(" ")[8] ?? "";
 			return f.startsWith("G") ? "G" : f.startsWith("H") ? "H" : f;
 		},
 		async metadataGet(target, key) {
