@@ -565,11 +565,10 @@ export default async function run(page) {
 			const dotBehind = async () => {
 				const info = await page.evaluate(`(() => {
 					const d = document.querySelector(${JSON.stringify(DOT)});
-					const cs = getComputedStyle(d);
+					const cs = getComputedStyle(d, "::before");
 					const r = d.getBoundingClientRect();
-					const pad = parseFloat(cs.paddingTop);
 					d.style.visibility = "hidden";
-					return {bg: cs.backgroundColor, clip: {x: r.left, y: r.top, width: r.width, height: r.height}, pad};
+					return {bg: cs.backgroundColor, clip: {x: r.left, y: r.top, width: r.width, height: r.height}};
 				})()`);
 				await page.sleep(80);
 				const cap = await page.send("Page.captureScreenshot", {
@@ -592,6 +591,58 @@ export default async function run(page) {
 			};
 
 			note(theme, "the green dot against the sidebar", `${await dotBehind()}:1`);
+
+			// ---- The dot's ring (the 3:1 a status mark needs) against what is
+			// behind the dot: the ring's colour, composited over each pixel of
+			// the dot's hit box with the dot hidden; the worst 2 %.
+			const ringBehind = async () => {
+				const info = await page.evaluate(`(() => {
+					const d = document.querySelector(${JSON.stringify(DOT)});
+					const shadow = getComputedStyle(d, "::before").boxShadow;
+					const r = d.getBoundingClientRect();
+					d.style.visibility = "hidden";
+					return {shadow, clip: {x: r.left, y: r.top, width: r.width, height: r.height}};
+				})()`);
+				await page.sleep(80);
+				const cap = await page.send("Page.captureScreenshot", {
+					format: "png",
+					clip: {...info.clip, scale: 1},
+				});
+				await page.evaluate(
+					`document.querySelector(${JSON.stringify(DOT)}).style.visibility = ""`
+				);
+				const png = decodePng(Buffer.from(cap.data, "base64"));
+				// color-mix() computes to color(srgb r g b / a), 0-1 channels.
+				const srgb = info.shadow.match(
+					/color\(srgb ([\d.]+) ([\d.]+) ([\d.]+)(?: \/ ([\d.]+))?\)/
+				);
+				const colour = srgb
+					? `rgba(${[1, 2, 3]
+							.map((i) => Math.round(Number(srgb[i]) * 255))
+							.join(", ")}, ${srgb[4] ?? 1})`
+					: (info.shadow.match(/rgba?\([^)]*\)/) ?? ["rgb(0, 0, 0)"])[0];
+				const [rr, rg, rb, ra] = parseRgb(colour);
+				const rs = [];
+
+				for (let i = 0; i < png.data.length; i += png.channels) {
+					const bg = [png.data[i], png.data[i + 1], png.data[i + 2]];
+					const over = [rr, rg, rb].map((c, k) => c * ra + bg[k] * (1 - ra));
+					rs.push(ratio(over, bg));
+				}
+
+				rs.sort((a, b) => a - b);
+				return {
+					worst: Math.round((rs[Math.floor(rs.length * 0.02)] ?? 0) * 100) / 100,
+					colour,
+				};
+			};
+			const greenRing = await ringBehind();
+			record(
+				theme,
+				"the green dot's ring against the sidebar ≥ 3:1",
+				greenRing.worst >= 3,
+				`${greenRing.worst}:1, ${greenRing.colour}`
+			);
 
 			// ---- The pill menu, every item.
 			await openMenu(PILL, "dnd-off");
@@ -649,9 +700,22 @@ export default async function run(page) {
 			);
 			await openMenu(PILL, "dnd-indefinite");
 			const ticked = await page.evaluate(
-				`document.querySelector('${MENU_ITEM("dnd-indefinite")}').textContent.includes("✓")`
+				`document.querySelector('${MENU_ITEM(
+					"dnd-indefinite"
+				)}').getAttribute("aria-checked")`
 			);
-			record(theme, "… and the menu ticks it", ticked);
+			record(theme, "… and the menu ticks it", ticked === "true", ticked);
+			// The menus' own check mark: FontAwesome's, drawn by CSS.
+			const mark = await page.evaluate(`(() => {
+				const cs = getComputedStyle(document.querySelector('${MENU_ITEM("dnd-indefinite")}'), "::after");
+				return {content: cs.content, font: cs.fontFamily};
+			})()`);
+			record(
+				theme,
+				"the tick is the menus' FontAwesome check",
+				mark.content === '"\uf00c"' && /FontAwesome/.test(mark.font),
+				`${JSON.stringify(mark.content)} ${mark.font}`
+			);
 			await shot("pill-menu-ticked", [PILL, MENU], 10);
 			await closeMenu();
 
@@ -753,11 +817,11 @@ export default async function run(page) {
 			record(
 				theme,
 				"… and the menu ticks it",
-				await page.evaluate(
+				(await page.evaluate(
 					`document.querySelector('${MENU_ITEM(
 						"dnd-schedule"
-					)}').textContent.includes("✓")`
-				)
+					)}').getAttribute("aria-checked")`
+				)) === "true"
 			);
 			await press(MENU_ITEM("dnd-schedule"));
 			await page.waitFor(`!document.querySelector('${MENU}')`, {label: "the menu to close"});
@@ -776,15 +840,17 @@ export default async function run(page) {
 			const dotOnScreen = await menuOnScreen();
 			record(theme, "the dot menu is wholly on screen", dotOnScreen.ok, dotOnScreen.box);
 			const dotItems = await page.evaluate(
-				`[...document.querySelectorAll('${MENU} .context-menu-item')].map((e) => e.textContent.trim())`
+				`[...document.querySelectorAll('${MENU} .context-menu-item')].map((e) => [e.textContent.trim(), e.getAttribute("role"), e.getAttribute("aria-checked")])`
 			);
+			const checkedItems = dotItems.filter(([, , c]) => c === "true");
 			record(
 				theme,
 				"the dot menu lists four modes, Auto ticked",
 				dotItems.length === 4 &&
-					dotItems.filter((t) => t.includes("✓")).length === 1 &&
-					dotItems.find((t) => t.includes("✓")).startsWith("Auto"),
-				dotItems.join(" | ")
+					dotItems.every(([, role]) => role === "menuitemradio") &&
+					checkedItems.length === 1 &&
+					checkedItems[0][0] === "Auto",
+				dotItems.map(([t, , c]) => (c === "true" ? `${t} (checked)` : t)).join(" | ")
 			);
 			const dotMenuC = await contrast(MENU_ITEM("presence-away"));
 			record(
@@ -798,14 +864,14 @@ export default async function run(page) {
 			const dotColour = async () =>
 				page.evaluate(`(() => {
 					const d = document.querySelector(${JSON.stringify(DOT)});
-					return getComputedStyle(d).backgroundColor;
+					return getComputedStyle(d, "::before").backgroundColor;
 				})()`);
 
-			for (const [mode, colour, label] of [
-				["away", "amber", "Away"],
-				["dnd", "red", "Do not disturb"],
-				["online", "green", "Online"],
-				["auto", "green", "Auto"],
+			for (const [mode, colour, label, pill] of [
+				["away", "amber", "Away", "Away"],
+				["dnd", "red", "Do not disturb", "Do not disturb"],
+				["online", "green", "Online", "Online"],
+				["auto", "green", "Auto", "Online · auto"],
 			]) {
 				await choose(DOT, `presence-${mode}`);
 				await page.sleep(300);
@@ -818,15 +884,20 @@ export default async function run(page) {
 					`${got}, ${await dotColour()}`
 				);
 				text = await pillText();
-				record(
-					theme,
-					`… the pill follows (${label})`,
-					text === (mode === "auto" ? "Online · auto" : "Online"),
-					text
-				);
+				record(theme, `… the pill follows (${label})`, text === pill, text);
 
 				if (mode === "away" || mode === "dnd") {
 					note(theme, `the ${colour} dot against the sidebar`, `${await dotBehind()}:1`);
+				}
+
+				if (mode !== "auto") {
+					const ring = await ringBehind();
+					record(
+						theme,
+						`the ${colour} dot's ring against the sidebar ≥ 3:1`,
+						ring.worst >= 3,
+						`${ring.worst}:1, ${ring.colour}`
+					);
 				}
 
 				if (mode !== "auto") {
@@ -847,8 +918,26 @@ export default async function run(page) {
 			await page.sleep(300);
 			await shot(
 				"form-presence-select",
-				["#connect\\:presenceMode", 'label[for="connect:presenceMode"]'],
+				[
+					"#connect\\:presenceMode",
+					'label[for="connect:presenceMode"]',
+					"#connect-presence-hint",
+				],
 				16
+			);
+			const form = await page.evaluate(`(() => {
+				const s = document.querySelector("#connect\\\\:presenceMode");
+				const words = [...s.options].map((o) => o.textContent.trim());
+				const hint = document.querySelector("#connect-presence-hint").textContent.trim();
+				const r = s.getBoundingClientRect();
+				return {words, hint, fits: s.scrollWidth <= s.clientWidth + 1, w: Math.round(r.width)};
+			})()`);
+			record(
+				theme,
+				"the select offers the dot menu's four words, a hint for the mode",
+				form.words.join("|") === "Online|Auto|Away|Do not disturb" &&
+					form.hint === "Away when you're not looking.",
+				`${form.words.join("|")} / ${form.hint}`
 			);
 			const selectC = await page.evaluate(`(() => {
 				const s = document.querySelector("#connect\\\\:presenceMode");
@@ -904,8 +993,25 @@ export default async function run(page) {
 			);
 			await page.sleep(400);
 			await shot("schedule-disabled", ["#settings .dnd-schedule"], 12);
+			const fieldsOff = await page.evaluate(`(() => {
+				const f = document.querySelector("#settings .dnd-schedule-fields");
+				return {disabled: f.disabled, opacity: getComputedStyle(f).opacity};
+			})()`);
+			record(
+				theme,
+				"schedule off: its fields are disabled and dimmed",
+				fieldsOff.disabled === true && Number(fieldsOff.opacity) < 1,
+				JSON.stringify(fieldsOff)
+			);
 			await page.click("#settings .dnd-schedule > label.opt input");
 			await page.sleep(300);
+			record(
+				theme,
+				"schedule on: its fields are enabled",
+				(await page.evaluate(
+					`document.querySelector("#settings .dnd-schedule-fields").disabled`
+				)) === false
+			);
 			record(
 				theme,
 				"the schedule switch saves enabled",

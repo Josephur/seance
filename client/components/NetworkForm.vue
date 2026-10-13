@@ -278,17 +278,24 @@ the server tab on new connection"
 
 			<div class="connect-row">
 				<label for="connect:presenceMode">Presence</label>
-				<select
-					id="connect:presenceMode"
-					v-model="presenceMode"
-					class="input"
-					name="presenceMode"
-				>
-					<option value="auto">Auto: away when I'm not looking</option>
-					<option value="online">Online: never away</option>
-					<option value="away">Away: always away</option>
-					<option value="dnd">Do not disturb</option>
-				</select>
+				<div class="input-wrap">
+					<!-- The dot menu's four words; what each means is the hint. -->
+					<select
+						id="connect:presenceMode"
+						v-model="presenceMode"
+						class="input"
+						name="presenceMode"
+						aria-describedby="connect-presence-hint"
+					>
+						<option value="online">Online</option>
+						<option value="auto">Auto</option>
+						<option value="away">Away</option>
+						<option value="dnd">Do not disturb</option>
+					</select>
+					<div id="connect-presence-hint" class="presence-mode-hint">
+						{{ PRESENCE_HINTS[presenceMode] }}
+					</div>
+				</div>
 			</div>
 
 			<!--
@@ -359,6 +366,12 @@ the server tab on new connection"
 </template>
 
 <style>
+.presence-mode-hint {
+	margin-block-start: 0.25rem;
+	font-size: 0.8125rem;
+	color: var(--body-color-muted);
+}
+
 .push-stale-hint {
 	margin-bottom: 8px;
 	font-size: 90%;
@@ -483,6 +496,13 @@ import {isOperOn} from "../js/helpers/operMenu";
 import {useStore} from "../js/store";
 import webpush from "../js/webpush";
 import type {ServicesConfig, SharedNetworkStatus} from "../../shared/types/network";
+// What each presence mode means, under the select (the dot menu's words).
+const PRESENCE_HINTS: Record<PresenceMode, string> = {
+	online: "Never away.",
+	auto: "Away when you're not looking.",
+	away: "Always away.",
+	dnd: "Away and silenced.",
+};
 
 /** The services roles as the form shows them, in order. */
 const SERVICE_ROLE_FIELDS: {
@@ -793,6 +813,7 @@ export default defineComponent({
 
 		return {
 			presenceMode,
+			PRESENCE_HINTS,
 			pushInfo,
 			renewPush,
 			onNotifyToggle,

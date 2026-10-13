@@ -527,6 +527,7 @@ p {
 #oper .oper-row::before,
 #oper .oper-fold > summary::before,
 #context-menu .oper-route-current::after,
+#context-menu .context-menu-checked::after,
 #form #upload::before,
 #form #submit::before,
 #chat .msg[data-type="away"] .from::before,
@@ -1075,6 +1076,12 @@ p {
 }
 
 .presence-dot {
+	/* The fills are tokens a theme may set; the ring is the rail's own text
+	 * colour, so the dot holds 3:1 against any rail, light or dark (WCAG
+	 * 1.4.11), whatever its fill. */
+	--presence-fill: var(--presence-online, #6fbf73);
+	--presence-ring: color-mix(in srgb, var(--rail-fg, #b7c5d1) 85%, transparent);
+
 	display: inline-block;
 	flex: none;
 	inline-size: 0.5rem;
@@ -1082,26 +1089,59 @@ p {
 	padding: 0;
 	border: 0;
 	border-radius: 50%;
-	background: #6fbf73;
+	background: var(--presence-fill);
+	box-shadow: 0 0 0 1px var(--presence-ring);
 	vertical-align: middle;
 }
 
+html[data-contrast="more"] .presence-dot {
+	--presence-ring: var(--rail-fg, #b7c5d1);
+}
+
 .presence-dot.is-away {
-	background: #c9a24a;
+	--presence-fill: var(--presence-away, #c9a24a);
 }
 
 .presence-dot.is-dnd {
-	background: #d0574d;
+	--presence-fill: var(--presence-dnd, #d0574d);
 }
 
-/* The lobby's dot before the nick (NetworkLobby.vue): a 1rem box around the
- * 0.5rem dot so it can be hit, the outline inside its own box. */
+/* The pill when the networks' modes differ, and a network not connected. */
+.presence-dot.is-mixed {
+	--presence-fill: var(--presence-mixed, var(--rail-fg-muted, #9aa5b1));
+}
+
+.presence-dot.is-offline {
+	--presence-fill: var(--presence-offline, #8a9099);
+}
+
+/* The lobby's dot before the nick (NetworkLobby.vue): the button is a
+ * transparent 1.5rem hit box, its negative margins keeping the row's layout
+ * of the old 1rem box, and the 0.5rem dot with its ring is drawn inside it.
+ * It sits above the nick it overlaps, so the whole box takes the click. */
 #sidebar .lobby-presence .presence-dot {
+	position: relative;
+	z-index: 1;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
 	box-sizing: content-box;
-	padding: 0.25rem;
-	margin-inline-end: 0.0625rem;
-	background-clip: content-box;
+	padding: 0.5rem;
+	margin-block: -0.25rem;
+	margin-inline: -0.25rem -0.1875rem;
+	background: none;
+	box-shadow: none;
 	cursor: pointer;
+}
+
+#sidebar .lobby-presence .presence-dot::before {
+	content: "";
+	flex: none;
+	inline-size: 0.5rem;
+	block-size: 0.5rem;
+	border-radius: 50%;
+	background: var(--presence-fill);
+	box-shadow: 0 0 0 1px var(--presence-ring);
 }
 
 #sidebar .lobby-presence .presence-dot:focus-visible {
@@ -1260,12 +1300,12 @@ wrapper is what the jump-to results' server glyph (::before) sits beside. */
 	flex: 1 1 auto;
 	align-items: center;
 	justify-content: flex-end;
-	min-width: 0;
+	min-inline-size: 0;
 }
 
 .channel-list-item .lobby-nick {
 	flex: 0 1 auto;
-	min-width: 0;
+	min-inline-size: 0;
 	overflow: hidden;
 	white-space: nowrap;
 	text-overflow: ellipsis;
@@ -3212,7 +3252,20 @@ html[data-reduce-motion] #chat .media-veil-main:hover .media-veil-icon {
 	margin-left: 8px;
 }
 
-/* The do-not-disturb schedule (Settings/Notifications.vue). */
+/* The do-not-disturb schedule (Settings/Notifications.vue). Its fields are
+ * dimmed and disabled while the schedule is off. */
+#settings .dnd-schedule-fields {
+	min-inline-size: 0;
+	margin: 0;
+	padding: 0;
+	border: 0;
+	transition: opacity 0.2s;
+}
+
+#settings .dnd-schedule-fields.disabled {
+	opacity: 0.5;
+}
+
 #settings .dnd-schedule .dnd-times,
 #settings .dnd-schedule .dnd-days {
 	display: flex;
@@ -3757,9 +3810,10 @@ button.snotice-badge:focus-visible {
 	background: none;
 }
 
-#context-menu .oper-route-current::after {
+#context-menu .oper-route-current::after,
+#context-menu .context-menu-checked::after {
 	content: "\f00c"; /* https://fontawesome.com/icons/check?style=solid */
-	margin-left: 0.6em;
+	margin-inline-start: 0.6em;
 }
 
 .snotice-ban .snotice-badge,

@@ -47,7 +47,7 @@
 					from the network settings
 				</label>
 			</div>
-			<div class="opt dnd-schedule">
+			<div class="dnd-schedule">
 				<label class="opt">
 					<input
 						v-switch
@@ -57,34 +57,47 @@
 					/>
 					Do not disturb on a schedule
 				</label>
-				<div class="dnd-times">
-					<label
-						>From
-						<input
-							type="time"
-							:value="schedule.start"
-							@change="setTime('start', $event)"
-					/></label>
-					<label
-						>to
-						<input type="time" :value="schedule.end" @change="setTime('end', $event)"
-					/></label>
-				</div>
-				<div class="dnd-days" role="group" aria-label="Days">
-					<label v-for="(name, day) in DAY_NAMES" :key="day">
-						<input
-							v-switch
-							type="checkbox"
-							:checked="schedule.days.includes(day)"
-							@change="toggleDay(day)"
-						/>
-						{{ name }}
-					</label>
-				</div>
+				<!-- Inactive while the schedule is off: dimmed and disabled. -->
+				<fieldset
+					:class="['dnd-schedule-fields', {disabled: !schedule.enabled}]"
+					:disabled="!schedule.enabled"
+				>
+					<div class="dnd-times">
+						<label
+							>From
+							<input
+								type="time"
+								aria-label="Do not disturb from"
+								:value="schedule.start"
+								@change="setTime('start', $event)"
+						/></label>
+						<label
+							>until
+							<input
+								type="time"
+								aria-label="Do not disturb until"
+								:value="schedule.end"
+								@change="setTime('end', $event)"
+						/></label>
+					</div>
+					<div class="dnd-days" role="group" aria-label="Days">
+						<label v-for="(name, day) in DAYS" :key="day">
+							<input
+								v-switch
+								type="checkbox"
+								:aria-label="DAY_FULL_NAMES[day]"
+								:checked="schedule.days.includes(day)"
+								@change="toggleDay(day)"
+							/>
+							{{ name }}
+						</label>
+					</div>
+				</fieldset>
 				<p class="dnd-schedule-hint">
-					While do not disturb is on you show as away, and neither this browser nor push
-					notifications alert you. Push stops on all your devices. A window starting while
-					no Seance is open stops push only once one opens.
+					While do not disturb is on, you show as away and nothing alerts you here or
+					through push. Push stops on all your devices signed in to the same account. If
+					no {{ appName }} is open when a scheduled window starts, push stops once one
+					opens. Same start and end: all day.
 				</p>
 			</div>
 			<div v-if="store.state.pushNotificationState === 'stale'" id="pushStale" class="error">
@@ -241,12 +254,8 @@ import {computed, defineComponent, onMounted} from "vue";
 import {useStore} from "../../js/store";
 import webpush from "../../js/webpush";
 import dnd from "../../js/dnd";
-import type {DndSchedule} from "../../js/helpers/dnd";
+import {DAYS, DAY_FULL_NAMES, HHMM, type DndSchedule} from "../../js/helpers/dnd";
 import {isAndroidShell} from "../../js/helpers/capacitor";
-
-// Sunday = 0, the day a window starts on (helpers/dnd.ts DndSchedule.days).
-const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const HHMM = /^\d\d:\d\d$/;
 
 export default defineComponent({
 	name: "NotificationSettings",
@@ -293,7 +302,10 @@ export default defineComponent({
 			store,
 			androidShell: isAndroidShell(),
 			playNotification,
-			DAY_NAMES,
+			// Sunday = 0, the day a window starts on (helpers/dnd.ts DndSchedule.days).
+			DAYS,
+			DAY_FULL_NAMES,
+			appName: computed(() => store.state.branding.appName),
 			schedule,
 			update,
 			setTime,

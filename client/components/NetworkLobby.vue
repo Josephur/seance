@@ -82,6 +82,7 @@
 						:aria-label="`Presence on ${network.name}: ${presenceText}`"
 						:title="presenceText"
 						aria-haspopup="menu"
+						:aria-expanded="presenceMenuOpen ? 'true' : 'false'"
 						@click.stop="openPresenceMenu"
 						@contextmenu.stop.prevent="openPresenceMenu"
 						@pointerdown.stop
@@ -103,6 +104,7 @@ import collapseNetwork from "../js/helpers/collapseNetwork";
 import roundBadgeNumber from "../js/helpers/roundBadgeNumber";
 import socket from "../js/socket";
 import eventbus from "../js/eventbus";
+import useMenuTrigger from "../js/hooks/use-menu-trigger";
 import {isOperOn} from "../js/helpers/operMenu";
 import webpush from "../js/webpush";
 import ChannelWrapper from "./ChannelWrapper.vue";
@@ -211,26 +213,48 @@ export default defineComponent({
 		// The presence dot before the nick: what this network shows now, and
 		// a menu of the four modes (network:presence-mode, irc/bus.ts).
 		const presence = computed(() => props.network.presence);
+		const {expanded: presenceMenuOpen, opened: presenceMenuOpened} = useMenuTrigger();
+		// A network that is not connected tells its server nothing: grey,
+		// whatever was last said (starSent resets on close).
+		const offline = computed(() => !props.network.status.connected);
 		const presenceClass = computed(() =>
-			presence.value?.dnd ? "is-dnd" : presence.value?.away ? "is-away" : "is-online"
+			offline.value
+				? "is-offline"
+				: presence.value?.dnd
+				? "is-dnd"
+				: presence.value?.away
+				? "is-away"
+				: "is-online"
 		);
 		const presenceText = computed(() => {
 			const p = presence.value;
 			const mode = MODE_LABELS[p?.mode ?? "auto"];
-			return p?.dnd ? "Do not disturb" : p?.away ? `${mode} · away` : mode;
+
+			if (offline.value) {
+				return `${mode} · not connected`;
+			}
+
+			if (p?.dnd) {
+				return "Do not disturb";
+			}
+
+			// Away mode is away already: "Away", never "Away · away".
+			return p?.away && p.mode !== "away" ? `${mode} · away` : mode;
 		});
 
 		const openPresenceMenu = (event: MouseEvent) => {
 			const current = presence.value?.mode ?? "auto";
 			const items: ContextMenuItem[] = (Object.keys(MODE_LABELS) as PresenceMode[]).map(
 				(mode) => ({
-					label: mode === current ? `${MODE_LABELS[mode]} ✓` : MODE_LABELS[mode],
+					label: MODE_LABELS[mode],
 					type: "item",
 					class: `presence-${mode}`,
+					checked: mode === current,
 					action: () =>
 						socket.emit("network:presence-mode", {network: props.network.uuid, mode}),
 				})
 			);
+			presenceMenuOpened();
 			eventbus.emit("contextmenu:items", {event, items});
 		};
 
@@ -247,6 +271,7 @@ export default defineComponent({
 		};
 
 		return {
+			presenceMenuOpen,
 			presenceClass,
 			presenceText,
 			openPresenceMenu,

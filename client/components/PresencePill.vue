@@ -4,6 +4,7 @@
 			type="button"
 			:class="['presence-pill', {'is-dnd': isDnd}]"
 			aria-haspopup="menu"
+			:aria-expanded="expanded ? 'true' : 'false'"
 			:aria-label="`Presence: ${label}`"
 			:title="label"
 			@click="openMenu"
@@ -12,12 +13,10 @@
 			     gets the pill's whole width; a long label breaks after its
 			     separator only ("Do not disturb ·" over "until 10:36 AM"). -->
 			<span class="presence-pill-text"
-				><span
-					:class="['presence-dot', isDnd ? 'is-dnd' : 'is-online']"
+				><span :class="['presence-dot', `is-${dotState}`]" aria-hidden="true" /><span
+					class="presence-pill-caret"
 					aria-hidden="true"
-				/><span class="presence-pill-caret" aria-hidden="true" /><template
-					v-for="(part, i) in parts"
-					:key="i"
+				/><template v-for="(part, i) in parts" :key="i"
 					><span v-if="i < parts.length - 1">{{ part }}&nbsp;·</span
 					><span v-else class="presence-pill-part">{{ part }}</span
 					>{{ i < parts.length - 1 ? " " : "" }}</template
@@ -31,9 +30,10 @@
 import {computed, defineComponent} from "vue";
 import {useRouter} from "vue-router";
 import dnd from "../js/dnd";
-import {scheduleTimeText} from "../js/helpers/dnd";
+import {clockText, scheduleTimeText} from "../js/helpers/dnd";
 import {store} from "../js/store";
 import eventbus from "../js/eventbus";
+import useMenuTrigger from "../js/hooks/use-menu-trigger";
 import type {ContextMenuItem} from "../js/helpers/contextMenu";
 
 const HOUR = 3600_000;
@@ -44,44 +44,63 @@ export default defineComponent({
 	name: "PresencePill",
 	setup() {
 		const router = useRouter();
-		const isDnd = computed(() => dnd.verdict.value.active || dnd.remoteOnly.value);
+		const {expanded, opened} = useMenuTrigger();
+		const isDnd = computed(() => dnd.pillState.value === "dnd");
+		const dotState = computed(() => dnd.pillState.value);
 		const label = computed(() => dnd.pillLabel.value);
 		const parts = computed(() => label.value.split(" · "));
 
 		const openMenu = (event: MouseEvent) => {
 			const manual = dnd.state.manual;
 			const schedule = dnd.state.schedule;
-			const tick = (on: boolean, text: string) => (on ? `${text} ✓` : text);
+			const verdict = dnd.verdict.value;
 			const hour12 = !!store.state.settings.use12hClock;
-			const at = (hhmm: string) => scheduleTimeText(hhmm, hour12);
+			// A time never breaks inside ("11:00 PM"), and a range never at
+			// its dash: an en dash is a break opportunity, the joiners take it.
+			const at = (hhmm: string) => scheduleTimeText(hhmm, hour12).replace(/ /g, "\u00a0");
+			const range = `${at(schedule.start)}\u2060–\u2060${at(schedule.end)}`;
+			const timed = manual.kind === "until" && verdict.source === "manual" ? manual : null;
+
+			const endText = () => {
+				const end = new Date(timed?.until ?? 0);
+				return clockText(end.getHours(), end.getMinutes(), hour12).replace(/ /g, "\u00a0");
+			};
+
+			const forSpan = (span: number, text: string, cls: string): ContextMenuItem => {
+				const running = timed?.span === span;
+				return {
+					label: running ? `${text} (until ${endText()})` : text,
+					type: "item",
+					class: cls,
+					checked: running,
+					action: () => dnd.setManual({kind: "until", until: Date.now() + span, span}),
+				};
+			};
+
 			const items: ContextMenuItem[] = [
-				{label: "Off", type: "item", class: "dnd-off", action: () => dnd.turnOff()},
 				{
-					label: "For 1 hour",
+					label: "Off",
 					type: "item",
-					class: "dnd-1h",
-					action: () => dnd.setManual({kind: "until", until: Date.now() + HOUR}),
+					class: "dnd-off",
+					checked: !verdict.active && !dnd.remoteOnly.value,
+					action: () => dnd.turnOff(),
 				},
+				forSpan(HOUR, "For 1 hour", "dnd-1h"),
+				forSpan(8 * HOUR, "For 8 hours", "dnd-8h"),
 				{
-					label: "For 8 hours",
-					type: "item",
-					class: "dnd-8h",
-					action: () => dnd.setManual({kind: "until", until: Date.now() + 8 * HOUR}),
-				},
-				{
-					label: tick(manual.kind === "indefinite", "Until I turn it off"),
+					label: "Until I turn it off",
 					type: "item",
 					class: "dnd-indefinite",
+					checked: manual.kind === "indefinite",
 					action: () => dnd.setManual({kind: "indefinite"}),
 				},
 				{type: "divider"},
 				{
-					label: tick(
-						schedule.enabled,
-						`Follow schedule (${at(schedule.start)}–${at(schedule.end)})`
-					),
+					label: `Follow schedule (${range})`,
 					type: "item",
 					class: "dnd-schedule",
+					checked: schedule.enabled && schedule.days.length > 0,
+					toggle: true,
 					action: () => dnd.followSchedule(!dnd.state.schedule.enabled),
 				},
 				{
@@ -91,10 +110,11 @@ export default defineComponent({
 					action: () => void router.push({name: "Notifications"}),
 				},
 			];
+			opened();
 			eventbus.emit("contextmenu:items", {event, items});
 		};
 
-		return {isDnd, label, parts, openMenu};
+		return {expanded, isDnd, dotState, label, parts, openMenu};
 	},
 });
 </script>

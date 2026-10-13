@@ -31,9 +31,16 @@
 					:class="[
 						'context-menu-' + item.type,
 						item.class ? 'context-menu-' + item.class : null,
-						{active: id === activeItem},
+						{active: id === activeItem, 'context-menu-checked': item.checked === true},
 					]"
-					role="menuitem"
+					:role="
+						item.checked === undefined
+							? 'menuitem'
+							: item.toggle
+							? 'menuitemcheckbox'
+							: 'menuitemradio'
+					"
+					:aria-checked="item.checked === undefined ? undefined : String(item.checked)"
 					@mouseenter="hoverItem(id)"
 					@click="clickItem(item)"
 				>
@@ -88,6 +95,8 @@ export default defineComponent({
 
 			isOpen.value = false;
 			items.value = [];
+			// A trigger's aria-expanded follows this (hooks/use-menu-trigger.ts).
+			eventbus.emit("contextmenu:closed");
 
 			if (previousActiveElement.value) {
 				previousActiveElement.value.focus();
