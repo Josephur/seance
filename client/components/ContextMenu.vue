@@ -173,6 +173,12 @@ export default defineComponent({
 		const open = (event: MouseEvent, newItems: ContextMenuItem[]) => {
 			event.preventDefault();
 
+			// Replacing an open menu: its trigger hears it closed
+			// (hooks/use-menu-trigger.ts), before the new one's opened().
+			if (isOpen.value) {
+				eventbus.emit("contextmenu:closed");
+			}
+
 			previousActiveElement.value = document.activeElement as HTMLElement;
 			items.value = newItems;
 			activeItem.value = 0;

@@ -372,7 +372,11 @@ written before the value has been read.
 - **Leaving for good**: `/quit`, and so removing the network, writes our own
   entry away first, on the same socket (`releaseMute`), or every other device
   would read the account as in DND for up to 30 days and a re-added network
-  (its memory forgotten) would adopt it as another device's.
+  (its memory forgotten) would adopt it as another device's. Removing a
+  network that is **not connected** cannot send that `SET`: its entry stays
+  on the server until it expires by itself (up to 30 days for an indefinite
+  DND or mode `dnd`), and every other device reads the account as in DND
+  until then or until someone presses Off.
 
 **The pill reads shared DND**: when every connected network has `remoteDnd`
 and the local state is off, the pill says "Do not disturb" (set on another
@@ -408,7 +412,10 @@ replaces them.
   choice carries the menus' check mark (`checked` on the item:
   `menuitemradio`/`menuitemcheckbox` with `aria-checked`, the mark drawn by
   CSS), a running timed one also its end ("For 1 hour (until 13:00)"), and
-  the trigger has `aria-expanded`. The label wraps to two centred lines, breaking only after
+  the trigger has `aria-expanded` (a menu opened over another tells the
+  first trigger it closed). Off is ticked only while the pill does not read
+  DND, so with every network in mode `dnd` nothing in the global section is;
+  Follow schedule with no days is unticked, and a click turns it on. The label wraps to two centred lines, breaking only after
   its separator ("Do not disturb ·" over "until 10:36 AM"), so the end time is
   never cut off; it is clamped only past two lines, and the whole label is
   also the button's title.
@@ -416,7 +423,8 @@ replaces them.
   alone when there is no nick): green present, amber away (`AWAY *` in
   effect or `/away`), red DND, grey while the network is not connected
   ("… · not connected"). A thin ring in the rail's own text colour keeps it
-  at 3:1 against any rail. Its hit box is 1.5rem around the 0.5rem dot,
+  at ≥ 3:1 against the rail at the 2nd percentile in every tested theme
+  (`dnd-visual.mjs`); the day theme is the narrowest at 3.2. Its hit box is 1.5rem around the 0.5rem dot,
   without moving the row. A click opens Online / Auto / Away / Do not
   disturb for that network; the dot has its own `aria-label` and does not
   start a drag or select the row; a right-click on it opens the same menu,

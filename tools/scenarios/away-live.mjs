@@ -351,34 +351,30 @@ export default async function run(page) {
 			caps: ["draft/metadata-2"],
 			sasl: {account: ACCOUNT, password: PASSWORD},
 		});
-		let ownRead;
-
+		// Closed in finally: a failing check in here must not leak it.
 		try {
-			ownRead = await other.metadataGet("*", "draft/webpush/mute");
-		} catch (e) {
+			const ownRead = await other.metadataGet("*", "draft/webpush/mute");
+			const strangerRead = await obs.metadataGet(me, "draft/webpush/mute");
+			console.log(`  own device reads: ${JSON.stringify(ownRead)}`);
+			console.log(`  stranger reads: ${JSON.stringify(strangerRead)}`);
+			page.check(
+				"DND: the account's own other device reads a private *:<until> entry",
+				ownRead.some((l) => / 761 /.test(l) && / private :.*\*:\d+/.test(l))
+			);
+			page.check(
+				"DND: a stranger cannot read the mute list",
+				!strangerRead.some((l) => / 761 /.test(l) && /\*:\d+/.test(l))
+			);
+			// That other device is present, so the server now shows the account
+			// present to everyone (pre-away aggregation). Expected; note it.
+			await page.sleep(SETTLE);
+			s = await state("DND + a present second device");
+			console.log(
+				`  with a present second device the account shows ${s.flag} (server aggregation)`
+			);
+		} finally {
 			other.close();
-			throw e;
 		}
-
-		const strangerRead = await obs.metadataGet(me, "draft/webpush/mute");
-		console.log(`  own device reads: ${JSON.stringify(ownRead)}`);
-		console.log(`  stranger reads: ${JSON.stringify(strangerRead)}`);
-		page.check(
-			"DND: the account's own other device reads a private *:<until> entry",
-			ownRead.some((l) => / 761 /.test(l) && / private :.*\*:\d+/.test(l))
-		);
-		page.check(
-			"DND: a stranger cannot read the mute list",
-			!strangerRead.some((l) => / 761 /.test(l) && /\*:\d+/.test(l))
-		);
-		// That other device is present, so the server now shows the account
-		// present to everyone (pre-away aggregation). Expected; note it.
-		await page.sleep(SETTLE);
-		s = await state("DND + a present second device");
-		console.log(
-			`  with a present second device the account shows ${s.flag} (server aggregation)`
-		);
-		other.close();
 		await page.sleep(SETTLE);
 		s = await state("DND, second device gone");
 		page.check("DND: second device gone, away again to others", s.flag === "G");

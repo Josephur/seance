@@ -413,7 +413,82 @@ export default async function run(page) {
 		page.check("the dnd mode is saved", stored === true);
 		await page.sleep(500);
 		page.check("the network's DND sent AWAY *", awayLines(page).at(-1) === "AWAY *");
-		await choose(DOT, "presence-auto");
+
+		// Every network in mode dnd, the global switch off: the pill reads
+		// Do not disturb, so its menu ticks nothing in the global section.
+		await openDrawer();
+		await press(PILL);
+		await page.waitFor(`document.querySelector('${MENU_ITEM("dnd-off")}')`, {
+			label: "the pill menu",
+		});
+		const globalTicks = await page.evaluate(
+			`[...document.querySelectorAll('${MENU} [aria-checked="true"]')].map((e) => e.textContent.trim())`
+		);
+		const pillNow = await page.evaluate(`document.querySelector('${PILL}').textContent.trim()`);
+		page.check(
+			`all networks in mode dnd: the pill says Do not disturb and Off is not ticked (${pillNow}; ticked ${JSON.stringify(
+				globalTicks
+			)})`,
+			pillNow === "Do not disturb" && globalTicks.length === 0
+		);
+
+		// A menu opened over another: the first trigger is told it closed.
+		await page.evaluate(
+			`document.querySelector('${DOT}').dispatchEvent(new MouseEvent("contextmenu", {bubbles: true, cancelable: true, clientX: 40, clientY: 40}))`
+		);
+		await page.waitFor(`document.querySelector('${MENU_ITEM("presence-auto")}')`, {
+			label: "the dot menu over the pill menu",
+		});
+		const expanded = await page.evaluate(
+			`[document.querySelector('${PILL}').getAttribute("aria-expanded"), document.querySelector('${DOT}').getAttribute("aria-expanded")]`
+		);
+		page.check(
+			`a menu opened over another moves aria-expanded (pill ${expanded[0]}, dot ${expanded[1]})`,
+			expanded[0] === "false" && expanded[1] === "true"
+		);
+		await press(MENU_ITEM("presence-auto"));
+		await page.waitFor(`!document.querySelector('${MENU}')`, {label: "the menu to close"});
+		page.check(
+			"the menu closed: the dot's aria-expanded is false again",
+			(await page.evaluate(
+				`document.querySelector('${DOT}').getAttribute("aria-expanded")`
+			)) === "false"
+		);
+		await page.waitFor(`document.querySelector('${DOT}.is-online')`, {
+			label: "dot back to auto",
+		});
+
+		// ---- Follow schedule with no days: unticked, and a click turns it on.
+		const dndWas = await page.evaluate(`localStorage.getItem("thelounge.dnd")`);
+		await page.evaluate(`(() => {
+			const s = JSON.parse(localStorage.getItem("thelounge.dnd") || "null") ?? {manual: {kind: "off"}, scheduleSkippedUntil: null};
+			s.schedule = {enabled: true, start: "23:00", end: "07:00", days: []};
+			const v = JSON.stringify(s);
+			localStorage.setItem("thelounge.dnd", v);
+			window.dispatchEvent(new StorageEvent("storage", {key: "thelounge.dnd", newValue: v}));
+		})()`);
+		await openDrawer();
+		await press(PILL);
+		await page.waitFor(`document.querySelector('${MENU_ITEM("dnd-schedule")}')`, {
+			label: "the schedule item",
+		});
+		const noDays = await page.evaluate(
+			`document.querySelector('${MENU_ITEM("dnd-schedule")}').getAttribute("aria-checked")`
+		);
+		await press(MENU_ITEM("dnd-schedule"));
+		await page.waitFor(`!document.querySelector('${MENU}')`, {label: "the menu to close"});
+		const afterClick = await page.evaluate(
+			`JSON.parse(localStorage.getItem("thelounge.dnd")).schedule.enabled`
+		);
+		page.check(
+			`Follow schedule with no days: unticked (${noDays}), and the click keeps it on (${afterClick})`,
+			noDays === "false" && afterClick === true
+		);
+		await page.evaluate(`(() => {
+			const v = ${JSON.stringify(dndWas)};
+			if (v === null) localStorage.removeItem("thelounge.dnd"); else localStorage.setItem("thelounge.dnd", v);
+			window.dispatchEvent(new StorageEvent("storage", {key: "thelounge.dnd", newValue: v}));
+		})()`);
 		await page.waitFor(`document.querySelector('${DOT}.is-online')`, {
 			label: "dot back to auto",
 		});

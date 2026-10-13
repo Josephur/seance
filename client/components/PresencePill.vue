@@ -80,12 +80,16 @@ export default defineComponent({
 				};
 			};
 
+			const following = schedule.enabled && schedule.days.length > 0;
 			const items: ContextMenuItem[] = [
 				{
 					label: "Off",
 					type: "item",
 					class: "dnd-off",
-					checked: !verdict.active && !dnd.remoteOnly.value,
+					// Off only while the pill does not read DND: with every network in
+					// mode dnd the global switch is off, but the pill says Do not
+					// disturb, and a ticked Off would not.
+					checked: dnd.pillState.value !== "dnd",
 					action: () => dnd.turnOff(),
 				},
 				forSpan(HOUR, "For 1 hour", "dnd-1h"),
@@ -102,9 +106,11 @@ export default defineComponent({
 					label: `Follow schedule (${range})`,
 					type: "item",
 					class: "dnd-schedule",
-					checked: schedule.enabled && schedule.days.length > 0,
+					checked: following,
 					toggle: true,
-					action: () => dnd.followSchedule(!dnd.state.schedule.enabled),
+					// What the tick shows: a schedule with no days is not followed,
+					// so a click turns it on.
+					action: () => dnd.followSchedule(!following),
 				},
 				{
 					label: "Edit schedule…",
@@ -113,8 +119,9 @@ export default defineComponent({
 					action: () => void router.push({name: "Notifications"}),
 				},
 			];
-			opened();
 			eventbus.emit("contextmenu:items", {event, items});
+			// After the emit: opening it closed any other menu first.
+			opened();
 		};
 
 		return {expanded, isDnd, dotState, label, parts, openMenu};

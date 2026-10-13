@@ -48,10 +48,28 @@ const ORIGIN = "http://127.0.0.1:8001";
 const ACCOUNT = "pushtest1";
 const PASSWORD = "pushtest1-pass";
 
+// A link never carries the password (link approval, helpers/linkTarget.ts):
+// the first load fills it into the connect form, remembered, as a user would.
 export const url =
 	`${ORIGIN}/?host=127.0.0.1&port=8067&tls=false` +
-	`&nick=pwren&join=%23seance&sasl=plain&saslAccount=${ACCOUNT}&saslPassword=${PASSWORD}` +
-	`&autoconnect=1`;
+	`&nick=pwren&join=%23seance&sasl=plain&saslAccount=${ACCOUNT}`;
+
+/** The link's connect form: the password typed in, remembered, autoconnect on. */
+async function fillConnectForm(page) {
+	await page.fill('#connect input[name="saslPassword"]', PASSWORD);
+
+	for (const name of ["rememberPassword", "autoconnect"]) {
+		if (
+			!(await page.evaluate(
+				`document.querySelector('#connect input[name="${name}"]')?.checked ?? true`
+			))
+		) {
+			await page.click(`#connect input[name="${name}"]`);
+		}
+	}
+
+	await page.click('#connect button[type="submit"]');
+}
 
 const promptOpened = `document.querySelector("#push-prompt-overlay")?.classList.contains("opened")`;
 // A prompt takes no answer in its first moments (webpush.ts PROMPT_ARM_MS);
@@ -78,6 +96,15 @@ async function waitRegistered(page, before) {
 async function connect(page, target) {
 	let before = page.wsFrames.length;
 	await page.goto(target);
+	await page.waitFor(
+		`!!document.querySelector("#chat") || !!document.querySelector('#connect input[name="saslPassword"]')`,
+		{label: "the chat or the link's connect form", timeout: 60000}
+	);
+
+	if (!(await page.evaluate(`!!document.querySelector("#chat")`))) {
+		await fillConnectForm(page);
+	}
+
 	await waitRegistered(page, before);
 
 	for (let i = 0; i < 3; i++) {

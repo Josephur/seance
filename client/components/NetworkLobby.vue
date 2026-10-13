@@ -254,8 +254,9 @@ export default defineComponent({
 						socket.emit("network:presence-mode", {network: props.network.uuid, mode}),
 				})
 			);
-			presenceMenuOpened();
 			eventbus.emit("contextmenu:items", {event, items});
+			// After the emit: opening it closed any other menu first.
+			presenceMenuOpened();
 		};
 
 		const unreadCount = computed(() => {
