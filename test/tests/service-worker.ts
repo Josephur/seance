@@ -1813,6 +1813,7 @@ describe("service worker away on close", function () {
 	it("a close, a reopen and a close inside the delay log in once", async function () {
 		const sw = makeSW({fastTimers: true, script: {preAway: true}});
 		const promises: Promise<unknown>[] = [];
+
 		const post = (networks: string[]) => {
 			for (const h of sw.handlers.message) {
 				h({
@@ -1821,6 +1822,7 @@ describe("service worker away on close", function () {
 				});
 			}
 		};
+
 		post(["net-1"]);
 		await new Promise((r) => setTimeout(r, 20)); // 2 s of the worker's 5
 		post(["net-1"]);
