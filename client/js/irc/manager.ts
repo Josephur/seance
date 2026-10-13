@@ -21,7 +21,7 @@ import {registerBusHandlers} from "./bus";
 import {IrcClient} from "./client";
 import {flushQueryLogs} from "./querylog";
 import {pruneUserAway} from "./userAwayStore";
-import {syncPresence} from "./presence";
+import {leavesAwayToWorker, syncPresence} from "./presence";
 import {claimMute, clearRemoteDnd} from "./pushMute";
 import * as saved from "./saved-networks";
 import type {SavedNetwork} from "./saved-networks";
@@ -244,10 +244,19 @@ const STALE_DIAL_MS = 3_000;
 let lastPokeAt = 0;
 
 /** The page's attention changed: every connection tells its server (presence.ts). */
-export function setAttendedAll(attended: boolean): void {
+export function setAttendedAll(attended: boolean, except?: ReadonlySet<string>): void {
 	for (const client of clients.values()) {
-		client.setAttended(attended);
+		if (!except?.has(client.uuid)) {
+			client.setAttended(attended);
+		}
 	}
+}
+
+/** The page is unloading: the networks whose `AWAY *` the service worker takes over (presence.ts). */
+export function networksLeavingAwayToWorker(stashed: (uuid: string) => boolean): string[] {
+	return allClients()
+		.filter((client) => leavesAwayToWorker(client, stashed))
+		.map((client) => client.uuid);
 }
 
 export function setGlobalDndAll(active: boolean, until: number | null): void {

@@ -19,6 +19,7 @@ import {
 	useStorageBackend,
 	type StorageBackend,
 } from "../../client/js/irc/userAwayStore";
+import {leavesAwayToWorker} from "../../client/js/irc/presence";
 import {MessageType} from "../../shared/types/msg";
 import {ALL_CAPS, Harness, setup} from "./support";
 
@@ -423,4 +424,45 @@ describe("another user's AWAY * (draft/pre-away)", function () {
 		expect(shown.map((m) => m.text)).to.deep.equal(["away"]);
 		expect(query?.userAway).to.equal("*");
 	});
+});
+
+describe("a closing page leaves AWAY * to the service worker (presence.ts leavesAwayToWorker)", function () {
+	const stashed = (uuid: string) => uuid === UUID;
+
+	function held(): Harness {
+		const h = setup({uuid: UUID});
+		connect(h);
+		h.transport.line(":irc.test PERSISTENCE STATUS ON ON");
+		return h;
+	}
+
+	it("a present Auto connection whose session is held and whose login is stashed", function () {
+		expect(leavesAwayToWorker(held().client, stashed)).to.equal(true);
+	});
+
+	for (const [label, arrange] of [
+		["no stashed login", () => setup({uuid: "other-net"})],
+		["no persistence (the close is a QUIT)", () => setup({uuid: UUID})],
+	] as const) {
+		it(`not with ${label}`, function () {
+			const h = arrange();
+			connect(h);
+			expect(leavesAwayToWorker(h.client, stashed)).to.equal(false);
+		});
+	}
+
+	for (const [label, arrange] of [
+		["/away", (h: Harness) => dispatchInput(h.client, h.client.lobby, "/away x")],
+		["a star already sent", (h: Harness) => h.client.setAttended(false)],
+		["do not disturb", (h: Harness) => h.client.setGlobalDnd(true, null)],
+		["away mode", (h: Harness) => h.client.setPresenceMode("away")],
+		["online mode", (h: Harness) => h.client.setPresenceMode("online")],
+		["a closed socket", (h: Harness) => h.transport.closed()],
+	] as const) {
+		it(`not with ${label}`, function () {
+			const h = held();
+			arrange(h);
+			expect(leavesAwayToWorker(h.client, stashed)).to.equal(false);
+		});
+	}
 });

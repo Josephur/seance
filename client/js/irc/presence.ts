@@ -321,3 +321,32 @@ export function presenceRegistered(client: IrcClient): void {
 
 	syncPresence(client);
 }
+
+/**
+ * The page is unloading (`pagehide`, not into the back/forward cache):
+ * whether this network's `AWAY *` should be left to the service worker
+ * rather than sent now. A reload looks exactly like a close at that point,
+ * and the star sent then makes a present user blink away and back to
+ * everyone; the worker waits `AWAY_ON_CLOSE_DELAY_MS`, sends nothing if a
+ * window of the app is open again, and otherwise logs in with the stashed
+ * credentials and says `AWAY *` to the held session itself.
+ *
+ * Only a present connection on Auto qualifies (anything else is already
+ * away, or never automatic), only while nefarious2's bouncer holds the
+ * session (`PERSISTENCE STATUS ON`; without it the close is a QUIT), and
+ * only when the worker can log in for it (`stashed`, webpush.ts).
+ */
+export function leavesAwayToWorker(client: IrcClient, stashed: (uuid: string) => boolean): boolean {
+	const p = client.presence;
+
+	return (
+		client.presenceMode === "auto" &&
+		client.isConnected &&
+		client.transport.state === "open" &&
+		client.persistenceHold &&
+		!p.starSent &&
+		!p.userAway &&
+		!effectiveDnd(client) &&
+		stashed(client.uuid)
+	);
+}

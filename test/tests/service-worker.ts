@@ -85,6 +85,8 @@ interface ServerScript {
 	noReadMarker?: boolean;
 	/** Refuse MARKREAD with a FAIL (read-marker storage unavailable). */
 	failMarkRead?: boolean;
+	/** Offer `draft/pre-away` (the testnet's ircv3.2-upgrade build does). */
+	preAway?: boolean;
 }
 
 /** What the scripted ircd advertises in CAP LS. */
@@ -96,6 +98,7 @@ function capsOffered(script: ServerScript): string[] {
 		"draft/webpush",
 		...(script.noMessageTags ? [] : ["message-tags"]),
 		...(script.noReadMarker ? [] : ["draft/read-marker"]),
+		...(script.preAway ? ["draft/pre-away"] : []),
 	];
 }
 
@@ -162,6 +165,16 @@ function serve(ws: any, line: string): void {
 		if (script.refuseFirst && !ws.refused) {
 			ws.refused = true;
 			reply(`:irc.testnet.local 404 ${me()} ${bare.split(" ")[1]} :Cannot send to channel`);
+		}
+	} else if (line.startsWith("AWAY")) {
+		// m_away.c: stored without a word before registration (pre-away),
+		// RPL_NOWAWAY / RPL_UNAWAY after it.
+		if (ws.registered) {
+			reply(
+				line === "AWAY"
+					? `:irc.testnet.local 305 ${me()} :You are no longer marked as being away`
+					: `:irc.testnet.local 306 ${me()} :You have been marked as being away`
+			);
 		}
 	} else if (line.startsWith("WEBPUSH REGISTER ")) {
 		reply(`:irc.testnet.local WEBPUSH REGISTER ${line.split(" ")[2]}`);
@@ -288,6 +301,10 @@ interface HarnessOptions {
 	failIndexedDB?: boolean;
 	/** The registration's scope (default the app root; `push/<uuid>/` for a push-only worker). */
 	scope?: string;
+	/** Run the worker's timers a hundred times faster (its delays are seconds long). */
+	fastTimers?: boolean;
+	/** Replace the stash the page wrote. */
+	stash?: Stash;
 }
 
 const SCOPE = "https://app.test/";
@@ -297,7 +314,7 @@ function makeSW(options: HarnessOptions = {}): SWHarness {
 	const records: Rec[] = [];
 	const shown: Rec[] = [];
 	const opened: string[] = [];
-	const kv = new Map<string, unknown>([["stash", STASH]]);
+	const kv = new Map<string, unknown>([["stash", options.stash ?? STASH]]);
 	const socketsBefore = wsInstances.length;
 
 	class HarnessWS extends FakeWS {
@@ -308,7 +325,9 @@ function makeSW(options: HarnessOptions = {}): SWHarness {
 
 	const sandbox: any = {
 		console,
-		setTimeout,
+		setTimeout: options.fastTimers
+			? (fn: () => void, ms = 0) => setTimeout(fn, ms / 100)
+			: setTimeout,
 		clearTimeout,
 		MessageChannel,
 		TextEncoder,
@@ -1719,5 +1738,80 @@ describe("service worker page notifications on a push worker", function () {
 		await fireMessage(sw, {type: "notification", chanId: 7, title: "t", body: "b"});
 
 		expect(sw.shown[0].tag).to.equal("chan-7");
+	});
+});
+
+describe("service worker away on close", function () {
+	// The scripted ircd answers inside send(), so NICK/USER land late in
+	// the list; they are not what these tests are about.
+	const ircOnly = (lines: string[]): string[] =>
+		lines.filter((l) => !l.startsWith("NICK ") && !l.startsWith("USER "));
+
+	/** Post the page's `away-on-close` and wait for the worker to finish. */
+	async function closePage(sw: SWHarness, networks: string[]): Promise<void> {
+		const promises: Promise<unknown>[] = [];
+		const ev = {
+			data: {type: "away-on-close", networks},
+			waitUntil: (p: Promise<unknown>) => promises.push(p),
+		};
+
+		for (const h of sw.handlers.message) {
+			h(ev);
+		}
+
+		expect(promises, "kept alive with waitUntil").to.have.lengthOf(1);
+		await Promise.all(promises);
+	}
+
+	it("a close: no window after the delay, so it logs in, says AWAY * before CAP END and after 001, and QUITs", async function () {
+		const sw = makeSW({fastTimers: true, script: {preAway: true}});
+		await closePage(sw, ["net-1"]);
+
+		expect(sw.socketsOpened()).to.equal(1);
+		const sent = ircOnly(sw.lastSent());
+		expect(sent).to.include("CAP REQ :sasl draft/pre-away");
+		const tail = sent.slice(
+			sent.findIndex((l) => l.startsWith("AUTHENTICATE ") && l.length > 20) + 1
+		);
+		expect(tail).to.deep.equal(["AWAY *", "CAP END", "AWAY *", "QUIT :done"]);
+	});
+
+	it("without draft/pre-away says it after 001 only", async function () {
+		const sw = makeSW({fastTimers: true});
+		await closePage(sw, ["net-1"]);
+
+		const sent = ircOnly(sw.lastSent());
+		expect(sent).to.include("CAP REQ :sasl");
+		expect(sent.slice(sent.indexOf("CAP END"))).to.deep.equal([
+			"CAP END",
+			"AWAY *",
+			"QUIT :done",
+		]);
+	});
+
+	it("a reload: a window of the app is open again, so it does nothing", async function () {
+		const sw = makeSW({fastTimers: true, script: {preAway: true}, clients: [makeClient()]});
+		await closePage(sw, ["net-1"]);
+		expect(sw.socketsOpened()).to.equal(0);
+	});
+
+	it("no stashed password: it does nothing", async function () {
+		const net = {...STASH.networks[0], saslPassword: undefined};
+		const sw = makeSW({fastTimers: true, stash: {vapid: STASH.vapid, networks: [net]}});
+		await closePage(sw, ["net-1"]);
+		expect(sw.socketsOpened()).to.equal(0);
+	});
+
+	it("only the networks it was given, by uuid, one after another", async function () {
+		const other = {...STASH.networks[0], uuid: "net-2", saslAccount: "pushtest2"};
+		const sw = makeSW({
+			fastTimers: true,
+			script: {preAway: true},
+			stash: {vapid: STASH.vapid, networks: [...STASH.networks, other]},
+		});
+		await closePage(sw, ["net-2", "unknown"]);
+		expect(sw.socketsOpened()).to.equal(1);
+		const auth = sw.lastSent().find((l) => l.startsWith("AUTHENTICATE ") && l.length > 20);
+		expect(Buffer.from(auth!.slice(13), "base64").toString()).to.include("pushtest2");
 	});
 });
