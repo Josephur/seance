@@ -10,6 +10,7 @@
  */
 
 import {expect} from "chai";
+import sinon from "ts-sinon";
 import {dispatchInput} from "../../client/js/irc/commands";
 import * as saved from "../../client/js/irc/saved-networks";
 import {
@@ -349,22 +350,6 @@ describe("the away state across reloads and reconnects (draft/pre-away)", functi
 		});
 	});
 
-	it("a present client resuming a held session says AWAY once after 001, its 305 unshown", function () {
-		const h = client({sasl: "plain", saslAccount: "alice", saslPassword: "s3cret"});
-		h.client.connect();
-		negotiate(h, SASL_CAPS);
-		h.transport.lines(
-			"AUTHENTICATE +",
-			":irc.test 900 alice alice!alice@host alice :You are now logged in as alice",
-			":irc.test 903 alice :SASL authentication successful"
-		);
-		expect(aways(h.sent()), "nothing declared: present").to.deep.equal([]);
-		expect(aways(welcome(h))).to.deep.equal(["AWAY"]);
-		h.dispatch.resetHistory();
-		h.transport.line(":irc.test 305 alice :You are no longer marked as being away");
-		expect(h.messages(h.client.lobby.id)).to.deep.equal([]);
-	});
-
 	it("a required login that fails declares nothing and leaves no star counted", function () {
 		const h = client({sasl: "plain", saslAccount: "alice", saslPassword: "s3cret"});
 		h.client.setAttended(false);
@@ -421,7 +406,7 @@ describe("another user's AWAY * (draft/pre-away)", function () {
 		expect(types).to.deep.equal([MessageType.AWAY, MessageType.BACK]);
 	});
 
-	it("shows a 301 star as away, in a whois and in a query", function () {
+	it("shows a 301 star as away without a message, in a whois and in a query", function () {
 		const h = registered();
 		h.transport.lines(
 			":irc.test 311 alice bob ~bob host.example * :Bob Example",
@@ -429,7 +414,7 @@ describe("another user's AWAY * (draft/pre-away)", function () {
 			":irc.test 318 alice bob :End of /WHOIS list."
 		);
 		const whois = h.messages().find((m) => m.type === MessageType.WHOIS);
-		expect(whois?.whois?.away).to.equal("away");
+		expect(whois?.whois?.away, "the card shows Away, no message").to.equal("*");
 
 		dispatchInput(h.client, h.client.lobby, "/query bob");
 		const query = h.client.findChannel("bob");
@@ -437,7 +422,10 @@ describe("another user's AWAY * (draft/pre-away)", function () {
 		h.transport.line(":irc.test 301 alice bob :*");
 		h.transport.line(":irc.test 301 alice bob :*");
 		const shown = h.messages(query?.id).filter((m) => m.type === MessageType.AWAY);
-		expect(shown.map((m) => m.text)).to.deep.equal(["away"]);
+		expect(
+			shown.map((m) => m.text),
+			"is away, no message"
+		).to.deep.equal([""]);
 		expect(query?.userAway).to.equal("*");
 	});
 });
@@ -467,9 +455,32 @@ describe("a closing page leaves AWAY * to the service worker (presence.ts leaves
 		);
 		welcome(h);
 		expect(leavesAwayToWorker(h.client, stashed), "no STATUS yet").to.equal(true);
-		h.transport.line(":irc.test PERSISTENCE STATUS ON OFF");
+		h.transport.lines(
+			":irc.test NOTE BOUNCER ALIAS_ATTACHED :Attached to session x as alias",
+			":irc.test PERSISTENCE STATUS ON OFF"
+		);
 		expect(h.client.persistenceHold).to.equal(false);
 		expect(leavesAwayToWorker(h.client, stashed), "an alias").to.equal(true);
+
+		// A primary told not to hold reads ON OFF too: only an alias's counts.
+		const primary = setup({
+			uuid: UUID,
+			sasl: "plain",
+			saslAccount: "alice",
+			saslPassword: "s3cret",
+		});
+		primary.client.connect();
+		negotiate(primary, SASL_CAPS);
+		primary.transport.lines(
+			"AUTHENTICATE +",
+			":irc.test 900 alice alice!alice@host alice :You are now logged in as alice",
+			":irc.test 903 alice :SASL authentication successful"
+		);
+		welcome(primary);
+		primary.transport.line(":irc.test PERSISTENCE STATUS ON OFF");
+		expect(leavesAwayToWorker(primary.client, stashed), "a primary reading ON OFF").to.equal(
+			false
+		);
 
 		// The server says it will not hold the session: believed.
 		h.transport.line(":irc.test PERSISTENCE STATUS OFF OFF");
@@ -501,4 +512,137 @@ describe("a closing page leaves AWAY * to the service worker (presence.ts leaves
 			expect(leavesAwayToWorker(h.client, stashed)).to.equal(false);
 		});
 	}
+});
+
+describe("a resumed held session says AWAY once remote DND is known (presence.ts presenceResumed)", function () {
+	const META_CAPS = `${SASL_CAPS} draft/metadata-2`;
+	const RESTORE = [
+		":irc.test BATCH +r1 draft/persistence",
+		"@batch=r1 :alice!a@host JOIN #seance",
+		":irc.test BATCH -r1",
+	];
+	const EMPTY = ":irc.test 766 alice alice draft/webpush/mute :key not set";
+	const OTHER_DND = ":irc.test 761 alice alice draft/webpush/mute * :*:0";
+	let clock: sinon.SinonFakeTimers;
+	let backend: MemoryBackend;
+
+	beforeEach(function () {
+		clock = sinon.useFakeTimers({
+			now: Date.UTC(2026, 9, 13),
+			toFake: ["setTimeout", "clearTimeout", "Date"],
+		});
+		backend = new MemoryBackend();
+		useStorageBackend(backend);
+	});
+
+	afterEach(function () {
+		clock.restore();
+		useStorageBackend(null);
+	});
+
+	/** SASL login, registration, then `lines` (the restoration batch, say); returns what was sent after 001. */
+	function register(caps: string, arrange?: (h: Harness) => void, lines: string[] = RESTORE) {
+		const h = setup({uuid: UUID, sasl: "plain", saslAccount: "alice", saslPassword: "s3cret"});
+		arrange?.(h);
+		h.client.connect();
+		negotiate(h, caps);
+		h.transport.lines(
+			"AUTHENTICATE +",
+			":irc.test 900 alice alice!alice@host alice :You are now logged in as alice",
+			":irc.test 903 alice :SASL authentication successful"
+		);
+		h.sent();
+		welcome(h);
+		h.transport.lines(":irc.test PERSISTENCE STATUS ON ON", ...lines);
+		return h;
+	}
+
+	it("waits for the mute read: another device's DND makes it AWAY *, never a bare AWAY", function () {
+		const h = register(META_CAPS);
+		expect(aways(h.sent()), "nothing in the connect burst").to.deep.equal([]);
+		clock.tick(10_000);
+		expect(h.sent()).to.include("METADATA * GET draft/webpush/mute");
+		h.transport.line(OTHER_DND);
+		expect(aways(h.sent())).to.deep.equal(["AWAY *"]);
+	});
+
+	it("says AWAY once after the read finds no DND, its 305 unshown", function () {
+		const h = register(META_CAPS);
+		clock.tick(10_000);
+		h.sent();
+		h.transport.line(EMPTY);
+		expect(aways(h.sent())).to.deep.equal(["AWAY"]);
+		h.dispatch.resetHistory();
+		h.transport.line(":irc.test 305 alice :You are no longer marked as being away");
+		expect(h.messages(h.client.lobby.id)).to.deep.equal([]);
+		h.transport.line(EMPTY);
+		expect(aways(h.sent()), "once").to.deep.equal([]);
+	});
+
+	it("says it at once where the mute list cannot be read (no draft/metadata-2)", function () {
+		const h = register(SASL_CAPS);
+		expect(aways(h.sent())).to.deep.equal(["AWAY"]);
+	});
+
+	it("a fresh session (no restoration batch) says nothing", function () {
+		const h = register(META_CAPS, undefined, []);
+		clock.tick(10_000);
+		h.transport.line(EMPTY);
+		expect(aways(h.sent())).to.deep.equal([]);
+	});
+
+	it("an alias attach says nothing", function () {
+		const h = register(META_CAPS, undefined, [
+			":irc.test NOTE BOUNCER ALIAS_ATTACHED :Attached to session x as alias",
+			...RESTORE,
+		]);
+		clock.tick(10_000);
+		h.transport.line(EMPTY);
+		expect(aways(h.sent())).to.deep.equal([]);
+	});
+
+	for (const [label, arrange, expected] of [
+		[
+			"/away",
+			(h: Harness) => {
+				// What the constructor loads after a reload's /away.
+				h.client.presence.userAway = true;
+				h.client.presence.userAwayText = "x";
+			},
+			[],
+		],
+		["do not disturb", (h: Harness) => h.client.setGlobalDnd(true, null), []],
+		["away mode", (h: Harness) => h.client.setPresenceMode("away"), []],
+		["a hidden page", (h: Harness) => h.client.setAttended(false), []],
+	] as const) {
+		it(`${label} suppresses it`, function () {
+			const h = register(META_CAPS, arrange);
+			clock.tick(10_000);
+			h.transport.line(EMPTY);
+			expect(aways(h.sent()).filter((l) => l === "AWAY")).to.deep.equal(expected);
+		});
+	}
+});
+
+describe("a peer's star in a query (handlers/away.ts)", function () {
+	it("present → * → back shows nothing, every time; lunch → * → back still says back", function () {
+		const h = setup();
+		connect(h);
+		dispatchInput(h.client, h.client.lobby, "/query bob");
+		const query = h.client.findChannel("bob");
+		h.dispatch.resetHistory();
+
+		for (let i = 0; i < 3; i++) {
+			h.transport.line(":bob!b@host AWAY *");
+			h.transport.line(":bob!b@host AWAY");
+		}
+
+		expect(h.messages(query?.id)).to.deep.equal([]);
+
+		h.transport.lines(":bob!b@host AWAY :lunch", ":bob!b@host AWAY *", ":bob!b@host AWAY");
+		expect(h.messages(query?.id).map((m) => m.type)).to.deep.equal([
+			MessageType.AWAY,
+			MessageType.BACK,
+		]);
+	});
 });

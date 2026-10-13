@@ -348,24 +348,28 @@ const away: Handler = (client, msg) => {
 
 	const raw = last(msg);
 	// `draft/pre-away`: nefarious2 hands a viewer that speaks it the bare
-	// `*` (away, no reason given) where others get its stock message.
-	const text = raw === AWAY_STAR ? "away" : raw || "is away";
+	// `*` (away, no reason given) where others get its stock message. It is
+	// kept as the star: the whois card shows "Away" with no message for it,
+	// the query "is away" with none.
+	const star = raw === AWAY_STAR;
 	const inProgress = pendingFor(client).get(client.casefold(nick));
 
 	if (inProgress) {
-		inProgress.away = text;
+		inProgress.away = star ? AWAY_STAR : raw || "is away";
 		return;
 	}
 
 	const chan = client.findChannel(nick);
-	// The query keeps the star as the AWAY handler does (handlers/away.ts).
-	const state = raw === AWAY_STAR ? AWAY_STAR : text;
+	const state = star ? AWAY_STAR : raw || "is away";
+	const text = star ? "" : state;
 
+	// The query keeps the star as the AWAY handler does (handlers/away.ts).
 	if (!chan || chan.type !== ChanType.QUERY || chan.userAway === state) {
 		return;
 	}
 
 	chan.userAway = state;
+	chan.awayShown = true;
 	client.pushMessage(chan, {
 		type: MessageType.AWAY,
 		time: client.timeOf(msg),

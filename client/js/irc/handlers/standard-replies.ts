@@ -220,6 +220,10 @@ function reply(kind: "FAIL" | "WARN" | "NOTE"): Handler {
 			const routine = inRestorationWindow(client);
 			noteRestorationActivity(client);
 
+			if (code.toUpperCase() === "ALIAS_ATTACHED") {
+				client.bouncerAlias = true;
+			}
+
 			if (routine && code.toUpperCase() === "ALIAS_ATTACHED") {
 				return;
 			}

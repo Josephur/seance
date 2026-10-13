@@ -359,6 +359,9 @@ export class IrcClient {
 	 * `OFF`, `DEFAULT`), undefined before one. An alias of another device's
 	 * session reads `ON OFF`: not held itself, though the session is. */
 	persistenceSetting: string | undefined = undefined;
+	/** `NOTE BOUNCER ALIAS_ATTACHED` on this connection: it joined another
+	 * device's live session as an alias (presence.ts `heldByBouncer`). */
+	bouncerAlias = false;
 	/** Our registration-time `PERSISTENCE SET ON` ack is pending (swallowed
 	 * by handlers/persistence.ts until the STATUS echo lands). */
 	persistenceAutoSetPending = false;
@@ -885,6 +888,7 @@ export class IrcClient {
 		this.account = "";
 		this.persistenceHold = false;
 		this.persistenceSetting = undefined;
+		this.bouncerAlias = false;
 		this.attachCursor = undefined;
 		this.serverReplay = false;
 		this.endSasl();

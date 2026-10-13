@@ -68,6 +68,12 @@ export class Channel {
 	 * `*` (`draft/pre-away`: away, no reason given), "" once back.
 	 */
 	userAway: string | undefined = undefined;
+	/**
+	 * The query's last away line was an "is away": only then does the peer's
+	 * return get an "is back" (a pre-away peer's tab-switch star → back
+	 * showed nothing on the way out, so it shows nothing on the way back).
+	 */
+	awayShown = false;
 	/** Reference of every message handed to the UI, by id (`more` cursor lookup). */
 	readonly msgRefs = new Map<number, MsgRef>();
 	/**

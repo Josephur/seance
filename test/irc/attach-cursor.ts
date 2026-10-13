@@ -516,9 +516,10 @@ describe("PERSISTENCE ATTACH catch-up cursor (irc/persistence.ts)", function () 
 
 			expect(h.client.serverReplay).to.equal(false);
 			expect(chathistory(h.sent())).to.have.length(1);
-			expect(h.transport.sent[h.transport.sent.length - 2]).to.match(
-				/CHATHISTORY LATEST #seance \* \d+$/
-			);
+			// The resumed session's AWAY (presence.ts presenceResumed: no
+			// mute list to wait for here) follows the catch-up; leave it out.
+			const sent = h.transport.sent.filter((l) => l !== "AWAY");
+			expect(sent[sent.length - 2]).to.match(/CHATHISTORY LATEST #seance \* \d+$/);
 		});
 
 		it("keeps the old dance when the server has no attach-cursor token", function () {

@@ -103,7 +103,12 @@
 				<dd>Yes</dd>
 			</div>
 
-			<div v-if="message.whois.away">
+			<!-- `*`: away with no message (draft/pre-away, handlers/whois.ts) -->
+			<div v-if="message.whois.away === '*'">
+				<dt>Away</dt>
+				<dd />
+			</div>
+			<div v-else-if="message.whois.away">
 				<dt>Away:</dt>
 				<dd><ParsedMessage :network="network" :text="message.whois.away" /></dd>
 			</div>

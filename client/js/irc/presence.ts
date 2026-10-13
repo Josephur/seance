@@ -56,6 +56,8 @@ export interface PresenceState {
 	userAwayText: string | null;
 	/** This client sent `AWAY *` and has not cleared it. */
 	starSent: boolean;
+	/** A resumed session's away state is still to be confirmed (presenceResumed). */
+	resumeUnsure: boolean;
 	/**
 	 * The away state was declared before `CAP END` on this connection
 	 * ({@link registrationAwayLine}); `safe` when `draft/pre-away` was then
@@ -81,6 +83,7 @@ export function initialPresence(): PresenceState {
 		userAway: false,
 		userAwayText: null,
 		starSent: false,
+		resumeUnsure: false,
 		declaration: null,
 		quietReplies: 0,
 		lastReported: "",
@@ -122,6 +125,7 @@ export function presenceSnapshot(client: IrcClient): SharedNetworkPresence {
  */
 export function syncPresence(client: IrcClient): void {
 	const p = client.presence;
+	confirmResumed(client);
 
 	if (!p.userAway && canSend(client)) {
 		const want = wantsStar(client);
@@ -231,6 +235,7 @@ export function sendBack(client: IrcClient): void {
 export function presenceClosed(client: IrcClient): void {
 	client.presence.starSent = false;
 	client.presence.declaration = null;
+	client.presence.resumeUnsure = false;
 	client.presence.quietReplies = 0;
 	reportPresence(client);
 }
@@ -320,23 +325,74 @@ export function presenceRegistered(client: IrcClient): void {
 		}
 	}
 
-	// A bouncer session this connection resumed keeps the away state it was
-	// left with: the `AWAY *` the service worker said for a closed page
-	// (`leavesAwayToWorker`), or a star a dying socket got out. A present
-	// client says so; when the session was present already the server only
-	// answers 305, which stays quiet.
-	if (
-		client.caps.hasCapability(PERSISTENCE_CAP) &&
-		client.saslOk &&
-		!p.userAway &&
-		!wantsStar(client) &&
-		canSend(client)
-	) {
+	syncPresence(client);
+}
+
+/**
+ * This connection resumed a held bouncer session (the server's
+ * `draft/persistence` restoration batch, or its replay batch for our
+ * cursor). The session keeps the away state it was left with — the
+ * `AWAY *` the service worker said for a closed page (`leavesAwayToWorker`),
+ * or a star a dying socket got out — and a present client that declared
+ * nothing would inherit it. So it says `AWAY` once, but only when it knows
+ * it is present: after the account's mute list was read (another device's
+ * do not disturb, `remoteDnd`, comes from it 10 s after registration), or at
+ * once where the list cannot be read (no `draft/metadata-2`). Until then a
+ * reopen after a worker's star stays away to others. Not on a fresh
+ * session, an alias attach, or a connection with no account (nothing can be
+ * held for it).
+ */
+export function presenceResumed(client: IrcClient): void {
+	client.presence.resumeUnsure = true;
+	syncPresence(client);
+}
+
+/** {@link presenceResumed}'s `AWAY`, once remote DND is known. */
+function confirmResumed(client: IrcClient): void {
+	const p = client.presence;
+
+	if (!p.resumeUnsure || !canSend(client)) {
+		return;
+	}
+
+	if (client.bouncerAlias || client.account === "") {
+		// Another device's live session, where this connection counts
+		// present; or no account, and so no held session to inherit from.
+		p.resumeUnsure = false;
+		return;
+	}
+
+	if (client.caps.hasCapability("draft/metadata-2") && !client.muteKnown) {
+		return;
+	}
+
+	p.resumeUnsure = false;
+
+	if (!p.userAway && !p.starSent && !wantsStar(client)) {
+		// The server answers 305 even when the session was present: quiet.
 		p.quietReplies++;
 		client.send(formatLine({command: "AWAY", params: []}));
 	}
+}
 
-	syncPresence(client);
+/**
+ * The account's session outlives this connection: `PERSISTENCE STATUS`
+ * says ON as the effective state, or as the user's setting on a connection
+ * attached as another device's alias (`NOTE BOUNCER ALIAS_ATTACHED`): it
+ * reads `ON OFF` — the alias is not held, the session is, and closing the
+ * last connection leaves it held — while a primary reading `ON OFF` was
+ * told not to hold (`BOUNCER SET SESSION … HOLD off`). Before any STATUS
+ * line, `draft/persistence` on a SASL login counts, since the client asks
+ * for `PERSISTENCE SET ON` itself (client.ts). `OFF OFF` is believed.
+ */
+function heldByBouncer(client: IrcClient): boolean {
+	return (
+		client.persistenceHold ||
+		(client.bouncerAlias && client.persistenceSetting === "ON") ||
+		(client.persistenceSetting === undefined &&
+			client.caps.hasCapability(PERSISTENCE_CAP) &&
+			client.saslOk)
+	);
 }
 
 /**
@@ -353,24 +409,6 @@ export function presenceRegistered(client: IrcClient): void {
  * session ({@link heldByBouncer}; without it the close is a QUIT), and
  * only when the worker can log in for it (`stashed`, webpush.ts).
  */
-/**
- * The account's session outlives this connection: `PERSISTENCE STATUS`
- * says ON, effective or as the user's setting — a connection attached as
- * another device's alias reads `ON OFF` (the alias is not held, the session
- * is, and closing the last connection leaves it held) — or, before any
- * STATUS line, `draft/persistence` on a SASL login, where the client asks
- * for `PERSISTENCE SET ON` itself (client.ts). `OFF OFF` is believed.
- */
-function heldByBouncer(client: IrcClient): boolean {
-	return (
-		client.persistenceHold ||
-		client.persistenceSetting === "ON" ||
-		(client.persistenceSetting === undefined &&
-			client.caps.hasCapability(PERSISTENCE_CAP) &&
-			client.saslOk)
-	);
-}
-
 export function leavesAwayToWorker(client: IrcClient, stashed: (uuid: string) => boolean): boolean {
 	const p = client.presence;
 
