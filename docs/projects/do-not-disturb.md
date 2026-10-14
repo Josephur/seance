@@ -148,10 +148,14 @@ Away mode flashed back until the post-MOTD `AWAY *`). So:
   `finalLines` hook so the pipelined path, a late ACK/NAK and the SASL path —
   `PERSISTENCE ATTACH`, then the `AWAY`, then `CAP END` — all carry it):
   `AWAY :<text>` while a `/away` is in force, else `AWAY *` when `wantsStar`
-  (DND, Away mode, an unattended Auto page; `starSent` stays set, so
-  `presenceRegistered` sends no second one). On the pipelined path the cap
+  (DND, Away mode, an unattended Auto page). On the pipelined path the cap
   is only requested, not yet ACKed; the server reads the REQ first. No
   305/306 answers a pre-registration AWAY, so nothing is counted quiet.
+- **`presenceRegistered` says it once more after registration**, quietly
+  (its 306 unshown): nefarious2 applies the declaration and then resets the
+  connection's own away record to present, which the session's aggregation
+  and the push attention rule read (§ Server notes). The declaration keeps
+  the attach itself from counting as present; the repeat makes it last.
   `remoteDnd` is not known yet at that point; its GET follows.
 - The `/away` text is remembered per network across reloads in
   `thelounge.state.away` (`irc/userAwayStore.ts`; `/back` forgets it, so
@@ -164,15 +168,10 @@ Away mode flashed back until the post-MOTD `AWAY *`). So:
   `syncPresence` as before.
 - A same-page reconnect goes through the same paths; `userAway` survives the
   close because it is declared again.
-- **The declaration counts only if the server read it with the cap on.** A
-  multi-cap REQ that is NAKed is asked for again one cap at a time; if the
-  retry is ACKed before 001 the cap is on, but the pipelined `AWAY` went in
-  under the refused REQ and was dropped. `registrationAwayLine` records
-  whether the cap was ACKed (or already being retried on its own) when the
-  line went out, and `presenceRegistered` says it again after registration
-  (end of MOTD) when it rode on the refused REQ
-  (`CapNegotiator.wasNakRetried`). The SASL path, whose `CAP END` follows
-  903, normally rides on the ACKed retry and stands.
+- A multi-cap REQ that is NAKed is asked for again one cap at a time; if the
+  retry is ACKed before 001 the cap is on, but a pipelined `AWAY` went in
+  under the refused REQ and was dropped. The repeat after registration
+  covers that too.
   Nothing is declared while the client is quitting (a required login that
   failed inside `beforeEnd`), so `starSent` is set only for a line that goes
   out.
@@ -261,8 +260,17 @@ With the worker, one `AWAY :Away` reaches them about 5.3 s after the close.
 
 ### Server notes (candidate upstream issues, not changed here)
 
-- `s_user.c` (~:861) clears `con_pre_away` on the resume-as-primary path, so
-  a pre-registration `AWAY` is lost there; the worker repeats it after 001.
+- `s_user.c` applies a pre-registration `AWAY` at registration and then
+  clears `con_pre_away` (the connection's own record, "Clear pre-away
+  state"), on every registration. The session's away aggregation
+  (`bounce_compute_effective_away`) and the push attention rule
+  (`wp_conn_state`) read that record, so a connection whose away was only
+  declared counts as present to both: measured, a device on Away resuming a
+  session another device on Online had left present showed the account
+  present (WHO `H`) and was not pushed while its registration was recent
+  (`tools/scenarios/presence-modes-two-devices.mjs`, step 7). The page
+  (`presenceRegistered`) and the worker both say the state again after
+  registration, quietly.
 - An alias connection reads `PERSISTENCE STATUS ON OFF` (measured: a second
   SASL login while another is connected gets `STATUS ON OFF` and
   `NOTE BOUNCER ALIAS_ATTACHED`, and again after `PERSISTENCE SET ON`),
@@ -456,9 +464,10 @@ resets DND to its default, as for every carried key. `presenceMode` rides in
 - `test/irc/preaway.ts`: the declaration right before `CAP END` (plain and
   SASL, after `PERSISTENCE ATTACH`), a reload from the stored text, `/back`
   and network removal forgetting it, DND / Away mode / a hidden page
-  declaring `AWAY *` with no second one, the fallback without the cap (or
-  with it NAKed), a NAKed REQ whose retry is ACKed before 001 (said again;
-  with SASL it stands), a failed required login declaring nothing, the
+  declaring `AWAY *` and saying it once more after registration (also for
+  Away mode resuming a session another device left present), the fallback
+  without the cap (or with it NAKed), a NAKed REQ whose retry is ACKed
+  before 001, a failed required login declaring nothing, the
   `AWAY` on resuming a held session, the prune, other users' star, and
   `leavesAwayToWorker`.
 - `test/tests/service-worker.ts` "away on close": a close (no window after

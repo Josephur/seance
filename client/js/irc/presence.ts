@@ -78,14 +78,6 @@ export interface PresenceState {
 	/** Arms {@link muteReadTimedOut}. */
 	resumeTimer: ReturnType<typeof setTimeout> | null;
 	/**
-	 * The away state was declared before `CAP END` on this connection
-	 * ({@link registrationAwayLine}); `safe` when `draft/pre-away` was then
-	 * already ACKed, or asked for again on its own after a NAK — the REQ
-	 * the server read before the line is one it can still accept. Null when
-	 * nothing was declared.
-	 */
-	declaration: {safe: boolean} | null;
-	/**
 	 * Automatic AWAY commands whose replies (RPL_NOWAWAY / RPL_UNAWAY) are
 	 * still to come and should not be shown: switching apps is not news.
 	 * Replies arrive in send order, so a count is enough; a user's own
@@ -105,7 +97,6 @@ export function initialPresence(): PresenceState {
 		resumeUnsure: false,
 		muteReadTimedOut: false,
 		resumeTimer: null,
-		declaration: null,
 		quietReplies: 0,
 		lastReported: "",
 	};
@@ -256,7 +247,6 @@ export function sendBack(client: IrcClient): void {
 /** The connection closed: whatever we told that server is gone with it. */
 export function presenceClosed(client: IrcClient): void {
 	client.presence.starSent = false;
-	client.presence.declaration = null;
 	client.presence.resumeUnsure = false;
 	client.presence.muteReadTimedOut = false;
 	clearResumeTimer(client);
@@ -273,9 +263,8 @@ export function presenceClosed(client: IrcClient): void {
  * and leave again. No 305/306 answers it, so nothing is counted quiet.
  *
  * When the pipelined `CAP END` goes out the cap is only requested, not yet
- * ACKed; the server reads the REQ first, so being requested is enough. A
- * NAK is caught by {@link presenceRegistered}, which is why the line
- * records whether the REQ it rides on can still be refused.
+ * ACKed; the server reads the REQ first, so being requested is enough.
+ * Either way {@link presenceRegistered} says it again after registration.
  *
  * Nothing when the client is quitting: handlers/cap.ts then drops the
  * `CAP END` flush (a required SASL login failed inside `beforeEnd`, which
@@ -293,60 +282,38 @@ export function registrationAwayLine(client: IrcClient): string | null {
 		return null;
 	}
 
-	let line: string | null = null;
-
 	if (p.userAway) {
-		line = trailingLine("AWAY", [p.userAwayText ?? " "]);
-	} else if (wantsStar(client)) {
+		return trailingLine("AWAY", [p.userAwayText ?? " "]);
+	}
+
+	if (wantsStar(client)) {
 		p.starSent = true;
-		line = formatLine({command: "AWAY", params: [AWAY_STAR]});
+		return formatLine({command: "AWAY", params: [AWAY_STAR]});
 	}
 
-	if (line !== null) {
-		p.declaration = {
-			safe: caps.hasCapability(PRE_AWAY_CAP) || caps.wasNakRetried(PRE_AWAY_CAP),
-		};
-	}
-
-	return line;
+	return null;
 }
 
 /**
- * Whether the server took the away state declared before `CAP END`: the
- * cap is on now, and the REQ the line rode on was not the one that was
- * NAKed. A multi-cap REQ refused and its per-cap retry ACKed before 001
- * leaves the cap on although the server read the line with it off.
- */
-function declarationTaken(client: IrcClient): boolean {
-	const d = client.presence.declaration;
-	const caps = client.caps;
-
-	return (
-		d !== null &&
-		caps.hasCapability(PRE_AWAY_CAP) &&
-		(d.safe || !caps.wasNakRetried(PRE_AWAY_CAP))
-	);
-}
-
-/**
- * Registration done. With `draft/pre-away` the away state was declared
- * before `CAP END` and stands (a star sent then counts); without it the
- * user's `/away` is said again now, its 306 kept quiet, and a page that is
- * hidden while it connects (or a mode, or do not disturb) says `AWAY *`.
+ * Registration done: say the away state again, whatever was declared
+ * before `CAP END` — the user's `/away` here, its 306 kept quiet, and
+ * `AWAY *` through syncPresence for a hidden page, a mode or do not
+ * disturb. nefarious2 applies a declared state at registration and then
+ * resets the connection's own record of it to present (s_user.c, "Clear
+ * pre-away state"), and that record is what the session's away aggregation
+ * across devices (bounce_compute_effective_away) and the push attention
+ * rule read: a device on Away that resumed a session another device had
+ * left present showed the account present, and was never pushed while it
+ * had spoken recently. The declaration still keeps the attach itself from
+ * counting as present; this repeats it where it lasts.
  */
 export function presenceRegistered(client: IrcClient): void {
 	const p = client.presence;
-	const taken = declarationTaken(client);
-	p.declaration = null;
+	p.starSent = false;
 
-	if (!taken) {
-		// Nothing was declared, or the server read it without the cap.
-		p.starSent = false;
-
-		if (p.userAway && canSend(client)) {
-			p.quietReplies++;
-			client.send(trailingLine("AWAY", [p.userAwayText ?? " "]));
-		}
+	if (p.userAway && canSend(client)) {
+		p.quietReplies++;
+		client.send(trailingLine("AWAY", [p.userAwayText ?? " "]));
 	}
 
 	armResumeCheck(client);

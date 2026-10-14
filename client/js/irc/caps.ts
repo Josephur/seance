@@ -221,15 +221,6 @@ export class CapNegotiator {
 		return this.outstanding.has(cap);
 	}
 
-	/**
-	 * True once a multi-cap REQ carrying `cap` was NAKed and `cap` was asked
-	 * for again on its own. A line pipelined behind the NAKed REQ was read by
-	 * the server while the cap was off, whatever the retry's answer.
-	 */
-	wasNakRetried(cap: string): boolean {
-		return this.nakRetried.has(cap);
-	}
-
 	/** Process one incoming message. Non-CAP messages are ignored. */
 	handle(msg: IrcMessage): CapResult {
 		const result: CapResult = {send: [], done: this.ended, missingRequired: [], naked: []};

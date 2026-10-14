@@ -113,7 +113,7 @@ describe("the away state across reloads and reconnects (draft/pre-away)", functi
 		expect(req.slice("CAP REQ :".length).split(" ")).to.include("draft/pre-away");
 	});
 
-	it("declares a /away right before CAP END on a reconnect, and nothing after 001", function () {
+	it("declares a /away right before CAP END on a reconnect, and says it once more after registration", function () {
 		const h = client();
 		connect(h);
 		dispatchInput(h.client, h.client.lobby, "/away gone fishing");
@@ -121,8 +121,17 @@ describe("the away state across reloads and reconnects (draft/pre-away)", functi
 
 		const [before, after] = reconnect(h);
 		expect(tail(before)).to.deep.equal(["AWAY :gone fishing", "CAP END"]);
-		expect(aways(after)).to.deep.equal([]);
+		// nefarious2 resets the connection's own away record once it has
+		// applied the declaration (presence.ts presenceRegistered).
+		expect(aways(after)).to.deep.equal(["AWAY :gone fishing"]);
 		expect(h.client.presence.userAway).to.equal(true);
+
+		h.dispatch.resetHistory();
+		h.transport.line(":irc.test 306 alice :You have been marked as being away");
+		expect(
+			h.messages(h.client.lobby.id).filter((m) => m.type === MessageType.AWAY),
+			"its 306 is not news"
+		).to.deep.equal([]);
 	});
 
 	it("with SASL: PERSISTENCE ATTACH, then the AWAY, then CAP END", function () {
@@ -158,7 +167,7 @@ describe("the away state across reloads and reconnects (draft/pre-away)", functi
 			"AWAY :gone fishing",
 			"CAP END",
 		]);
-		expect(aways(welcome(s))).to.deep.equal([]);
+		expect(aways(welcome(s))).to.deep.equal(["AWAY :gone fishing"]);
 	});
 
 	it("a reload declares the /away the storage holds", function () {
@@ -167,7 +176,7 @@ describe("the away state across reloads and reconnects (draft/pre-away)", functi
 		expect(h.client.presence.userAway).to.equal(true);
 		const [before, after] = connect(h);
 		expect(tail(before)).to.deep.equal(["AWAY :x", "CAP END"]);
-		expect(aways(after)).to.deep.equal([]);
+		expect(aways(after)).to.deep.equal(["AWAY :x"]);
 	});
 
 	it("a bare /away is kept and declared as the single space it sent", function () {
@@ -207,12 +216,12 @@ describe("the away state across reloads and reconnects (draft/pre-away)", functi
 		["away mode", (h: Harness) => h.client.setPresenceMode("away")],
 		["a hidden page", (h: Harness) => h.client.setAttended(false)],
 	] as const) {
-		it(`${label} at connect declares AWAY * during registration, and no second one after`, function () {
+		it(`${label} at connect declares AWAY * during registration, and says it once more after`, function () {
 			const h = client();
 			arrange(h);
 			const [before, after] = connect(h);
 			expect(tail(before)).to.deep.equal(["AWAY *", "CAP END"]);
-			expect(aways(after)).to.deep.equal([]);
+			expect(aways(after)).to.deep.equal(["AWAY *"]);
 			expect(h.client.presence.starSent).to.equal(true);
 
 			// The page comes back (or the mode goes): AWAY, once.
@@ -229,9 +238,23 @@ describe("the away state across reloads and reconnects (draft/pre-away)", functi
 			expect(aways(h.sent())).to.deep.equal(["AWAY *"]);
 			const [before, after] = reconnect(h);
 			expect(tail(before)).to.deep.equal(["AWAY *", "CAP END"]);
-			expect(aways(after)).to.deep.equal([]);
+			expect(aways(after)).to.deep.equal(["AWAY *"]);
 		});
 	}
+
+	it("away mode resuming a session another device left present stays away (the repeat after registration)", function () {
+		// Measured on nefarious2 (tools/scenarios/presence-modes-two-devices.mjs
+		// step 7): device B on Online closed last, so the held session was
+		// present; A on Away resumed it, declared AWAY * before CAP END, and
+		// the server counted A present until A said it again.
+		const h = client();
+		h.client.setPresenceMode("away");
+		const [before, after] = connect(h);
+		expect(tail(before)).to.deep.equal(["AWAY *", "CAP END"]);
+		expect(aways(after)).to.deep.equal(["AWAY *"]);
+		expect(h.client.presence.starSent).to.equal(true);
+		expect(h.client.presence.quietReplies, "its 306 kept quiet").to.equal(1);
+	});
 
 	it("a hidden page in online mode declares nothing", function () {
 		const h = client();
@@ -335,7 +358,7 @@ describe("the away state across reloads and reconnects (draft/pre-away)", functi
 			expect(h.client.presence.starSent).to.equal(true);
 		});
 
-		it("with SASL the declaration rides on the ACKed retry and stands", function () {
+		it("with SASL the declaration rides on the ACKed retry, and is said once more after 001", function () {
 			backend.set(USER_AWAY_KEY, JSON.stringify({[UUID]: "x"}));
 			const h = client({sasl: "plain", saslAccount: "alice", saslPassword: "s3cret"});
 			const first = nakThenRetry(h, SASL_CAPS);
@@ -346,7 +369,7 @@ describe("the away state across reloads and reconnects (draft/pre-away)", functi
 				":irc.test 903 alice :SASL authentication successful"
 			);
 			expect(tail(h.sent())).to.deep.equal(["AWAY :x", "CAP END"]);
-			expect(aways(welcome(h))).to.deep.equal([]);
+			expect(aways(welcome(h))).to.deep.equal(["AWAY :x"]);
 		});
 	});
 
