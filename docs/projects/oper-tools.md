@@ -434,6 +434,7 @@ What a contribution needs:
 
 - **The menu's Check is `CHECK nick`, not `CHECK nick nick`.** nefarious2 does not forward the label for a remote CHECK, so the card would wait for an answer it never recognises. Typed `/check nick nick` still works; its reply renders raw.
 - **The ban tools are nefarious2-only** for now (`profile === "nefarious2"`); KILL and Check are offered on any profile.
+- **A G-line or shun is offered when either the server or the oper service would take it** (`helpers/operMenu.ts` `canBan`). A services-opered user on AfterNET holds exactly X3's `auto_oper_privs` — the server clears the set when services set `+o`, then adds what X3 sends — and that list has `WIDE_GLINE` but neither `GLINE` nor `SHUN`, so PRIVS says no while O3 takes the ban (the dialog already sends it there). Gating on PRIVS alone hid G-line… from the nick menu and the user card for every AfterNET oper (2026-10-13). Z-line has no services route and keeps the server's privilege as its gate.
 - **The rig grants its oper the ban privileges.** `tools/nefarious-dev/local.conf` grants gline, shun, zline, remove and set explicitly, and turns on `CONNEXIT_NOTICES`.
 
 **Not yet**: see "Revised plan" below, which replaces phases 2 and 3.

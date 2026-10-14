@@ -85,6 +85,34 @@ function bansSupported(network: ClientNetwork): boolean {
 	return network.oper?.profile === "nefarious2";
 }
 
+/** The oper service a G-line or shun can go through (X3's O3), if any. */
+export function banServiceBot(network: Pick<ClientNetwork, "services">): string {
+	const services = network.services;
+	return services?.package === "x3" ? services.bots.oper.trim() : "";
+}
+
+/**
+ * Whether to offer `action` on this network. The server's privilege
+ * (`GLINE`, or `LOCAL_GLINE`) is one way; an oper service that takes the
+ * ban is the other, and on AfterNET it is the only one: a services-opered
+ * user starts with no privileges at all and gets X3's `auto_oper_privs`,
+ * which has `WIDE_GLINE` but neither `GLINE` nor `SHUN`, so PRIVS says no
+ * while O3 says yes (components/Oper/ActionDialog.vue sends it there).
+ * Z-lines have no services route.
+ */
+export function canBan(network: ClientNetwork, action: BanType): boolean {
+	if (!bansSupported(network) || !isOperOn(network)) {
+		return false;
+	}
+
+	if (action !== "zline" && banServiceBot(network) !== "") {
+		return true;
+	}
+
+	const priv = action.toUpperCase();
+	return hasPriv(network, priv, `LOCAL_${priv}`);
+}
+
 function input(chan: number, text: string): void {
 	socket.emit("input", {target: chan, text});
 }
@@ -106,14 +134,10 @@ function banItems(
 	chan: number,
 	target: {nick?: string; mask?: string; ip?: boolean}
 ): ContextMenuItem[] {
-	if (!bansSupported(network)) {
-		return [];
-	}
-
 	const items: ContextMenuItem[] = [];
 
 	const add = (action: BanType, label: string, cls: string) => {
-		if (hasPriv(network, action.toUpperCase(), `LOCAL_${action.toUpperCase()}`)) {
+		if (canBan(network, action)) {
 			items.push({
 				label,
 				type: "item",
