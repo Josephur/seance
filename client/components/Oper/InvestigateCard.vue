@@ -544,6 +544,7 @@ import {
 import {getNote, setNote} from "../../js/irc/operprefs";
 import {servicesProfileFor} from "../../js/irc/services/index";
 import {
+	canBan as canBanOn,
 	hasPriv,
 	type InvestigateRequest,
 	openOperAction,
@@ -659,12 +660,7 @@ export default defineComponent({
 		});
 		const noteKey = computed(() => top.value?.investigation.noteKey ?? "");
 
-		const canBan = computed(
-			() =>
-				!!network.value &&
-				network.value.oper?.profile === "nefarious2" &&
-				hasPriv(network.value, "GLINE", "LOCAL_GLINE")
-		);
+		const canBan = computed(() => !!network.value && canBanOn(network.value, "gline"));
 		const canKill = computed(
 			() => !!network.value && hasPriv(network.value, "KILL", "LOCAL_KILL")
 		);
