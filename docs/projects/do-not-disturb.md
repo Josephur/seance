@@ -102,6 +102,12 @@ The global DND state is the one above. **Per network**, `SavedNetwork` gets
 session only. A `*` entry read back from the network's mute list (§4) is a
 third input, `remoteDnd` on the client.
 
+The mode is shared between the account's devices — the most recent choice
+wins, including one made while a device was offline — through the private
+account metadata key `seance/presence`, and the pill gained a global away
+(Available / Away above the DND choices, shared as `seance/away`): see
+[shared-presence-modes.md](shared-presence-modes.md).
+
 The **effective state** of a network:
 
 ```
@@ -369,9 +375,10 @@ written before the value has been read.
   turned it off. It is not written back (`muteSuppressed` until DND starts
   afresh or the user claims it) and the client dispatches `dnd:cleared`; the
   page (`client/js/dnd.ts`) then turns its own DND off (`reconcileRemote` →
-  `turnOff`, so a scheduled window is skipped to its end), and `bus.ts` sets
-  every network of that client in mode `dnd` back to `auto`, saved — Off on
-  another device is Off for the account. The page's DND is one switch for
+  `turnOff`, so a scheduled window is skipped to its end) — Off on another
+  device is Off for the account. The network modes are left alone since
+  they are shared (shared-presence-modes.md § 5; resetting a mode `dnd` to
+  `auto` here used to stamp a choice newer than the real one). The page's DND is one switch for
   the whole device, so a `dnd:cleared` from any one network ends it
   everywhere here: the Off that follows removes this device's own entries
   on every other network too, those of other accounts included. That is on
@@ -484,7 +491,7 @@ resets DND to its default, as for every carried key. `presenceMode` rides in
   while away, the claim, `dnd:cleared`.
 - `test/irc/multi-network.ts`: `network:presence-mode` on a saved and an
   unsaved network, `network:edit` keeping the dot's mode, `dnd:cleared`
-  setting a network in mode `dnd` back to `auto`.
+  leaving a shared mode `dnd` as it is.
 - Live check `tools/scenarios/away-live.mjs` against the testnet rig (SASL,
   `draft/persistence`, `draft/pre-away`; through `lib/irc-proxy.mjs` so a
   same-page reconnect is a socket cut, with the redials refused for 3 s so
@@ -539,13 +546,16 @@ resets DND to its default, as for every carried key. `presenceMode` rides in
   device's Off was undone at the next connect).
 - An explicit change on this page claims the live `*` entry; automatic
   syncs still adopt it.
-- Another device's Off also sets networks in mode `dnd` back to `auto`
-  (they stayed away and silent with push unmuted).
+- Another device's Off also set networks in mode `dnd` back to `auto` (they
+  stayed away and silent with push unmuted); since the mode is shared
+  (shared-presence-modes.md) that reset is gone.
 - Another device clearing the entry raises `dnd:cleared`, which turns this
   device's DND off instead of being written back.
 - A change from a session under a different nick is not applied live (the
   server labels every notification `*`); it waits for the next `GET`.
-- `SUB`/`GET` go out 10 s after registration, not in the connect burst.
+- `GET` goes out 10 s after registration, not in the connect burst; `SUB`
+  rides the `CAP END` flush where the server offers `before-connect`
+  (shared-presence-modes.md § 5), else goes with the `GET`.
 - `webpush.setSnooze` and the snooze buttons are removed, not merged.
 - `/back` sends one line chosen by the presence rule, never `AWAY *` then
   `AWAY`.

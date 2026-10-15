@@ -1,7 +1,7 @@
 # Shared presence modes and global away
 
-Status: design approved 2026-10-15 (global away added the same day), not
-built. Branch `dnd`. Builds on [do-not-disturb.md](do-not-disturb.md), which
+Status: built 2026-10-15 on branch `dnd` (the commits after 1b4fb464); § 5
+and § 9 record what the two-device runs changed. Builds on [do-not-disturb.md](do-not-disturb.md), which
 introduced the presence modes, the pill and the shared do not disturb this
 reuses.
 
@@ -138,17 +138,34 @@ by minutes can lose a change made just after another device's. Accepted.
 
 ## 5. When it is read and written
 
-- **Login**: the read that already happens 10 s after registration
-  (`IrcClient.scheduleMuteRead`, `MUTE_READ_DELAY_MS` — after the connect
-  burst, where nefarious2's fake lag is cheapest) subscribes to and gets all
-  three keys: `METADATA * SUB draft/webpush/mute seance/presence seance/away` and one `METADATA * GET` naming the same three (metadata-2
-  allows several keys per `SUB` and `GET`). Each answer goes through § 4.
-- **A choice on this device** (the dot, the network form, `dnd:cleared`
-  moving a `dnd` network back to Auto; the pill's Available / Away / DND
-  items for global away): applied at once as today, stamped with
+- **Subscribed from the start**: with `draft/metadata-2=before-connect` and
+  a SASL login, `METADATA * SUB draft/webpush/mute seance/presence seance/away` rides the `CAP END` flush (before registration, so no fake
+  lag; `IrcClient.metadataSubscribed`). Without `before-connect` it goes out
+  with the login read below. Subscribing only 10 s in lost changes: a device
+  that registered missed another device's change made in that window, and
+  the server then answered its GET from the connection's own stale copy
+  (§ 9), so the two devices stayed apart (found live, presence-shared
+  case 5).
+- **At registration**: nefarious2 sends the account's own metadata in a
+  burst at registration (`metadata_burst_self_to_client`); its
+  `seance/presence` and `seance/away` lines go through § 4 at once.
+- **Login read**: 10 s after registration (`IrcClient.scheduleMuteRead`,
+  `MUTE_READ_DELAY_MS` — after the connect burst, where nefarious2's fake
+  lag is cheapest) one `METADATA * GET` names all three keys (metadata-2
+  allows several keys per `SUB` and `GET`); it answers a key the burst did
+  not carry (unset) and goes through § 4.
+- **A choice on this device** (the dot, the network form; the pill's
+  Available / Away / DND items for global away): applied at once as today, stamped with
   `Date.now()`, saved, and written to every network that can (registered,
   `draft/metadata-2`, logged in) once that network's login read has
   answered — before that, § 4 decides at the read.
+- **Another device's DND Off** (`dnd:cleared`, irc/pushMute.ts) turns this
+  device's global DND off and **leaves the network modes alone**. It used to
+  set a network in mode `dnd` back to Auto; with the mode shared that
+  stamped a choice newer than the real one (a device leaving mode `dnd`
+  clears the mute, the other read that as a DND Off and stamped Auto, and
+  every device adopted Auto — found live, presence-shared case 5). A device
+  that leaves mode `dnd` sends its new mode itself.
 - **A choice on another device**: the subscription's `METADATA` line, put
   through § 4 like a read.
 - **Our own write's echo** (the 761 confirmation and the subscription's
@@ -159,12 +176,9 @@ by minutes can lose a change made just after another device's. Accepted.
   them: the next login reads again.
 
 A device that missed a change while it was off still declares its old state
-during the next registration (`registrationAwayLine`, before `CAP END`),
-because the shared values are read 10 s later. For those seconds it shows
-its old state; then it adopts the newer one. Accepted for now. A later step
-could read the keys before `CAP END` (the rig advertises
-`draft/metadata-2=before-connect`), at the cost of waiting for the reply
-before ending registration.
+during the next registration (`registrationAwayLine`, before `CAP END`); the
+registration burst brings the newer one a moment later, and it is adopted
+then. Accepted.
 
 ## 6. Where it is kept on the device
 
@@ -219,7 +233,10 @@ before ending registration.
   race (an older value arriving after ours written back once, and not again
   on its own echo), no write before the login's read, a reconnect reading
   again before writing, nothing without an account or `draft/metadata-2`, a
-  `FAIL METADATA` writing nothing, and the login read's lines.
+  `FAIL METADATA` writing nothing, the login read's lines, and the
+  subscription: before `CAP END` with `before-connect` after a SASL login
+  (then the read only GETs), with the read without it, again after a
+  reconnect.
 - **`test/irc/presence.ts`**: global away sends `AWAY *` on every mode, and
   `AWAY` when it goes off (unless the mode or attention wants the star), and
   is declared before `CAP END`.
@@ -229,8 +246,10 @@ before ending registration.
   when malformed.
 - **`test/irc/multi-network.ts`**: a dot or form choice is stamped and
   saved; the same mode re-posted by the form stamps nothing;
-  `network:presence-shared` saves; `setGlobalAwayAll` reaches every client;
-  new clients start with the saved time and the page's global away.
+  `network:presence-shared` saves; another device's mute clear leaves a
+  shared mode `dnd` as it is. (`manager.ts` imports the store and cannot
+  load under mocha: `setGlobalAwayAll` and a new client's starting state
+  are covered by the browser runs.)
 - **Live, two devices** (`tools/scenarios/presence-shared.mjs`, the testnet
   rig, two Chromium profiles as in `away-two-devices.mjs`):
   1. A mode change on A reaches a connected B within a few seconds.
@@ -252,3 +271,19 @@ before ending registration.
   measurements; its step-7 regression stays covered by `test/irc/preaway.ts`.
 - `yarn test`, and the existing `away-live.mjs` and `away-two-devices.mjs`
   runs (their Off steps now click Available).
+
+## 9. Server notes (measured on the testnet, not changed here)
+
+- nefarious2 keeps a copy of the account's own metadata per connection. A
+  `SET` updates the writer's copy and the account store and notifies the
+  subscribers, but a connection that was not subscribed keeps its old copy,
+  and a later `GET` from it, and the registration burst of a connection
+  resuming a held session as primary, answer from that copy. Measured with
+  `/tmp`-only probes (two raw connections on one account): the primary was
+  handed `seance/away on …892110` while an alias of the same session got the
+  newer `off …900141`. § 4's rule tolerates a stale read (the stale value is
+  older, and the device holding the newer choice writes it back when it sees
+  the older one); subscribing before registration (§ 5) closes the window
+  in which a connection missed a change. A candidate upstream issue.
+- A `SUB` before `CAP END` is accepted (770, answered under the
+  pre-registration nick) and survives registration.
