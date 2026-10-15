@@ -1,8 +1,9 @@
-# Shared presence modes
+# Shared presence modes and global away
 
-Status: design approved 2026-10-15, not built. Branch `dnd`. Builds on
-[do-not-disturb.md](do-not-disturb.md), which introduced the presence modes
-and the shared do not disturb this reuses.
+Status: design approved 2026-10-15 (global away added the same day), not
+built. Branch `dnd`. Builds on [do-not-disturb.md](do-not-disturb.md), which
+introduced the presence modes, the pill and the shared do not disturb this
+reuses.
 
 ## 1. What and why
 
@@ -10,166 +11,244 @@ Each network has a presence mode — Online, Auto, Away, Do not disturb — set
 from the lobby row's dot or the network form. Until now the mode was kept on
 the device (`presenceMode` on the saved network entry), so a phone and a
 desktop on one account could disagree, and a change on one never reached the
-other.
+other. And there was no way to go away everywhere at once: the pill under the
+logo only switched do not disturb.
 
-The user's request (2026-10-15): the devices share the mode, **including a
-change made while a device is offline**, and when two devices changed it
-while apart, **the most recent change wins**.
+The user's requests (2026-10-15):
+
+- the devices share the mode, **including a change made while a device is
+  offline**, and when two devices changed it while apart, **the most recent
+  change wins**;
+- a **global away**: one switch that puts every network away, on top of the
+  per-network modes (option A of the two the user was shown: each network
+  keeps its own mode underneath, and switching back restores them all),
+  shared between devices the same way.
 
 What follows from that:
 
-- A network's mode is the same on every device of the account. A change on
-  one device shows on the others at once if they are connected, and at their
-  next login if not.
+- A network's mode is the same on every device of the account; so is the
+  global away switch. A change on one device shows on the others at once if
+  they are connected, and at their next login if not.
 - A change made on a device with no connection is kept there and applied at
-  its next login, unless another device changed the mode later.
+  its next login, unless another device changed it later.
 - Auto still means "this device follows its own attention": with Auto
   shared, each device goes away when nobody is looking at it.
 - Two devices can no longer hold different modes at the same time (the
   desktop Online, the phone Away). That is the point of sharing.
 
 Out of scope: the `/away` message (per device, `thelounge.state.away`), the
-do not disturb switch and schedule (`thelounge.dnd`; DND is already shared
-through the push mute, its schedule stays per device), and networks without
-an account or without `draft/metadata-2`, which keep the mode on the device
-as before.
+do not disturb schedule (per device; DND itself is already shared through
+the push mute), and networks without an account or without
+`draft/metadata-2`, which keep the mode on the device as before and apply
+global away locally without sharing it.
 
-## 2. Where the shared mode lives
+## 2. Global away
 
-One account metadata key per network (that is, per server), written
-`private`:
+- **What it does**: while on, every network wants `AWAY *`
+  (`presence.ts` `wantsStar` gains `globalAway`), whatever its own mode. The
+  network's mode is untouched, so its dot reads "Online · away", "Auto ·
+  away" (`NetworkLobby.vue` already words a mode that is away for another
+  reason that way), and switching global away off puts every network back
+  on its own mode. Do not disturb outranks it: DND is also away, and only
+  DND mutes push. Global away does not mute push.
+- **The pill** (`PresencePill.vue`) becomes one status choice, then the
+  schedule:
+  - **Available** — global away off and do not disturb off (the old Off:
+    it also clears the account's mute, as `dnd.turnOff` does). Checked when
+    neither is in force.
+  - **Away** — global away on, and do not disturb off. Checked while global
+    away is on and DND is not.
+  - **Do not disturb for 1 hour / for 8 hours / until I turn it off** — as
+    before; picking one also switches global away off (one status at a
+    time).
+  - a divider, **Follow schedule (…)** (a toggle, unchanged) and **Edit
+    schedule…**. A scheduled window leaves global away as it is: away
+    resumes when the window ends.
+- **The pill's words and dot**: do not disturb (as before), else "Away"
+  with the amber dot while global away is on, else the networks' summary as
+  before.
+- **Kept on the device** in `thelounge.dnd`, beside the DND switch and
+  schedule, as `away: {on, at}` (`at` the Unix ms of the user's last choice,
+  null if never chosen). It follows the DND state across this device's tabs
+  (the `storage` event) and in the settings backup.
+
+## 3. Where the shared state lives
+
+Two private account metadata keys per network (that is, per server):
 
 ```
 METADATA * SET seance/presence private :<mode> <changedAt>
+METADATA * SET seance/away private :<on|off> <changedAt>
 ```
 
-- `<mode>` is `online`, `auto`, `away` or `dnd`.
-- `<changedAt>` is the moment the user made the change, in Unix
+- `<mode>` is `online`, `auto`, `away` or `dnd`; `<on|off>` is the global
+  away switch.
+- `<changedAt>` is the moment the user made the choice, in Unix
   milliseconds, on the device that made it. Not the moment it reached the
   server: a change made offline at 15:00 and uploaded at 16:00 still counts
   as 15:00.
 - `private` is required: nefarious2 stores a `SET` without a visibility as
   public (found with the mute key, do-not-disturb.md § Server notes).
-- nefarious2 accepts the key (`a-z 0-9 _ . / -`, `m_metadata.c`
+- nefarious2 accepts the keys (`a-z 0-9 _ . / -`, `m_metadata.c`
   `is_valid_key`) and persists account metadata server side (RocksDB), so
-  the value outlives every connection of the account.
-- A value that does not parse (an unknown mode, no time, extra words) is
+  the values outlive every connection of the account.
+- A value that does not parse (an unknown word, no time, extra words) is
   ignored as if absent, so a later client can extend the format without
   older ones fighting over it.
+- Global away is one switch for the whole device, but each network's
+  server holds its own copy: a device writes it to every network it can,
+  and adopting it from any one network makes the device write it to the
+  others whose copy is older (§ 4). Networks on different accounts or
+  servers therefore carry it between devices that share at least one of
+  them.
 
-## 3. The rule: the most recent change wins
+## 4. The rule: the most recent choice wins
 
-Each device knows, per network, its mode, the `changedAt` of that mode, and
-whether that change is still to be uploaded (`pending`). It compares by
-`changedAt`; on a tie, by the mode's name, so every device picks the same
-winner without talking to the others.
+The same rule for both keys. For each network and key, a device knows its
+own choice (value and `changedAt`, or none — a mode never chosen, global
+away never touched) and the last value it read from that network's server
+on this connection. It compares by `changedAt`; on a tie, by the value's
+word (plain string order), so every device picks the same winner without
+talking to the others.
 
-- **Server newer than the device**: adopt it — the mode and its
-  `changedAt` — save it, clear `pending`, and apply it at once
-  (`syncPresence`: `AWAY *` / `AWAY`, the push mute).
-- **Device newer than the server** (a `pending` change, or a value the
-  server has lost to an older write): write the device's value.
-- **Same value**: nothing; a pending flag is cleared (our write landed).
-- **No value on the server**: the device writes its own only when it is not
-  the default (Auto with no recorded change); otherwise there is nothing to
-  share yet.
+- **Server newer than the device's choice**: adopt it — the value and its
+  `changedAt` — save it, and apply it at once (`syncPresence`: `AWAY *` /
+  `AWAY`, the push mute). For global away, adopting it on one network makes
+  the page switch it for every network (§ 6), and each of those writes it to
+  its own server if that copy is older.
+- **Device newer than the server's value** (a change made here, online or
+  offline, or a newer value a late older write replaced): write the device's
+  choice, and remember it as the server's value so it is not written twice.
+- **Same value, or neither has one**: nothing.
 
-The server stores the last write it received, not the newest change. Two
+So a change made while offline needs no flag of its own: at the next login
+the device's choice is newer than the server's and goes up; one made on
+another device since is newer still and is adopted instead.
+
+The server stores the last write it received, not the newest choice. Two
 devices can race: A reads an older value, B writes a newer one, A's write
 lands after it. Every connected device is subscribed, so B hears A's older
 value and, knowing a newer one, writes its own again. Only a device that
-knows a strictly newer value ever writes in answer to a read, so this
-settles on the newest change and stops.
+knows a strictly newer choice ever writes in answer to a read, so this
+settles on the newest and stops.
 
 Device clocks decide the order. Phones and computers set their clocks from
 the network and agree to well under a second; a device whose clock is off
 by minutes can lose a change made just after another device's. Accepted.
 
-## 4. When it is read and written
+## 5. When it is read and written
 
 - **Login**: the read that already happens 10 s after registration
   (`IrcClient.scheduleMuteRead`, `MUTE_READ_DELAY_MS` — after the connect
-  burst, where nefarious2's fake lag is cheapest) subscribes to and gets the
-  presence key alongside the mute key: `METADATA * SUB draft/webpush/mute seance/presence` and one `METADATA * GET` naming both keys (metadata-2 allows several keys per `GET`). The answer goes through § 3.
-- **A change on this device** (the dot, the network form, `dnd:cleared`
-  moving a `dnd` network back to Auto): applied at once as today, saved with
-  `changedAt = Date.now()` and `pending`, and written when the connection
-  can (registered, `draft/metadata-2`, logged in, and the login's read has
-  answered — before that, § 3 decides at the read).
-- **A change on another device**: the subscription's `METADATA` line, put
-  through § 3 like a read.
+  burst, where nefarious2's fake lag is cheapest) subscribes to and gets all
+  three keys: `METADATA * SUB draft/webpush/mute seance/presence seance/away` and one `METADATA * GET` naming the same three (metadata-2
+  allows several keys per `SUB` and `GET`). Each answer goes through § 4.
+- **A choice on this device** (the dot, the network form, `dnd:cleared`
+  moving a `dnd` network back to Auto; the pill's Available / Away / DND
+  items for global away): applied at once as today, stamped with
+  `Date.now()`, saved, and written to every network that can (registered,
+  `draft/metadata-2`, logged in) once that network's login read has
+  answered — before that, § 4 decides at the read.
+- **A choice on another device**: the subscription's `METADATA` line, put
+  through § 4 like a read.
 - **Our own write's echo** (the 761 confirmation and the subscription's
-  line): the same value; clears `pending`.
-- A `FAIL METADATA` for our write leaves `pending` set: the next login (or
-  the next change) tries again.
+  line): equal to what we remembered writing; nothing.
+- A `FAIL METADATA` for our write: nothing now; the next login reads the
+  server's value again and writes ours if it is still newer.
+- A connection that closes forgets the server's values and that it read
+  them: the next login reads again.
 
-A device that missed a change while it was off still declares its old mode
+A device that missed a change while it was off still declares its old state
 during the next registration (`registrationAwayLine`, before `CAP END`),
-because the shared value is read 10 s later. For those seconds it shows its
-old state; then it adopts the newer mode. Accepted for now. A later step
-could read the key before `CAP END` (the rig advertises
+because the shared values are read 10 s later. For those seconds it shows
+its old state; then it adopts the newer one. Accepted for now. A later step
+could read the keys before `CAP END` (the rig advertises
 `draft/metadata-2=before-connect`), at the cost of waiting for the reply
 before ending registration.
 
-## 5. Where it is kept on the device
+## 6. Where it is kept on the device
 
-On the saved network entry, beside `presenceMode` (`saved-networks.ts`):
+- The mode's time: `presenceAt?: number` on the saved network entry
+  (`saved-networks.ts`), beside `presenceMode`; absent for a mode never
+  chosen. Carried by the settings backup with the entry; a restored old
+  choice simply loses to a newer server value by § 4. A network that is not
+  saved keeps it in memory for the page.
+- Global away: `away: {on, at}` in `thelounge.dnd` (§ 2), held by
+  `client/js/dnd.ts`, which hands it to every IRC client
+  (`manager.setGlobalAwayAll`, beside `setGlobalDndAll`) and listens for one
+  adopted from a server (`away:shared`).
 
-- `presenceAt?: number` — the `changedAt` of the current mode; absent
-  for a mode never changed (Auto by default).
-- `presencePending?: true` — this device's change is not yet confirmed by
-  the server.
-
-Both travel with the saved network in the settings backup like
-`presenceMode` does. A restored `pending` change is harmless: § 3 compares
-it by its own `changedAt`, so an old one loses to the server's newer value.
-A network that is not saved keeps the three in memory for the page.
-
-## 6. Components
+## 7. Components
 
 - **`client/js/irc/presenceShare.ts`** (new, Vue-free, DOM-free, under
-  mocha): `PRESENCE_KEY`, `parsePresenceValue` / `formatPresenceValue`,
-  `newer(a, b)` (§ 3's order, tie on the name), `onPresenceValue(client, value)` (adopt / write back / clear pending) and `syncSharedPresence (client)` (write a pending change when the connection can).
-- **`IrcClient`**: `presenceAt`, `presencePending`, `presenceKnown` (the
-  login's read answered, reset on close like `muteKnown`), and
-  `setPresenceMode(mode, {at, pending})` so a mode adopted from the server
-  is not marked as a new local change.
-- **`handlers/metadata.ts`**: the presence key joins `OWN_KEYS` (its
-  replies stay silent) and is routed to `onPresenceValue`, under the same
-  `private`-or-own-nick check as the mute.
-- **`bus.ts`**: `setPresenceMode` saves `presenceAt` / `presencePending`
-  with the mode; a new `network:presence-adopted` bus event (dispatched by
-  `presenceShare.ts`, which cannot touch storage) saves an adopted mode on
-  the saved entry, so the next reload declares it.
-- **`client.ts` `scheduleMuteRead`**: subscribes to and gets both keys.
+  mocha): `PRESENCE_KEY`, `AWAY_KEY`, `parseStamped` / `formatStamped`
+  (`<word> <ms>` against a word list), `newer(a, b)` (§ 4's order),
+  `onPresenceValue` / `onAwayValue` (a value read: adopt, or write ours
+  back), `syncShared(client)` (write whatever this device knows newer than
+  its server).
+- **`client/js/helpers/dnd.ts`**: `DndState.away`, its parse/serialize, and
+  `pillStatus(state, now)` → `available` / `away` / `dnd` (the pill's
+  checked item and words).
+- **`IrcClient`**: `presenceAt`, `globalAway {on, at}`, and per key the
+  server's last value and whether it was read on this connection (reset on
+  close); `setPresenceMode(mode, at?)` (an `at` stamps the choice) and
+  `setGlobalAway(away)`.
+- **`presence.ts`**: `wantsStar` includes `client.globalAway.on`.
+- **`handlers/metadata.ts`**: both keys join `OWN_KEYS` (their replies stay
+  silent) and are routed to `onPresenceValue` / `onAwayValue`, under the
+  same `private`-or-own-nick check as the mute.
+- **`bus.ts` / `manager.ts`**: a mode chosen here is stamped and saved with
+  its time; `network:presence-shared` (a mode adopted from the server)
+  saves it on the entry; `manager.setGlobalAwayAll`; new clients start with
+  the saved `presenceAt` and the page's global away.
+- **`client/js/dnd.ts`**: `setAway(on)` (stamped, saved, and DND off when
+  on), `available()` (away off and `turnOff`), DND choices switch away off;
+  `away:shared` adopted when newer; `pillLabel` / `pillState` read
+  `pillStatus`.
+- **`PresencePill.vue`**: the menu of § 2.
+- **`client.ts` `scheduleMuteRead`**: subscribes to and gets the three keys.
 
-## 7. Testing
+## 8. Testing
 
-- **`test/irc/presenceShare.ts`**: the value's parse and format (bad values
-  ignored); `newer` including the tie; adopt a newer server value (mode,
-  time, not pending, `syncPresence` called, `network:presence-adopted`);
-  write a pending local change that is newer; drop a pending change that is
-  older; the empty server with a default and a non-default mode; our echo
-  clearing `pending`; the race (an older value arriving after ours is
-  written back once, and not again on its own echo); no write before the
-  login's read; nothing without an account or `draft/metadata-2`; a
-  `FAIL METADATA` leaving `pending`.
-- **`test/irc/saved-networks.ts`**: `presenceAt` and `presencePending`
-  round-trip and are dropped when malformed.
+- **`test/irc/presenceShare.ts`**: the values' parse and format (bad values
+  ignored); `newer` including the tie; for each key: adopt a newer server
+  value (the mode applied with its time and `network:presence-shared`; the
+  switch applied with `away:shared`), write a device choice newer than the
+  server's, adopt instead of writing when the server's is newer, an empty
+  server with and without a device choice, our echo writing nothing, the
+  race (an older value arriving after ours written back once, and not again
+  on its own echo), no write before the login's read, a reconnect reading
+  again before writing, nothing without an account or `draft/metadata-2`, a
+  `FAIL METADATA` writing nothing, and the login read's lines.
+- **`test/irc/presence.ts`**: global away sends `AWAY *` on every mode, and
+  `AWAY` when it goes off (unless the mode or attention wants the star), and
+  is declared before `CAP END`.
+- **`test/helpers/dnd.ts`**: `away` parses, defaults and survives a bad
+  value; `pillStatus` for each combination (DND outranks away).
+- **`test/irc/saved-networks.ts`**: `presenceAt` round-trips and is dropped
+  when malformed.
+- **`test/irc/multi-network.ts`**: a dot or form choice is stamped and
+  saved; the same mode re-posted by the form stamps nothing;
+  `network:presence-shared` saves; `setGlobalAwayAll` reaches every client;
+  new clients start with the saved time and the page's global away.
 - **Live, two devices** (`tools/scenarios/presence-shared.mjs`, the testnet
   rig, two Chromium profiles as in `away-two-devices.mjs`):
-  1. A change on A reaches a connected B within a few seconds: B's dot, and
-     what other users see (`AWAY *` follows on B when the mode asks for it).
-  2. B closed; A changes the mode; B reopens and shows A's mode after its
-     login's read.
-  3. B offline (its connection cut, page open); the mode changed on B; B
-     reconnects and uploads it; A shows it.
+  1. A mode change on A reaches a connected B within a few seconds.
+  2. B closed; A changes the mode; B reopens and shows it after its login
+     read.
+  3. B disconnected; the mode changed on B; B reconnects and uploads it; A
+     shows it.
   4. Both change while apart, B later than A; after both reconnect, both
      show B's mode.
+  5. Away on A's pill: B's pill reads Away, both devices' dots read
+     "<mode> · away", others see the account away; Available on B brings
+     both back to their modes.
+- **Browser, one device** (`tools/scenarios/dnd.mjs`): its pill-menu steps
+  follow the new items (Available replaces Off), plus Away → every network's
+  dot "· away" → Available.
 - **`tools/scenarios/presence-modes-two-devices.mjs`** gave each device its
   own mode (A Away, B Online). With sharing that state cannot be set up, so
-  that scenario is reworked to share one mode (Away, then Online) and keep
-  its measurements; its step-7 regression (an away device resuming a session
-  another device left present) stays covered by `test/irc/preaway.ts`.
+  that scenario is reworked to share one mode (Away) and keep its
+  measurements; its step-7 regression stays covered by `test/irc/preaway.ts`.
 - `yarn test`, and the existing `away-live.mjs` and `away-two-devices.mjs`
-  runs, unchanged.
+  runs (their Off steps now click Available).
