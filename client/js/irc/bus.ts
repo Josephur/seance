@@ -363,15 +363,12 @@ export function registerBusHandlers(bus: EventBus, registry: ClientRegistry): vo
 
 	bus.handle("network:presence-mode", ({network, mode}) => setPresenceMode(network, mode));
 
-	// Another device turned the account's do not disturb off
-	// (irc/pushMute.ts): a network in mode dnd here goes back to auto too,
-	// saved, or it would stay away and silent with push unmuted, and write
-	// the mute again on the next load.
-	bus.on("dnd:cleared", ({network}) => {
-		if (registry.clientForNetwork(network)?.presenceMode === "dnd") {
-			setPresenceMode(network, "auto");
-		}
-	});
+	// `dnd:cleared` (another device's DND Off, irc/pushMute.ts) leaves the
+	// network modes alone: a mode is the shared choice (irc/presenceShare.ts),
+	// and a device that leaves mode dnd sends its new mode itself. Turning it
+	// to auto here stamped a newer choice than the one that cleared the mute,
+	// and every device adopted auto. client/js/dnd.ts turns this device's own
+	// DND off on it.
 
 	// A newer choice from another device, adopted (irc/presenceShare.ts):
 	// saved, so the next load declares it.

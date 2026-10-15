@@ -1,5 +1,7 @@
-// Presence modes on TWO devices of one account (docs/projects/do-not-disturb.md):
-// device A on Away, device B on Online, then neither looked at (hidden, and
+// Presence modes on TWO devices of one account (docs/projects/do-not-disturb.md,
+// docs/projects/shared-presence-modes.md): device A sets Away, which both
+// devices share (the mode is shared, so they cannot differ), then neither
+// looked at (hidden, and
 // later closed), then each opened on its own. Records, per step, what other
 // users see (an observer's WHO flag and WHOIS 301), whether a highlight is
 // pushed (the ircd log's `notify_account … for <account>` line, written only
@@ -170,14 +172,16 @@ export default async function run(page) {
 		await b.evaluate(SHOW);
 		await page.sleep(11000);
 
-		// A → Away, B → Online.
+		// One shared mode: Away on A reaches B (docs/projects/shared-presence-modes.md).
 		await menu(page, DOT, "presence-away");
-		await menu(b, DOT, "presence-online");
-		await page.sleep(SETTLE);
+		await page.sleep(4000);
 
 		// 1. Both looked at.
-		let r = await record("1. A Away, B Online, both open and focused");
-		page.check("1. present to others (B is Online)", r.others === "present");
+		let r = await record("1. both Away, both open and focused");
+		page.check(
+			`1. away to others: both devices on Away (${r.others})`,
+			r.others.startsWith("away")
+		);
 
 		// 2. Neither looked at; B said something just before.
 		await openChannel(b);
@@ -186,10 +190,7 @@ export default async function run(page) {
 		await b.evaluate(HIDE);
 		await page.sleep(SETTLE);
 		r = await record("2. both hidden, B spoke seconds ago");
-		page.check(
-			"2. still present to others (B Online ignores attention)",
-			r.others === "present"
-		);
+		page.check(`2. still away to others (${r.others})`, r.others.startsWith("away"));
 
 		// 3. Neither looked at, B silent past the idle window.
 		await page.sleep((IDLE_S + 5) * 1000);
@@ -199,14 +200,14 @@ export default async function run(page) {
 		await page.evaluate(SHOW);
 		await page.sleep(SETTLE);
 		r = await record("4. A opened (B hidden)");
-		page.check("4. A stays Away on its own (its dot)", /^Away/.test(r.dotA ?? ""));
+		page.check("4. B follows A's Away (its dot)", /^Away/.test(r.dotB ?? ""));
 
 		// 5. A put away again, B opened on its own.
 		await page.evaluate(HIDE);
 		await b.evaluate(SHOW);
 		await page.sleep(SETTLE);
 		r = await record("5. B opened (A hidden)");
-		page.check("5. present to others", r.others === "present");
+		page.check(`5. away to others (${r.others})`, r.others.startsWith("away"));
 
 		// 6. Both closed (A first, B last).
 		await b.evaluate(HIDE);
@@ -220,8 +221,9 @@ export default async function run(page) {
 		await reopen(page);
 		await page.sleep(16000);
 		r = await record("7. A reopened alone (B closed)", {bOpen: false});
-		// B closed last, on Online, so the held session was present; A
-		// resumes it on Away (presence.ts presenceRegistered repeats the star).
+		// A resumes the held session on Away (presence.ts presenceRegistered
+		// repeats the star; its regression with B on Online is pinned in
+		// test/irc/preaway.ts, as the modes can no longer differ).
 		page.check(
 			`7. A on Away resuming alone is away to others (${r.others})`,
 			r.others.startsWith("away")

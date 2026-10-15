@@ -27,6 +27,9 @@ export async function startDevice({
 	width = 1280,
 	height = 900,
 	timeout = 20000,
+	// Print this device's IRC WebSocket lines as they pass (they are always
+	// kept in `wsFrames`); SEANCE_DEVICE_FRAMES=1 turns it on for any scenario.
+	logFrames = process.env.SEANCE_DEVICE_FRAMES === "1",
 } = {}) {
 	const profile = mkdtempSync(join(tmpdir(), `seance-${name}-`));
 	const proc = spawn(
@@ -105,6 +108,7 @@ export async function startDevice({
 
 	const pending = new Map();
 	const consoleErrors = [];
+	const wsFrames = [];
 	let nextId = 0;
 
 	socket.onmessage = (ev) => {
@@ -114,6 +118,17 @@ export async function startDevice({
 			const {res, rej} = pending.get(msg.id);
 			pending.delete(msg.id);
 			msg.error ? rej(new Error(JSON.stringify(msg.error))) : res(msg.result);
+		} else if (
+			msg.method === "Network.webSocketFrameSent" ||
+			msg.method === "Network.webSocketFrameReceived"
+		) {
+			const out = msg.method === "Network.webSocketFrameSent";
+			const line = String(msg.params.response?.payloadData ?? "").replace(/\r?\n$/, "");
+			wsFrames.push({dir: out ? "out" : "in", at: Date.now(), line});
+
+			if (logFrames) {
+				console.log(`${name} ws ${out ? "→" : "←"} ${line.slice(0, 200)}`);
+			}
 		} else if (msg.method === "Runtime.exceptionThrown") {
 			const d = msg.params.exceptionDetails;
 			consoleErrors.push(d.exception?.description ?? d.text);
@@ -226,6 +241,7 @@ export async function startDevice({
 
 	await send("Page.enable");
 	await send("Runtime.enable");
+	await send("Network.enable");
 	await send("Emulation.setDeviceMetricsOverride", {
 		width,
 		height,
@@ -251,6 +267,7 @@ export async function startDevice({
 		grantPermissions: (permissions, origin) =>
 			send("Browser.grantPermissions", {permissions, ...(origin ? {origin} : {})}),
 		consoleErrors,
+		wsFrames,
 		async close() {
 			try {
 				socket.close();

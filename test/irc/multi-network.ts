@@ -635,12 +635,19 @@ describe("multiple networks", function () {
 			expect(saved.get("net-a")?.presenceMode).to.equal("away");
 		});
 
-		it("another device's Off sets a network in mode dnd back to auto, saved (probe C)", function () {
+		it("another device's mute clear leaves a shared mode dnd as it is (probe C)", function () {
+			// The mode is the shared choice (irc/presenceShare.ts): a device that
+			// leaves dnd sends its new mode through seance/presence. Resetting it
+			// to auto here would stamp a newer choice than the one that cleared
+			// the mute, and every device would adopt auto instead.
 			stored();
 			const a = manager.createNetwork({uuid: "net-a", nick: "alice"});
 			const t = registerWithMute(a);
 			socket.emit("network:presence-mode", {network: "net-a", mode: "dnd"});
-			const set = t.sent.find((l) => l.startsWith("METADATA * SET")) as string;
+			const at = a.presenceAt;
+			const set = t.sent.find((l) =>
+				l.startsWith("METADATA * SET draft/webpush/mute")
+			) as string;
 			const value = set.split("private :")[1];
 			t.lines(
 				`:irc.test 761 alice alice draft/webpush/mute private :${value}`,
@@ -648,13 +655,12 @@ describe("multiple networks", function () {
 			);
 			const mark = t.sent.length;
 			t.lines(":irc.test METADATA alice draft/webpush/mute *");
-			expect(a.presenceMode).to.equal("auto");
-			expect(saved.get("net-a")).to.not.have.property("presenceMode");
-			expect(a.presenceSnapshot()).to.include({mode: "auto", dnd: false});
-			expect(a.muteSuppressed).to.equal(false);
+			expect(a.presenceMode).to.equal("dnd");
+			expect(a.presenceAt).to.equal(at);
+			expect(saved.get("net-a")?.presenceMode).to.equal("dnd");
 			const after = t.sent.slice(mark);
-			expect(after.filter((l) => l.includes("METADATA"))).to.deep.equal([]);
-			expect(after).to.include("AWAY");
+			expect(after.filter((l) => l.includes("seance/presence"))).to.deep.equal([]);
+			expect(after).to.not.include("AWAY");
 		});
 
 		it("dnd:cleared leaves a network in another mode as it is", function () {

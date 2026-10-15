@@ -310,3 +310,68 @@ describe("shared presence on the wire (irc/presenceShare.ts)", function () {
 		});
 	});
 });
+
+describe("subscribing to the shared keys (client.ts)", function () {
+	let clock: sinon.SinonFakeTimers;
+
+	beforeEach(function () {
+		clock = sinon.useFakeTimers({now: T0, toFake: ["setTimeout", "clearTimeout", "Date"]});
+	});
+
+	afterEach(function () {
+		clock.restore();
+	});
+
+	const SUB = `METADATA * SUB draft/webpush/mute ${PRESENCE_KEY} ${AWAY_KEY}`;
+	const GET = `METADATA * GET draft/webpush/mute ${PRESENCE_KEY} ${AWAY_KEY}`;
+
+	/** A SASL login on a server offering `metadata`; returns the CAP END flush. */
+	function saslLogin(h: Harness, metadata: string): string[] {
+		h.client.connect();
+		h.transport.open();
+		h.transport.line(
+			`:irc.test CAP * LS :server-time message-tags batch sasl=PLAIN ${metadata}`
+		);
+		const req = h.transport.sent.filter((l) => l.startsWith("CAP REQ :")).pop() as string;
+		h.transport.line(`:irc.test CAP alice ACK :${req.slice("CAP REQ :".length)}`);
+		h.sent();
+		h.transport.lines(
+			"AUTHENTICATE +",
+			":irc.test 900 alice alice!a@h alice :You are now logged in as alice",
+			":irc.test 903 alice :SASL authentication successful"
+		);
+		return h.sent();
+	}
+
+	const welcome = (h: Harness) =>
+		h.transport.lines(
+			":irc.test 001 alice :Welcome",
+			":irc.test 422 alice :MOTD File is missing"
+		);
+
+	it("subscribes before CAP END when the server offers before-connect, then only GETs", function () {
+		const h = setup({join: "", sasl: "plain", saslAccount: "alice", saslPassword: "s3cret"});
+		const flush = saslLogin(h, "draft/metadata-2=before-connect,max-subs=50");
+		expect(flush.slice(-2)).to.deep.equal([SUB, "CAP END"]);
+		welcome(h);
+		clock.tick(MUTE_READ_DELAY_MS);
+		expect(h.sent().filter((l) => l.startsWith("METADATA"))).to.deep.equal([GET]);
+	});
+
+	it("without before-connect, subscribes with the login read as before", function () {
+		const h = setup({join: "", sasl: "plain", saslAccount: "alice", saslPassword: "s3cret"});
+		const flush = saslLogin(h, "draft/metadata-2=max-subs=50");
+		expect(flush.filter((l) => l.startsWith("METADATA"))).to.deep.equal([]);
+		welcome(h);
+		clock.tick(MUTE_READ_DELAY_MS);
+		expect(h.sent().filter((l) => l.startsWith("METADATA"))).to.deep.equal([SUB, GET]);
+	});
+
+	it("a reconnect subscribes again", function () {
+		const h = setup({join: "", sasl: "plain", saslAccount: "alice", saslPassword: "s3cret"});
+		saslLogin(h, "draft/metadata-2=before-connect");
+		welcome(h);
+		h.transport.closed();
+		expect(h.client.metadataSubscribed).to.equal(false);
+	});
+});
