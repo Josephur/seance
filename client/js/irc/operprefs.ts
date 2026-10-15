@@ -57,12 +57,75 @@ export function useOperPrefsBackend(next: Backend | null): void {
 	backend = next ?? storage;
 }
 
+const isObject = (value: unknown): value is Record<string, unknown> =>
+	typeof value === "object" && value !== null && !Array.isArray(value);
+
+const isRoute = (value: unknown): value is Route =>
+	value === "active" || value === "network" || value === "off";
+
+/** Drop `prefs[field]` unless it is an object, and each of its entries that `valid` rejects. */
+function keepValid(
+	prefs: Record<string, unknown>,
+	field: string,
+	valid: (value: unknown) => boolean
+): void {
+	const map = prefs[field];
+
+	if (map === undefined) {
+		return;
+	}
+
+	if (!isObject(map)) {
+		delete prefs[field];
+		return;
+	}
+
+	for (const [key, value] of Object.entries(map)) {
+		if (!valid(value)) {
+			delete map[key];
+		}
+	}
+}
+
 function readAll(): Record<string, OperPrefs> {
 	try {
 		const parsed: unknown = JSON.parse(backend.get(OPER_PREFS_KEY) ?? "{}");
-		return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-			? (parsed as Record<string, OperPrefs>)
-			: {};
+
+		if (!isObject(parsed)) {
+			return {};
+		}
+
+		// A restored settings file can carry anything here; a temporary route
+		// without a numeric `until` made every sweep throw, for good, and a
+		// string snomask went out as typed in `MODE <me> +s`.
+		for (const [uuid, prefs] of Object.entries(parsed)) {
+			if (!isObject(prefs)) {
+				delete parsed[uuid];
+				continue;
+			}
+
+			if (prefs.snomask !== undefined && !Number.isInteger(prefs.snomask)) {
+				delete prefs.snomask;
+			}
+
+			if (prefs.wasOper !== undefined && typeof prefs.wasOper !== "boolean") {
+				delete prefs.wasOper;
+			}
+
+			keepValid(prefs, "routes", (route) => isRoute(route));
+			keepValid(prefs, "notes", (note) => typeof note === "string");
+			keepValid(
+				prefs,
+				"temporary",
+				(entry) =>
+					isObject(entry) &&
+					typeof entry.until === "number" &&
+					isRoute(entry.route) &&
+					(entry.revert === undefined || isRoute(entry.revert))
+			);
+		}
+
+		return parsed as Record<string, OperPrefs>;
 	} catch {
 		return {};
 	}
@@ -235,20 +298,25 @@ export function setWasOper(uuid: string, wasOper: boolean): void {
 
 /** The note kept about `key` (a channel, an IP, an account) on this network, or "". */
 export function getNote(uuid: string, key: string): string {
-	return getOperPrefs(uuid).notes?.[key.toLowerCase()] ?? "";
+	const notes = getOperPrefs(uuid).notes ?? {};
+	const k = key.toLowerCase();
+
+	// Own keys only: `constructor` is a fine nick, and not a note.
+	return Object.hasOwn(notes, k) ? notes[k] : "";
 }
 
 /** Keep (or, blank, drop) the note about `key`. */
 export function setNote(uuid: string, key: string, text: string): void {
 	update(uuid, (prefs) => {
-		const notes = {...(prefs.notes ?? {})};
 		const k = key.toLowerCase();
+		const entries = Object.entries(prefs.notes ?? {}).filter(([name]) => name !== k);
 
-		if (text.trim() === "") {
-			delete notes[k];
-		} else {
-			notes[k] = text.trim();
+		if (text.trim() !== "") {
+			entries.push([k, text.trim()]);
 		}
+
+		// fromEntries defines keys, so `__proto__` is a key like any other
+		const notes = Object.fromEntries(entries);
 
 		if (Object.keys(notes).length > 0) {
 			prefs.notes = notes;
