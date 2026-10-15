@@ -32,6 +32,23 @@ export interface Stamped {
 	value: string;
 	/** Unix ms of the user's choice. */
 	at: number;
+	/**
+	 * A value we cannot read (a later client's format, spec § 3): not ours
+	 * to answer. `at` is then the device's choice when it was read; only a
+	 * choice made after it is written over it.
+	 */
+	opaque?: true;
+}
+
+/** A value read: parsed, absent (null), or opaque against the device's `mine`. */
+function readValue(text: string, words: readonly string[], mine: Stamped | null): Stamped | null {
+	const parsed = parseStamped(text, words);
+
+	if (parsed || text === "") {
+		return parsed;
+	}
+
+	return {value: "", at: mine?.at ?? 0, opaque: true};
 }
 
 /** `<word> <ms>` with a word from `words`; anything else is null. */
@@ -83,7 +100,12 @@ function writeIfNewer(
 	server: Stamped | null,
 	mine: Stamped | null
 ): Stamped | null {
-	if (!known || !mine || !canShare(client) || (server && !newer(mine, server))) {
+	if (
+		!known ||
+		!mine ||
+		!canShare(client) ||
+		(server && (server.opaque ? mine.at <= server.at : !newer(mine, server)))
+	) {
 		return server;
 	}
 
@@ -111,12 +133,12 @@ export function syncShared(client: IrcClient): void {
 
 /** A `seance/presence` value read (761, 766 as "", or the subscription's line). */
 export function onPresenceValue(client: IrcClient, value: string): void {
-	const server = parseStamped(value, PRESENCE_MODES);
+	const mine = localMode(client);
+	const server = readValue(value, PRESENCE_MODES, mine);
 	client.presenceKnown = true;
 	client.presenceServer = server;
-	const mine = localMode(client);
 
-	if (server && (!mine || newer(server, mine))) {
+	if (server && !server.opaque && (!mine || newer(server, mine))) {
 		client.setPresenceMode(server.value as PresenceMode, server.at);
 		client.dispatchBus("network:presence-shared", {
 			network: client.uuid,
@@ -131,12 +153,12 @@ export function onPresenceValue(client: IrcClient, value: string): void {
 
 /** A `seance/away` value read: adopt it here (the page fans it out) or write ours. */
 export function onAwayValue(client: IrcClient, value: string): void {
-	const server = parseStamped(value, AWAY_WORDS);
+	const mine = localAway(client);
+	const server = readValue(value, AWAY_WORDS, mine);
 	client.awayKnown = true;
 	client.awayServer = server;
-	const mine = localAway(client);
 
-	if (server && (!mine || newer(server, mine))) {
+	if (server && !server.opaque && (!mine || newer(server, mine))) {
 		const away: GlobalAway = {on: server.value === "on", at: server.at};
 		client.setGlobalAway(away);
 		client.dispatchBus("away:shared", {network: client.uuid, on: away.on, at: server.at});

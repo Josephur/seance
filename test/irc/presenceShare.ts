@@ -195,6 +195,21 @@ describe("shared presence on the wire (irc/presenceShare.ts)", function () {
 			]);
 		});
 
+		it("an unknown value is not answered with a write; a choice made after it is written", function () {
+			// spec § 3: a later client can extend the format without us fighting it.
+			const h = connected();
+			h.client.setPresenceMode("online", T0 - 100);
+			answer(h, PRESENCE_KEY, `busy ${T0 + 5000}`);
+			expect(sets(h, PRESENCE_KEY)).to.deep.equal([]);
+			live(h, PRESENCE_KEY, `busy ${T0 + 6000}`);
+			expect(sets(h, PRESENCE_KEY)).to.deep.equal([]);
+			expect(h.client.presenceMode).to.equal("online");
+			h.client.setPresenceMode("away", T0);
+			expect(sets(h, PRESENCE_KEY)).to.deep.equal([
+				`METADATA * SET ${PRESENCE_KEY} private :away ${T0}`,
+			]);
+		});
+
 		it("a choice before the read waits for it", function () {
 			const h = registered();
 			h.client.setPresenceMode("away", T0);
@@ -300,6 +315,14 @@ describe("shared presence on the wire (irc/presenceShare.ts)", function () {
 				"AWAY",
 				`METADATA * SET ${AWAY_KEY} private :off ${T0 + 1}`,
 			]);
+		});
+
+		it("an unknown value is not answered with a write, even with a switch of our own", function () {
+			const h = connected();
+			h.client.setGlobalAway({on: true, at: T0 - 100});
+			answer(h, AWAY_KEY, `maybe ${T0}`);
+			expect(sets(h, AWAY_KEY)).to.deep.equal([]);
+			expect(h.client.globalAway).to.deep.equal({on: true, at: T0 - 100});
 		});
 
 		it("ignores a value it cannot read", function () {

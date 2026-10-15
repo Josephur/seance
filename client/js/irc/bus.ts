@@ -305,9 +305,10 @@ export function registerBusHandlers(bus: EventBus, registry: ClientRegistry): vo
 		const was = client?.presenceMode ?? saved.presenceModeOf(existing);
 		const modeChosen = saved.presenceModeOf(next) !== was;
 
-		if (modeChosen) {
-			next.presenceAt = Date.now();
-		}
+		// The time is never the form's: its defaults may be from before a
+		// choice made since (another device's, adopted, or the dot's).
+		const kept = client?.presenceAt ?? existing?.presenceAt;
+		next.presenceAt = modeChosen ? Date.now() : kept;
 
 		saved.save(next);
 

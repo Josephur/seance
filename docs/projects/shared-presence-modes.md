@@ -287,3 +287,13 @@ then. Accepted.
   in which a connection missed a change. A candidate upstream issue.
 - A `SUB` before `CAP END` is accepted (770, answered under the
   pre-registration nick) and survives registration.
+- **Known gap**: a device that resumes a held session as primary can be
+  handed a stale value that is newer than its own choice (in the burst, and
+  again by the GET). It adopts it and writes nothing, so no other device
+  sees a disagreement to repair: it holds the stale value until another
+  device writes again. No read the client can make gets past the stale
+  copy; the fix belongs in the server (keep the per-connection copy in step
+  with the account store).
+- A value this build cannot read (a later client's format) is never
+  answered with a write; only a choice made on this device after it was
+  read goes over it (§ 3: no fighting over a format we do not know).

@@ -693,6 +693,33 @@ describe("multiple networks", function () {
 			expect(saved.get("net-a")?.presenceAt).to.equal(1792000000000);
 		});
 
+		it("network:edit never takes the mode's time from the form (its defaults may be stale)", function () {
+			saved.save({...stored(), presenceMode: "away", presenceAt: 1000});
+			const a = manager.createNetwork({uuid: "net-a", nick: "alice"});
+			a.setPresenceMode("away", 1000);
+			// Adopted from another device while the form was open:
+			socket.dispatch("network:presence-shared", {network: "net-a", mode: "away", at: 2000});
+			a.setPresenceMode("away", 2000);
+			// The form posts its defaults back, the old time among them.
+			socket.emit("network:edit", {
+				uuid: "net-a",
+				nick: "alice2",
+				host: "net-a.test",
+				presenceMode: "away",
+				presenceAt: 1000,
+			});
+			expect(saved.get("net-a")?.presenceAt).to.equal(2000);
+			expect(a.presenceAt).to.equal(2000);
+		});
+
+		it("network:edit of an unsaved network keeps the dot's time", function () {
+			const a = manager.createNetwork({uuid: "net-a", nick: "alice"});
+			socket.emit("network:presence-mode", {network: "net-a", mode: "dnd"});
+			const at = a.presenceAt;
+			socket.emit("network:edit", {uuid: "net-a", nick: "alice", host: "net-a.test"});
+			expect(saved.get("net-a")?.presenceAt).to.equal(at);
+		});
+
 		it("network:edit with a new mode stamps it; with the same mode stamps nothing", function () {
 			saved.save({...stored(), presenceMode: "away", presenceAt: 1000});
 			const a = manager.createNetwork({uuid: "net-a", nick: "alice"});
