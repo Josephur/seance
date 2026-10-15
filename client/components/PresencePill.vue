@@ -38,8 +38,9 @@ import type {ContextMenuItem} from "../js/helpers/contextMenu";
 
 const HOUR = 3600_000;
 
-// The global do-not-disturb switch under the sidebar logo (client/js/dnd.ts):
-// the pill says what holds now, its menu sets it.
+// The global presence switch under the sidebar logo (client/js/dnd.ts):
+// Available, Away (global away) or do not disturb; the pill says what holds
+// now, its menu sets it.
 export default defineComponent({
 	name: "PresencePill",
 	setup() {
@@ -83,19 +84,27 @@ export default defineComponent({
 			const following = schedule.enabled && schedule.days.length > 0;
 			const items: ContextMenuItem[] = [
 				{
-					label: "Off",
+					label: "Available",
 					type: "item",
-					class: "dnd-off",
-					// Off only while the pill does not read DND: with every network in
+					class: "status-available",
+					// Only while the pill does not read DND: with every network in
 					// mode dnd the global switch is off, but the pill says Do not
-					// disturb, and a ticked Off would not.
-					checked: dnd.pillState.value !== "dnd",
-					action: () => dnd.turnOff(),
+					// disturb, and a ticked Available would not.
+					checked: dnd.status.value === "available" && dnd.pillState.value !== "dnd",
+					action: () => dnd.available(),
 				},
-				forSpan(HOUR, "For 1 hour", "dnd-1h"),
-				forSpan(8 * HOUR, "For 8 hours", "dnd-8h"),
 				{
-					label: "Until I turn it off",
+					label: "Away",
+					type: "item",
+					class: "status-away",
+					checked: dnd.status.value === "away",
+					action: () => dnd.setAway(true),
+				},
+				{type: "divider"},
+				forSpan(HOUR, "Do not disturb for 1 hour", "dnd-1h"),
+				forSpan(8 * HOUR, "Do not disturb for 8 hours", "dnd-8h"),
+				{
+					label: "Do not disturb until I turn it off",
 					type: "item",
 					class: "dnd-indefinite",
 					checked: manual.kind === "indefinite",

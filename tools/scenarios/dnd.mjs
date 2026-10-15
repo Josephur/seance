@@ -285,11 +285,35 @@ export default async function run(page) {
 		);
 
 		// ---- Off.
-		await choose(PILL, "dnd-off");
+		await choose(PILL, "status-available");
 		await page.waitFor(`!document.querySelector('${PILL}.is-dnd')`, {label: "pill off"});
 		await page.sleep(500);
 		page.check("Off sent AWAY", awayLines(page).at(-1) === "AWAY");
 		page.check("the dot is green again", (await page.count(`${DOT}.is-online`)) === 1);
+
+		// ---- Global away (docs/projects/shared-presence-modes.md § 2).
+		const pillNowText = () =>
+			page.evaluate(`document.querySelector('${PILL}').textContent.trim()`);
+		const dotTitle = () =>
+			page.evaluate(`document.querySelector('${DOT}').getAttribute("title")`);
+		await choose(PILL, "status-away");
+		await page.sleep(500);
+		page.check(
+			`global away: the pill reads Away (${await pillNowText()})`,
+			/^Away/.test(await pillNowText())
+		);
+		page.check("global away sent AWAY *", awayLines(page).at(-1) === "AWAY *");
+		page.check(
+			`global away: the dot reads its own mode, away (${await dotTitle()})`,
+			/ · away$/.test(await dotTitle())
+		);
+		await choose(PILL, "status-available");
+		await page.sleep(500);
+		page.check(
+			`Available: the pill leaves Away (${await pillNowText()})`,
+			!/^Away/.test(await pillNowText())
+		);
+		page.check("Available sent AWAY", awayLines(page).at(-1) === "AWAY");
 
 		// ---- The dot: no navigation, no drag, its own context menu. With a
 		// channel open, so a click that reached the lobby row would move the view.
@@ -418,7 +442,7 @@ export default async function run(page) {
 		// Do not disturb, so its menu ticks nothing in the global section.
 		await openDrawer();
 		await press(PILL);
-		await page.waitFor(`document.querySelector('${MENU_ITEM("dnd-off")}')`, {
+		await page.waitFor(`document.querySelector('${MENU_ITEM("status-available")}')`, {
 			label: "the pill menu",
 		});
 		const globalTicks = await page.evaluate(
@@ -544,7 +568,7 @@ export default async function run(page) {
 			huge.dotShown
 		);
 		await page.screenshot("dnd-huge", {selector: "#sidebar"});
-		await choose(PILL, "dnd-off");
+		await choose(PILL, "status-available");
 		await page.evaluate(`document.documentElement.dataset.fontSize = ${JSON.stringify(step)}`);
 
 		// ---- The schedule's window in the menu follows the clock setting.
@@ -564,7 +588,7 @@ export default async function run(page) {
 			);
 			const text = raw.replace(/\u2060/g, "").replace(/\u00a0/g, " ");
 			// Off closes it and changes nothing here (DND is off by now).
-			await press(MENU_ITEM("dnd-off"));
+			await press(MENU_ITEM("status-available"));
 			await page.waitFor(`!document.querySelector('${MENU}')`, {label: "the menu to close"});
 			return text;
 		};
