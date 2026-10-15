@@ -8,6 +8,7 @@ import {
 	nextWindow,
 	presenceSummary,
 	parseDndState,
+	pillStatus,
 	reconcileRemote,
 	scheduleTimeText,
 	serializeDndState,
@@ -283,5 +284,41 @@ describe("do not disturb model (helpers/dnd.ts)", function () {
 		expect(scheduleTimeText("00:30", true)).to.equal("12:30 AM");
 		expect(scheduleTimeText("12:00", true)).to.equal("12:00 PM");
 		expect(scheduleTimeText("bad", true)).to.equal("bad");
+	});
+
+	it("global away defaults off, parses, and a bad value resets only itself", function () {
+		expect(defaultDndState().away).to.deep.equal({on: false, at: null});
+		const s = {...defaultDndState(), away: {on: true, at: 1792000000000}};
+		expect(parseDndState(serializeDndState(s)).away).to.deep.equal({
+			on: true,
+			at: 1792000000000,
+		});
+
+		for (const bad of [
+			null,
+			"on",
+			{on: "yes", at: 5},
+			{on: true, at: -1},
+			{on: true, at: "5"},
+		]) {
+			const parsed = parseDndState(JSON.stringify({...s, away: bad}));
+			expect(parsed.away, JSON.stringify(bad)).to.deep.equal({on: false, at: null});
+			expect(parsed.schedule).to.deep.equal(s.schedule);
+		}
+
+		// A state saved before global away existed.
+		const old = {manual: {kind: "off"}, schedule: s.schedule, scheduleSkippedUntil: null};
+		expect(parseDndState(JSON.stringify(old)).away).to.deep.equal({on: false, at: null});
+	});
+
+	it("pillStatus: do not disturb outranks away, away outranks available", function () {
+		const now = at(2026, 10, 9, 12);
+		const base = defaultDndState();
+		expect(pillStatus(base, now)).to.equal("available");
+		expect(pillStatus({...base, away: {on: true, at: 1}}, now)).to.equal("away");
+		expect(pillStatus({...base, away: {on: false, at: 1}}, now)).to.equal("available");
+		const dnd = {...base, manual: {kind: "indefinite" as const}};
+		expect(pillStatus(dnd, now)).to.equal("dnd");
+		expect(pillStatus({...dnd, away: {on: true, at: 1}}, now)).to.equal("dnd");
 	});
 });

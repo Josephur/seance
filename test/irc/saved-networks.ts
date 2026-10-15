@@ -450,6 +450,19 @@ describe("saved-networks", function () {
 		expect(saved.presenceModeOf(bad)).to.equal("auto");
 	});
 
+	it("keeps presenceAt, and drops a malformed one", function () {
+		const base = {uuid: "p1", host: "h.test", port: 6697, tls: true, nick: "n"};
+		expect(
+			saved.normalize({...base, presenceMode: "away", presenceAt: 1792000000000})?.presenceAt
+		).to.equal(1792000000000);
+
+		for (const bad of [-1, 0, 1.5, "1792000000000", Number.NaN, Number.POSITIVE_INFINITY]) {
+			expect(saved.normalize({...base, presenceAt: bad}), String(bad)).to.not.have.property(
+				"presenceAt"
+			);
+		}
+	});
+
 	it("the edit form sets the presence mode and keeps it when absent", function () {
 		const base = saved.normalize({uuid: "p4", host: "irc.test", presenceMode: "dnd"})!;
 		expect(saved.fromForm({host: "irc.test"}, base).presenceMode).to.equal("dnd");

@@ -30,11 +30,23 @@ export type DndManual =
 	| {kind: "until"; until: number; span?: number}
 	| {kind: "indefinite"};
 
+/**
+ * Global away (docs/projects/shared-presence-modes.md § 2): every network
+ * away while on, each keeping its own mode. `at` is the Unix ms of the
+ * user's last choice (null if never chosen); shared between devices, the
+ * most recent choice winning.
+ */
+export interface GlobalAway {
+	on: boolean;
+	at: number | null;
+}
+
 export interface DndState {
 	manual: DndManual;
 	schedule: DndSchedule;
 	/** Off pressed inside a window: that window's end (ms); ignored before it. */
 	scheduleSkippedUntil: number | null;
+	away: GlobalAway;
 }
 
 export interface DndVerdict {
@@ -53,6 +65,7 @@ export function defaultDndState(): DndState {
 		manual: {kind: "off"},
 		schedule: {enabled: false, start: "23:00", end: "07:00", days: [0, 1, 2, 3, 4, 5, 6]},
 		scheduleSkippedUntil: null,
+		away: {on: false, at: null},
 	};
 }
 
@@ -196,6 +209,26 @@ function asSchedule(raw: unknown): DndSchedule | undefined {
 	return {enabled: r.enabled, start: r.start, end: r.end, days};
 }
 
+function asAway(raw: unknown): GlobalAway | undefined {
+	if (!raw || typeof raw !== "object") {
+		return undefined;
+	}
+
+	const r = raw as Record<string, unknown>;
+
+	if (typeof r.on !== "boolean") {
+		return undefined;
+	}
+
+	if (r.at === null) {
+		return {on: r.on, at: null};
+	}
+
+	return typeof r.at === "number" && Number.isSafeInteger(r.at) && r.at > 0
+		? {on: r.on, at: r.at}
+		: undefined;
+}
+
 export function parseDndState(raw: string | null): DndState {
 	if (!raw) {
 		return defaultDndState();
@@ -216,7 +249,8 @@ export function parseDndState(raw: string | null): DndState {
 			typeof v.scheduleSkippedUntil === "number" && Number.isFinite(v.scheduleSkippedUntil)
 				? v.scheduleSkippedUntil
 				: null;
-		return {manual, schedule, scheduleSkippedUntil: skipped};
+		const away = asAway(v.away) ?? def.away;
+		return {manual, schedule, scheduleSkippedUntil: skipped, away};
 	} catch {
 		return defaultDndState();
 	}
@@ -337,3 +371,14 @@ export const SUMMARY_LABELS: Record<PresenceSummary, string> = {
 	dnd: "Do not disturb",
 	mixed: "Mixed",
 };
+
+/** What the pill says and ticks: do not disturb outranks global away. */
+export type PillStatus = "available" | "away" | "dnd";
+
+export function pillStatus(state: DndState, now: Date): PillStatus {
+	if (dndAt(state, now).active) {
+		return "dnd";
+	}
+
+	return state.away.on ? "away" : "available";
+}

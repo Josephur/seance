@@ -70,6 +70,12 @@ export type SavedNetwork = ConnectOptions & {
 	services?: ServicesConfig;
 	/** Online / Auto / Away / Do not disturb; absent = auto (docs/projects/do-not-disturb.md). */
 	presenceMode?: PresenceMode;
+	/**
+	 * When the user chose `presenceMode` (Unix ms, on the device that chose
+	 * it); absent for a mode never chosen. Shared between devices, the most
+	 * recent choice winning (docs/projects/shared-presence-modes.md).
+	 */
+	presenceAt?: number;
 };
 
 /** The subset of the localStorage wrapper this module needs. */
@@ -260,6 +266,12 @@ export function normalize(raw: Record<string, unknown>): SavedNetwork | undefine
 		PRESENCE_MODES.includes(mode as PresenceMode)
 	) {
 		net.presenceMode = mode as PresenceMode;
+	}
+
+	const at = raw.presenceAt;
+
+	if (typeof at === "number" && Number.isSafeInteger(at) && at > 0) {
+		net.presenceAt = at;
 	}
 
 	return net;
