@@ -31,9 +31,9 @@ const linkFor = (nick) =>
 
 export const url = linkFor(`psa${RUN}`);
 // A's /disconnect: the ircd answers the QUIT with a close frame and then its
-// ERROR line, which Chrome reports as "Data frame received after close" (the
+// ERROR line, which Chrome reports as "Data frame (or Close) received after close" (the
 // server's close handshake, as in network-panel.mjs).
-export const allowWsFrameErrors = /Data frame received after close/;
+export const allowWsFrameErrors = /(Data frame|Close) received after close/;
 
 const LOBBY = '.channel-list-item[data-type="lobby"]';
 const DOT = `${LOBBY} .lobby-presence .presence-dot`;
