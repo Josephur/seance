@@ -300,6 +300,15 @@ export function registerBusHandlers(bus: EventBus, registry: ClientRegistry): vo
 				presenceMode: client?.presenceMode,
 			});
 		const next = saved.fromForm(data, base);
+		// A different mode from the form is a choice made now (shared,
+		// irc/presenceShare.ts); the same mode posted again is not.
+		const was = client?.presenceMode ?? saved.presenceModeOf(existing);
+		const modeChosen = saved.presenceModeOf(next) !== was;
+
+		if (modeChosen) {
+			next.presenceAt = Date.now();
+		}
+
 		saved.save(next);
 
 		if (client) {
@@ -319,7 +328,10 @@ export function registerBusHandlers(bus: EventBus, registry: ClientRegistry): vo
 
 			// Services support applies at once: the feed and the ban path read it live.
 			client.setServices(next.services);
-			client.setPresenceMode(saved.presenceModeOf(next));
+			client.setPresenceMode(
+				saved.presenceModeOf(next),
+				modeChosen ? next.presenceAt : undefined
+			);
 		}
 
 		const info = networkInfo(registry, uuid);
@@ -329,17 +341,24 @@ export function registerBusHandlers(bus: EventBus, registry: ClientRegistry): vo
 		}
 	});
 
-	// The lobby row's presence dot (NetworkLobby.vue): applied at once, and
+	// The lobby row's presence dot (NetworkLobby.vue), the network form and
+	// another device's DND Off: a choice made on this device, applied at
+	// once, stamped with its time and shared (irc/presenceShare.ts), and
 	// saved when the network is a saved one.
 	const setPresenceMode = (network: string, mode: PresenceMode): void => {
 		const client = registry.clientForNetwork(network);
 		const existing = saved.get(network);
+		const at = Date.now();
 
 		if (existing) {
-			saved.save({...existing, presenceMode: mode === "auto" ? undefined : mode});
+			saved.save({
+				...existing,
+				presenceMode: mode === "auto" ? undefined : mode,
+				presenceAt: at,
+			});
 		}
 
-		client?.setPresenceMode(mode);
+		client?.setPresenceMode(mode, at);
 	};
 
 	bus.handle("network:presence-mode", ({network, mode}) => setPresenceMode(network, mode));
@@ -351,6 +370,20 @@ export function registerBusHandlers(bus: EventBus, registry: ClientRegistry): vo
 	bus.on("dnd:cleared", ({network}) => {
 		if (registry.clientForNetwork(network)?.presenceMode === "dnd") {
 			setPresenceMode(network, "auto");
+		}
+	});
+
+	// A newer choice from another device, adopted (irc/presenceShare.ts):
+	// saved, so the next load declares it.
+	bus.on("network:presence-shared", ({network, mode, at}) => {
+		const existing = saved.get(network);
+
+		if (existing) {
+			saved.save({
+				...existing,
+				presenceMode: mode === "auto" ? undefined : mode,
+				presenceAt: at,
+			});
 		}
 	});
 

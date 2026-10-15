@@ -665,5 +665,50 @@ describe("multiple networks", function () {
 			expect(a.presenceMode).to.equal("away");
 			expect(saved.get("net-a")?.presenceMode).to.equal("away");
 		});
+
+		it("a choice on the dot is stamped, on the client and the saved entry", function () {
+			stored();
+			const a = manager.createNetwork({uuid: "net-a", nick: "alice"});
+			const before = Date.now();
+			socket.emit("network:presence-mode", {network: "net-a", mode: "away"});
+			expect(saved.get("net-a")?.presenceAt).to.be.at.least(before);
+			expect(a.presenceAt).to.equal(saved.get("net-a")?.presenceAt);
+		});
+
+		it("network:presence-shared saves the adopted mode and its time", function () {
+			stored();
+			manager.createNetwork({uuid: "net-a", nick: "alice"});
+			socket.dispatch("network:presence-shared", {
+				network: "net-a",
+				mode: "dnd",
+				at: 1792000000000,
+			});
+			expect(saved.get("net-a")?.presenceMode).to.equal("dnd");
+			expect(saved.get("net-a")?.presenceAt).to.equal(1792000000000);
+		});
+
+		it("network:edit with a new mode stamps it; with the same mode stamps nothing", function () {
+			saved.save({...stored(), presenceMode: "away", presenceAt: 1000});
+			const a = manager.createNetwork({uuid: "net-a", nick: "alice"});
+			a.setPresenceMode("away", 1000);
+			socket.emit("network:edit", {
+				uuid: "net-a",
+				nick: "alice",
+				host: "net-a.test",
+				presenceMode: "away",
+			});
+			expect(saved.get("net-a")?.presenceAt).to.equal(1000);
+			expect(a.presenceAt).to.equal(1000);
+
+			socket.emit("network:edit", {
+				uuid: "net-a",
+				nick: "alice",
+				host: "net-a.test",
+				presenceMode: "online",
+			});
+			expect(saved.get("net-a")?.presenceAt).to.be.greaterThan(1000);
+			expect(a.presenceMode).to.equal("online");
+			expect(a.presenceAt).to.equal(saved.get("net-a")?.presenceAt);
+		});
 	});
 });

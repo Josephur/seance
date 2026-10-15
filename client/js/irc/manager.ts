@@ -26,9 +26,12 @@ import {claimMute, clearRemoteDnd} from "./pushMute";
 import * as saved from "./saved-networks";
 import type {SavedNetwork} from "./saved-networks";
 import type {ConnectOptions} from "./types";
+import type {GlobalAway} from "../helpers/dnd";
 
 /** The global do-not-disturb as client/js/dnd.ts last set it; new clients start with it. */
 const globalDnd: {active: boolean; until: number | null} = {active: false, until: null};
+/** The page's global away switch (client/js/dnd.ts), given to every client. */
+const globalAway: GlobalAway = {on: false, at: null};
 
 const clients = new Map<string, IrcClient>();
 
@@ -122,7 +125,9 @@ export function createNetwork(options: CreateNetworkOptions): IrcClient {
 			},
 		});
 		clients.set(entry.uuid, client);
-		client.setPresenceMode(saved.presenceModeOf(entry));
+		// A mode never chosen has no time, which leaves the client's alone.
+		client.setPresenceMode(saved.presenceModeOf(entry), entry.presenceAt);
+		client.setGlobalAway(globalAway);
 		client.setGlobalDnd(globalDnd.active, globalDnd.until);
 
 		if (entry.name) {
@@ -265,6 +270,15 @@ export function networksLeavingAwayToWorker(stashed: (uuid: string) => boolean):
  * server (`AWAY *`, the push mute) through syncPresence. `until` is a
  * Date.now() time for a timed DND, null for an indefinite one or none.
  */
+export function setGlobalAwayAll(away: GlobalAway): void {
+	globalAway.on = away.on;
+	globalAway.at = away.at;
+
+	for (const client of clients.values()) {
+		client.setGlobalAway(away);
+	}
+}
+
 export function setGlobalDndAll(active: boolean, until: number | null): void {
 	globalDnd.active = active;
 	globalDnd.until = until;
