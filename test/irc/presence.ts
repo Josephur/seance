@@ -323,6 +323,27 @@ describe("presence modes and do not disturb (presence.ts)", function () {
 		}
 	}
 
+	it("global away puts every mode away, and lifting it hands back to the mode", function () {
+		for (const mode of ["online", "auto", "away", "dnd"] as const) {
+			const h = connect();
+			h.client.setPresenceMode(mode);
+			h.sent();
+			h.client.setGlobalAway({on: true, at: 1});
+			const wanted = mode === "online" || mode === "auto" ? ["AWAY *"] : [];
+			expect(
+				h.sent().filter((l) => l.startsWith("AWAY")),
+				mode
+			).to.deep.equal(wanted);
+			expect(h.client.presenceSnapshot().away, mode).to.equal(true);
+			h.client.setGlobalAway({on: false, at: 2});
+			const back = mode === "online" || mode === "auto" ? ["AWAY"] : [];
+			expect(
+				h.sent().filter((l) => l.startsWith("AWAY")),
+				`${mode} back`
+			).to.deep.equal(back);
+		}
+	});
+
 	it("online never sends AWAY *, even hidden", function () {
 		const h = connect();
 		h.client.setPresenceMode("online");

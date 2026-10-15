@@ -1,7 +1,8 @@
 /**
  * METADATA lines and replies (draft/metadata-2). The account's push mute list
- * (`draft/webpush/mute`) is read into the client (irc/pushMute.ts: shared do
- * not disturb). The replies for the keys this client writes itself — the
+ * (`draft/webpush/mute`) and the shared presence values (`seance/presence`,
+ * `seance/away`, irc/presenceShare.ts) are read into the client
+ * (irc/pushMute.ts: shared do not disturb). The replies for the keys this client writes itself — the
  * mute list and the webpush payload tier (webpush.ts) — stay silent; a reply
  * for any other key (a user's own `/metadata`) is shown as it always was,
  * through `unhandled`. METADATA lines for other keys stay silent.
@@ -14,13 +15,20 @@
  */
 import type {Handler} from "../types";
 import {MUTE_KEY, onMuteValue} from "../pushMute";
+import {AWAY_KEY, PRESENCE_KEY, onAwayValue, onPresenceValue} from "../presenceShare";
 // index.ts imports this module too; `unhandled` is only called at run time.
 import {unhandled} from "./index";
 
 /** The webpush payload tier (webpush.ts writes it through `webpush:metadata`). */
 export const PAYLOAD_KEY = "draft/webpush/payload";
 
-const OWN_KEYS = new Set([MUTE_KEY, PAYLOAD_KEY]);
+const OWN_KEYS = new Set([MUTE_KEY, PAYLOAD_KEY, PRESENCE_KEY, AWAY_KEY]);
+
+/** The shared keys this client reads (irc/presenceShare.ts). */
+const SHARED: Record<string, (client: Parameters<Handler>[0], value: string) => void> = {
+	[PRESENCE_KEY]: onPresenceValue,
+	[AWAY_KEY]: onAwayValue,
+};
 
 const ownKey = (key: string | undefined) => key !== undefined && OWN_KEYS.has(key);
 
@@ -31,6 +39,12 @@ const ours = (client: Parameters<Handler>[0], target: string, visibility: string
 const metadata: Handler = (client, msg) => {
 	if (msg.params[1] === MUTE_KEY && ours(client, msg.params[0] ?? "", msg.params[2] ?? "")) {
 		onMuteValue(client, msg.params[3] ?? "");
+	}
+
+	const onShared = SHARED[msg.params[1] ?? ""];
+
+	if (onShared && ours(client, msg.params[0] ?? "", msg.params[2] ?? "")) {
+		onShared(client, msg.params[3] ?? "");
 	}
 };
 
@@ -44,6 +58,12 @@ const keyValue: Handler = (client, msg) => {
 	if (msg.params[2] === MUTE_KEY && ours(client, msg.params[1] ?? "", msg.params[3] ?? "")) {
 		onMuteValue(client, msg.params[4] ?? "");
 	}
+
+	const onShared = SHARED[msg.params[2] ?? ""];
+
+	if (onShared && ours(client, msg.params[1] ?? "", msg.params[3] ?? "")) {
+		onShared(client, msg.params[4] ?? "");
+	}
 };
 
 // 766 <me> <target> <key> :key not set
@@ -55,6 +75,12 @@ const keyNotSet: Handler = (client, msg) => {
 
 	if (msg.params[2] === MUTE_KEY && client.isSelf(msg.params[1] ?? "")) {
 		onMuteValue(client, "");
+	}
+
+	const onShared = SHARED[msg.params[2] ?? ""];
+
+	if (onShared && client.isSelf(msg.params[1] ?? "")) {
+		onShared(client, "");
 	}
 };
 

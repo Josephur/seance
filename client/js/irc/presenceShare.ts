@@ -1,0 +1,147 @@
+/**
+ * Shared presence (docs/projects/shared-presence-modes.md): each network's
+ * mode and the device-wide global away switch are the same on every device
+ * of the account. They live in the account's private metadata as
+ * `seance/presence` = `<mode> <changedAt>` and `seance/away` =
+ * `<on|off> <changedAt>` (Unix ms of the user's choice, on the device that
+ * made it), and the most recent choice wins — an equal time goes to the
+ * later word, so every device picks the same one.
+ *
+ * Read in the login read with the push mute (client.ts scheduleMuteRead)
+ * and live through the subscription. One rule for both keys: adopt the
+ * server's value when it is newer than the device's choice, write the
+ * device's when it is newer than the server's last value (a choice made
+ * here, online or offline, or a newer value an older late write replaced),
+ * and otherwise do nothing. A key is written only after this connection's
+ * read of it answered.
+ *
+ * Vue-free and DOM-free; bus.ts saves an adopted mode
+ * (`network:presence-shared`), client/js/dnd.ts an adopted switch
+ * (`away:shared`).
+ */
+
+import type {IrcClient} from "./client";
+import {PRESENCE_MODES, type GlobalAway, type PresenceMode} from "../helpers/dnd";
+
+export const PRESENCE_KEY = "seance/presence";
+export const AWAY_KEY = "seance/away";
+
+const AWAY_WORDS = ["on", "off"] as const;
+
+export interface Stamped {
+	value: string;
+	/** Unix ms of the user's choice. */
+	at: number;
+}
+
+/** `<word> <ms>` with a word from `words`; anything else is null. */
+export function parseStamped(text: string, words: readonly string[]): Stamped | null {
+	const m = /^([a-z]+) ([1-9]\d{0,15})$/.exec(text);
+
+	if (!m || !words.includes(m[1])) {
+		return null;
+	}
+
+	const at = Number(m[2]);
+	return Number.isSafeInteger(at) ? {value: m[1], at} : null;
+}
+
+export function formatStamped(s: Stamped): string {
+	return `${s.value} ${s.at}`;
+}
+
+/** Whether `a` is a strictly more recent choice than `b`. */
+export function newer(a: Stamped, b: Stamped): boolean {
+	return a.at !== b.at ? a.at > b.at : a.value > b.value;
+}
+
+function canShare(client: IrcClient): boolean {
+	return (
+		client.isWelcomed &&
+		client.transport.state === "open" &&
+		client.caps.hasCapability("draft/metadata-2") &&
+		client.account !== ""
+	);
+}
+
+function localMode(client: IrcClient): Stamped | null {
+	return client.presenceAt === undefined
+		? null
+		: {value: client.presenceMode, at: client.presenceAt};
+}
+
+function localAway(client: IrcClient): Stamped | null {
+	const a = client.globalAway;
+	return a.at === null ? null : {value: a.on ? "on" : "off", at: a.at};
+}
+
+/** Write `mine` when it is newer than what the server holds; remember it as held. */
+function writeIfNewer(
+	client: IrcClient,
+	key: string,
+	known: boolean,
+	server: Stamped | null,
+	mine: Stamped | null
+): Stamped | null {
+	if (!known || !mine || !canShare(client) || (server && !newer(mine, server))) {
+		return server;
+	}
+
+	client.send(`METADATA * SET ${key} private :${formatStamped(mine)}`);
+	return mine;
+}
+
+/** Write whatever this device knows newer than its server, for both keys. */
+export function syncShared(client: IrcClient): void {
+	client.presenceServer = writeIfNewer(
+		client,
+		PRESENCE_KEY,
+		client.presenceKnown,
+		client.presenceServer,
+		localMode(client)
+	);
+	client.awayServer = writeIfNewer(
+		client,
+		AWAY_KEY,
+		client.awayKnown,
+		client.awayServer,
+		localAway(client)
+	);
+}
+
+/** A `seance/presence` value read (761, 766 as "", or the subscription's line). */
+export function onPresenceValue(client: IrcClient, value: string): void {
+	const server = parseStamped(value, PRESENCE_MODES);
+	client.presenceKnown = true;
+	client.presenceServer = server;
+	const mine = localMode(client);
+
+	if (server && (!mine || newer(server, mine))) {
+		client.setPresenceMode(server.value as PresenceMode, server.at);
+		client.dispatchBus("network:presence-shared", {
+			network: client.uuid,
+			mode: server.value as PresenceMode,
+			at: server.at,
+		});
+		return;
+	}
+
+	syncShared(client);
+}
+
+/** A `seance/away` value read: adopt it here (the page fans it out) or write ours. */
+export function onAwayValue(client: IrcClient, value: string): void {
+	const server = parseStamped(value, AWAY_WORDS);
+	client.awayKnown = true;
+	client.awayServer = server;
+	const mine = localAway(client);
+
+	if (server && (!mine || newer(server, mine))) {
+		const away: GlobalAway = {on: server.value === "on", at: server.at};
+		client.setGlobalAway(away);
+		client.dispatchBus("away:shared", {network: client.uuid, on: away.on, at: server.at});
+		return;
+	}
+
+	syncShared(client);
+}

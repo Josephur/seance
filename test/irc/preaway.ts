@@ -215,6 +215,7 @@ describe("the away state across reloads and reconnects (draft/pre-away)", functi
 		["do not disturb", (h: Harness) => h.client.setGlobalDnd(true, null)],
 		["away mode", (h: Harness) => h.client.setPresenceMode("away")],
 		["a hidden page", (h: Harness) => h.client.setAttended(false)],
+		["global away", (h: Harness) => h.client.setGlobalAway({on: true, at: 1})],
 	] as const) {
 		it(`${label} at connect declares AWAY * during registration, and says it once more after`, function () {
 			const h = client();
@@ -225,6 +226,7 @@ describe("the away state across reloads and reconnects (draft/pre-away)", functi
 			expect(h.client.presence.starSent).to.equal(true);
 
 			// The page comes back (or the mode goes): AWAY, once.
+			h.client.setGlobalAway({on: false, at: 2});
 			h.client.setGlobalDnd(false, null);
 			h.client.setPresenceMode("auto");
 			h.client.setAttended(true);
@@ -599,7 +601,9 @@ describe("a held session says AWAY once remote DND is known (presence.ts armResu
 		const h = register(META_CAPS);
 		expect(aways(h.sent()), "nothing in the connect burst").to.deep.equal([]);
 		clock.tick(10_000);
-		expect(h.sent()).to.include("METADATA * GET draft/webpush/mute");
+		expect(h.sent()).to.include(
+			"METADATA * GET draft/webpush/mute seance/presence seance/away"
+		);
 		h.transport.line(OTHER_DND);
 		expect(aways(h.sent())).to.deep.equal(["AWAY *"]);
 	});
@@ -710,7 +714,7 @@ describe("a held session says AWAY once remote DND is known (presence.ts armResu
 			expect(h.transport.sent.slice(0, end), "declared before CAP END").to.include(declared);
 			clock.tick(10_000);
 			expect(h.sent(), "the resume check was armed").to.include(
-				"METADATA * GET draft/webpush/mute"
+				"METADATA * GET draft/webpush/mute seance/presence seance/away"
 			);
 			h.transport.line(EMPTY);
 			expect(aways(h.sent()).filter((l) => l === "AWAY")).to.deep.equal([]);

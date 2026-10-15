@@ -74,6 +74,12 @@ interface ServerToClientEvents {
 	network: EventHandler<{network: SharedNetwork}>;
 	"network:options": EventHandler<{network: string; serverOptions: SharedServerOptions}>;
 	"network:presence": EventHandler<{network: string; presence: SharedNetworkPresence}>;
+	"network:presence-shared": EventHandler<{
+		network: string;
+		mode: SharedPresenceMode;
+		at: number;
+	}>;
+	"away:shared": EventHandler<{network: string; on: boolean; at: number}>;
 	/** Another device removed the shared do-not-disturb entry while this one wanted it. */
 	"dnd:cleared": EventHandler<{network: string}>;
 	"network:status": EventHandler<{

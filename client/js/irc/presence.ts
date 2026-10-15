@@ -25,6 +25,10 @@
  * (`wantsStar`), reports the snapshot to the store and keeps the push mute
  * in step (pushMute.ts).
  *
+ * Global away (client/js/dnd.ts, `IrcClient.globalAway`) wants `AWAY *` on
+ * every network whatever its mode; do not disturb outranks it only in that
+ * DND also mutes push.
+ *
  * The away state is declared before `CAP END` (`registrationAwayLine`,
  * `draft/pre-away`), so a held bouncer session is never counted present
  * while a reload or a reconnect registers. A connection that resumes such
@@ -117,7 +121,10 @@ export function wantsStar(client: IrcClient): boolean {
 	const mode = client.presenceMode;
 
 	return (
-		effectiveDnd(client) || mode === "away" || (mode === "auto" && !client.presence.attended)
+		effectiveDnd(client) ||
+		client.globalAway.on ||
+		mode === "away" ||
+		(mode === "auto" && !client.presence.attended)
 	);
 }
 
