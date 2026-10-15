@@ -333,6 +333,58 @@ describe("IrcClient", function () {
 			expect(lastMessage(1).text).to.equal("alice: Nickname is already in use.");
 		});
 
+		it("learns NICKLEN from a nick the server cut back, instead of looping", function () {
+			const h = setup({nick: "abcdefghijklmno"});
+			h.client.connect();
+			h.transport.open();
+			const nicks = () => h.transport.sent.filter((l) => l.startsWith("NICK ")).slice(1);
+
+			// nefarious2 cuts `abcdefghijklmno_` to its 15, which is taken
+			h.transport.line(":irc.test 433 * abcdefghijklmno :Nickname is already in use.");
+			expect(nicks()).to.deep.equal(["NICK abcdefghijklmno_"]);
+			h.transport.line(":irc.test 433 * abcdefghijklmno :Nickname is already in use.");
+			expect(nicks()[1]).to.equal("NICK abcdefghijklmn_");
+
+			// that one is taken too: the end changes, still 15 long
+			h.transport.line(":irc.test 433 * abcdefghijklmn_ :Nickname is already in use.");
+			expect(nicks()[2]).to.match(/^NICK abcdefghijk\d{4}$/);
+		});
+
+		it("learns NICKLEN from a fallback refused as too long (Ergo)", function () {
+			const h = setup({nick: "abcdefghijklmno"});
+			h.client.connect();
+			h.transport.open();
+			const nicks = () => h.transport.sent.filter((l) => l.startsWith("NICK ")).slice(1);
+
+			h.transport.line(":irc.test 433 * abcdefghijklmno :Nickname is already in use.");
+			expect(nicks()).to.deep.equal(["NICK abcdefghijklmno_"]);
+			h.transport.line(":irc.test 432 * abcdefghijklmno_ :Erroneous Nickname");
+			expect(nicks()[1]).to.equal("NICK abcdefghijklmn_");
+
+			h.transport.line(":irc.test 433 * abcdefghijklmn_ :Nickname is already in use.");
+			expect(nicks()[2]).to.match(/^NICK abcdefghijk\d{4}$/);
+		});
+
+		it("forgets a learned NICKLEN on the next connection", function () {
+			const h = setup({nick: "abcdefghijklmno"});
+			h.client.connect();
+			h.transport.open();
+			h.transport.line(":irc.test 433 * abcdefghijklmno :Nickname is already in use.");
+			h.transport.line(":irc.test 433 * abcdefghijklmno :Nickname is already in use.");
+			expect(h.client.learnedNickLen).to.equal(15);
+
+			h.transport.open();
+			expect(h.client.learnedNickLen).to.equal(undefined);
+		});
+
+		it("still picks a random nick when the nick asked for is refused", function () {
+			const h = setup({nick: "bad*nick"});
+			h.client.connect();
+			h.transport.open();
+			h.transport.line(":irc.test 432 * bad*nick :Erroneous Nickname");
+			expect(h.client.nick).to.match(/^seance\d{4}$/);
+		});
+
 		it("only reports a nick collision after registration", function () {
 			const h = setup();
 			register(h);
