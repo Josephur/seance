@@ -21,7 +21,7 @@ import {forgetOperPrefs} from "./operprefs";
 import {forgetMuteMemory} from "./muteMemory";
 import {forgetUserAway} from "./userAwayStore";
 import type {ConnectOptions} from "./types";
-import {PRESENCE_MODES, type PresenceMode} from "../helpers/dnd";
+import {PRESENCE_MODES, type NetworkMode, type PresenceMode} from "../helpers/dnd";
 import type {ServicesConfig} from "../../../shared/types/network";
 
 export const STORAGE_KEY = "thelounge.networks";
@@ -68,7 +68,7 @@ export type SavedNetwork = ConnectOptions & {
 	 * bots by role, set in the edit form once opered. Absent means none.
 	 */
 	services?: ServicesConfig;
-	/** Online / Auto / Away / Do not disturb; absent = auto (docs/projects/do-not-disturb.md). */
+	/** Online / Auto / Away / Do not disturb; absent = Same as global (docs/projects/shared-presence-modes.md §2). */
 	presenceMode?: PresenceMode;
 	/**
 	 * When the user chose `presenceMode` (Unix ms, on the device that chose
@@ -260,11 +260,7 @@ export function normalize(raw: Record<string, unknown>): SavedNetwork | undefine
 
 	const mode = raw.presenceMode;
 
-	if (
-		typeof mode === "string" &&
-		mode !== "auto" &&
-		PRESENCE_MODES.includes(mode as PresenceMode)
-	) {
+	if (typeof mode === "string" && PRESENCE_MODES.includes(mode as PresenceMode)) {
 		net.presenceMode = mode as PresenceMode;
 	}
 
@@ -277,9 +273,9 @@ export function normalize(raw: Record<string, unknown>): SavedNetwork | undefine
 	return net;
 }
 
-/** The network's presence mode; absent or unknown is "auto". */
-export function presenceModeOf(net: Pick<SavedNetwork, "presenceMode"> | undefined): PresenceMode {
-	return net?.presenceMode ?? "auto";
+/** The network's own presence mode; absent or unknown is Same as global. */
+export function presenceModeOf(net: Pick<SavedNetwork, "presenceMode"> | undefined): NetworkMode {
+	return net?.presenceMode ?? "global";
 }
 
 /** Whether a network takes part in Web Push (`draft/webpush`): the saved

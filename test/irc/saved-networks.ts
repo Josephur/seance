@@ -438,16 +438,20 @@ describe("saved-networks", function () {
 		});
 	});
 
-	it("keeps a presence mode, reads a missing or bad one as auto", function () {
+	it("keeps a presence mode, reads a missing or bad one as Same as global, and keeps an explicit auto", function () {
 		const net = saved.normalize({uuid: "p1", host: "irc.test", presenceMode: "away"});
-		expect(net?.presenceMode).to.equal("away");
 		expect(saved.presenceModeOf(net)).to.equal("away");
 		const plain = saved.normalize({uuid: "p2", host: "irc.test"});
 		expect(plain?.presenceMode).to.equal(undefined);
-		expect(saved.presenceModeOf(plain)).to.equal("auto");
-		const bad = saved.normalize({uuid: "p3", host: "irc.test", presenceMode: "busy"});
-		expect(bad?.presenceMode, "normalize drops an unknown mode").to.equal(undefined);
-		expect(saved.presenceModeOf(bad)).to.equal("auto");
+		expect(saved.presenceModeOf(plain)).to.equal("global");
+		const auto = saved.normalize({uuid: "p3", host: "irc.test", presenceMode: "auto"});
+		expect(auto?.presenceMode, "an explicit auto is kept").to.equal("auto");
+
+		for (const bad of ["busy", "global"]) {
+			const n = saved.normalize({uuid: "p4", host: "irc.test", presenceMode: bad});
+			expect(n?.presenceMode, bad).to.equal(undefined);
+			expect(saved.presenceModeOf(n)).to.equal("global");
+		}
 	});
 
 	it("keeps presenceAt, and drops a malformed one", function () {
@@ -471,14 +475,17 @@ describe("saved-networks", function () {
 		).to.equal("online");
 		expect(
 			saved.fromForm({host: "irc.test", presenceMode: "auto"}, base).presenceMode
+		).to.equal("auto");
+		expect(
+			saved.fromForm({host: "irc.test", presenceMode: "global"}, base).presenceMode
 		).to.equal(undefined);
 	});
 
-	it("saving auto drops a stored presence mode", function () {
+	it("saving Same as global drops a stored presence mode", function () {
 		const net = saved.save({uuid: "p5", host: "irc.test", presenceMode: "dnd"} as any);
 		expect(saved.get(net.uuid)?.presenceMode).to.equal("dnd");
-		saved.save({...net, presenceMode: "auto"});
+		saved.save({...net, presenceMode: undefined});
 		expect(saved.get(net.uuid)?.presenceMode).to.equal(undefined);
-		expect(saved.presenceModeOf(saved.get(net.uuid))).to.equal("auto");
+		expect(saved.presenceModeOf(saved.get(net.uuid))).to.equal("global");
 	});
 });

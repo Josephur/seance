@@ -9,10 +9,22 @@
  * See docs/projects/do-not-disturb.md.
  */
 
-import type {SharedPresenceMode} from "../../../shared/types/network";
+import type {SharedNetworkMode, SharedPresenceMode} from "../../../shared/types/network";
 
 export type PresenceMode = SharedPresenceMode;
 export const PRESENCE_MODES: readonly PresenceMode[] = ["online", "auto", "away", "dnd"];
+
+export type NetworkMode = SharedNetworkMode;
+export const NETWORK_MODES: readonly NetworkMode[] = ["global", ...PRESENCE_MODES];
+
+/** The pill's global mode (shared-presence-modes.md §2): every network's default. */
+export type GlobalMode = "online" | "auto" | "away";
+export const GLOBAL_MODES: readonly GlobalMode[] = ["online", "auto", "away"];
+
+/** A network's own mode wins; Same as global follows the pill. */
+export function effectiveMode(network: NetworkMode, global: GlobalMode): PresenceMode {
+	return network === "global" ? global : network;
+}
 
 export interface DndSchedule {
 	enabled: boolean;
@@ -31,13 +43,13 @@ export type DndManual =
 	| {kind: "indefinite"};
 
 /**
- * Global away (docs/projects/shared-presence-modes.md § 2): every network
- * away while on, each keeping its own mode. `at` is the Unix ms of the
- * user's last choice (null if never chosen); shared between devices, the
- * most recent choice winning.
+ * The global mode (docs/projects/shared-presence-modes.md § 2): every
+ * network on Same as global follows it. `at` is the Unix ms of the user's
+ * last choice (null if never chosen); shared between devices, the most
+ * recent choice winning.
  */
-export interface GlobalAway {
-	on: boolean;
+export interface GlobalModeState {
+	value: GlobalMode;
 	at: number | null;
 }
 
@@ -46,7 +58,7 @@ export interface DndState {
 	schedule: DndSchedule;
 	/** Off pressed inside a window: that window's end (ms); ignored before it. */
 	scheduleSkippedUntil: number | null;
-	away: GlobalAway;
+	mode: GlobalModeState;
 }
 
 export interface DndVerdict {
@@ -65,7 +77,7 @@ export function defaultDndState(): DndState {
 		manual: {kind: "off"},
 		schedule: {enabled: false, start: "23:00", end: "07:00", days: [0, 1, 2, 3, 4, 5, 6]},
 		scheduleSkippedUntil: null,
-		away: {on: false, at: null},
+		mode: {value: "auto", at: null},
 	};
 }
 
@@ -209,24 +221,36 @@ function asSchedule(raw: unknown): DndSchedule | undefined {
 	return {enabled: r.enabled, start: r.start, end: r.end, days};
 }
 
-function asAway(raw: unknown): GlobalAway | undefined {
-	if (!raw || typeof raw !== "object") {
-		return undefined;
-	}
-
-	const r = raw as Record<string, unknown>;
-
-	if (typeof r.on !== "boolean") {
-		return undefined;
-	}
-
-	if (r.at === null) {
-		return {on: r.on, at: null};
-	}
-
-	return typeof r.at === "number" && Number.isSafeInteger(r.at) && r.at > 0
-		? {on: r.on, at: r.at}
+const asAt = (at: unknown): number | null | undefined =>
+	at === null
+		? null
+		: typeof at === "number" && Number.isSafeInteger(at) && at > 0
+		? at
 		: undefined;
+
+function asMode(raw: unknown, legacyAway: unknown): GlobalModeState | undefined {
+	if (raw !== undefined) {
+		if (!raw || typeof raw !== "object") {
+			return undefined;
+		}
+
+		const r = raw as Record<string, unknown>;
+		const at = asAt(r.at);
+		return GLOBAL_MODES.includes(r.value as GlobalMode) && at !== undefined
+			? {value: r.value as GlobalMode, at}
+			: undefined;
+	}
+
+	// 2026-10-15's global away switch, on this branch only.
+	if (legacyAway && typeof legacyAway === "object") {
+		const r = legacyAway as Record<string, unknown>;
+		const at = asAt(r.at);
+		return typeof r.on === "boolean" && at !== undefined
+			? {value: r.on ? "away" : "auto", at}
+			: undefined;
+	}
+
+	return undefined;
 }
 
 export function parseDndState(raw: string | null): DndState {
@@ -249,8 +273,8 @@ export function parseDndState(raw: string | null): DndState {
 			typeof v.scheduleSkippedUntil === "number" && Number.isFinite(v.scheduleSkippedUntil)
 				? v.scheduleSkippedUntil
 				: null;
-		const away = asAway(v.away) ?? def.away;
-		return {manual, schedule, scheduleSkippedUntil: skipped, away};
+		const mode = asMode(v.mode, v.away) ?? def.mode;
+		return {manual, schedule, scheduleSkippedUntil: skipped, mode};
 	} catch {
 		return defaultDndState();
 	}
@@ -350,35 +374,9 @@ export function nextChangeAt(state: DndState, now: Date): number {
 	return Math.min(...candidates);
 }
 
-/** What every network's presence mode says together; `mixed` when they differ. */
-export type PresenceSummary = PresenceMode | "mixed";
-
-export function presenceSummary(modes: PresenceMode[]): PresenceSummary {
-	const set = new Set(modes);
-
-	if (set.size === 0) {
-		return "auto";
-	}
-
-	return set.size === 1 ? modes[0] : "mixed";
-}
-
-/** The pill's words for a summary, while no do not disturb of the page's own is on. */
-export const SUMMARY_LABELS: Record<PresenceSummary, string> = {
-	auto: "Online · auto",
-	online: "Online",
-	away: "Away",
-	dnd: "Do not disturb",
-	mixed: "Mixed",
-};
-
-/** What the pill says and ticks: do not disturb outranks global away. */
-export type PillStatus = "available" | "away" | "dnd";
+/** What the pill says and ticks: do not disturb outranks the global mode. */
+export type PillStatus = GlobalMode | "dnd";
 
 export function pillStatus(state: DndState, now: Date): PillStatus {
-	if (dndAt(state, now).active) {
-		return "dnd";
-	}
-
-	return state.away.on ? "away" : "available";
+	return dndAt(state, now).active ? "dnd" : state.mode.value;
 }

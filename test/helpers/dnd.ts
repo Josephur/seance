@@ -6,7 +6,7 @@ import {
 	editSchedule,
 	nextChangeAt,
 	nextWindow,
-	presenceSummary,
+	effectiveMode,
 	parseDndState,
 	pillStatus,
 	reconcileRemote,
@@ -228,13 +228,6 @@ describe("do not disturb model (helpers/dnd.ts)", function () {
 		expect(nextChangeAt(s, now), "a timed end off the minute").to.equal(now.getTime() + 20_000);
 	});
 
-	it("sums the networks' modes", function () {
-		expect(presenceSummary([])).to.equal("auto");
-		expect(presenceSummary(["away", "away"])).to.equal("away");
-		expect(presenceSummary(["dnd"])).to.equal("dnd");
-		expect(presenceSummary(["auto", "online"])).to.equal("mixed");
-	});
-
 	it("a shared DND cleared elsewhere turns the local manual DND off", function () {
 		const s = defaultDndState();
 		s.manual = {kind: "indefinite"};
@@ -286,39 +279,65 @@ describe("do not disturb model (helpers/dnd.ts)", function () {
 		expect(scheduleTimeText("bad", true)).to.equal("bad");
 	});
 
-	it("global away defaults off, parses, and a bad value resets only itself", function () {
-		expect(defaultDndState().away).to.deep.equal({on: false, at: null});
-		const s = {...defaultDndState(), away: {on: true, at: 1792000000000}};
-		expect(parseDndState(serializeDndState(s)).away).to.deep.equal({
-			on: true,
+	it("the global mode defaults to Auto, parses, and a bad value resets only itself", function () {
+		expect(defaultDndState().mode).to.deep.equal({value: "auto", at: null});
+		const s = {...defaultDndState(), mode: {value: "away" as const, at: 1792000000000}};
+		expect(parseDndState(serializeDndState(s)).mode).to.deep.equal({
+			value: "away",
 			at: 1792000000000,
 		});
 
 		for (const bad of [
 			null,
-			"on",
-			{on: "yes", at: 5},
-			{on: true, at: -1},
-			{on: true, at: "5"},
+			"away",
+			{value: "dnd", at: 5},
+			{value: "away", at: -1},
+			{value: "away", at: "5"},
 		]) {
-			const parsed = parseDndState(JSON.stringify({...s, away: bad}));
-			expect(parsed.away, JSON.stringify(bad)).to.deep.equal({on: false, at: null});
+			const parsed = parseDndState(JSON.stringify({...s, mode: bad}));
+			expect(parsed.mode, JSON.stringify(bad)).to.deep.equal({value: "auto", at: null});
 			expect(parsed.schedule).to.deep.equal(s.schedule);
 		}
-
-		// A state saved before global away existed.
-		const old = {manual: {kind: "off"}, schedule: s.schedule, scheduleSkippedUntil: null};
-		expect(parseDndState(JSON.stringify(old)).away).to.deep.equal({on: false, at: null});
 	});
 
-	it("pillStatus: do not disturb outranks away, away outranks available", function () {
+	it("reads the old away field (2026-10-15) as Away or Auto with its time", function () {
+		const base = {
+			manual: {kind: "off"},
+			schedule: defaultDndState().schedule,
+			scheduleSkippedUntil: null,
+		};
+		expect(
+			parseDndState(JSON.stringify({...base, away: {on: true, at: 7}})).mode
+		).to.deep.equal({value: "away", at: 7});
+		expect(
+			parseDndState(JSON.stringify({...base, away: {on: false, at: 8}})).mode
+		).to.deep.equal({value: "auto", at: 8});
+		expect(
+			parseDndState(JSON.stringify({...base, away: {on: false, at: null}})).mode
+		).to.deep.equal({value: "auto", at: null});
+		expect(parseDndState(JSON.stringify(base)).mode).to.deep.equal({value: "auto", at: null});
+	});
+
+	it("effectiveMode: a network's own mode wins, global follows the global mode", function () {
+		expect(effectiveMode("global", "away")).to.equal("away");
+		expect(effectiveMode("global", "online")).to.equal("online");
+		expect(effectiveMode("online", "away")).to.equal("online");
+		expect(effectiveMode("dnd", "auto")).to.equal("dnd");
+	});
+
+	it("pillStatus: do not disturb outranks the global mode", function () {
 		const now = at(2026, 10, 9, 12);
 		const base = defaultDndState();
-		expect(pillStatus(base, now)).to.equal("available");
-		expect(pillStatus({...base, away: {on: true, at: 1}}, now)).to.equal("away");
-		expect(pillStatus({...base, away: {on: false, at: 1}}, now)).to.equal("available");
-		const dnd = {...base, manual: {kind: "indefinite" as const}};
+		expect(pillStatus(base, now)).to.equal("auto");
+		expect(pillStatus({...base, mode: {value: "away", at: 1}}, now)).to.equal("away");
+		expect(pillStatus({...base, mode: {value: "online", at: 1}}, now)).to.equal("online");
+		const dnd = {
+			...base,
+			manual: {kind: "indefinite" as const},
+			mode: {value: "online" as const, at: 1},
+		};
 		expect(pillStatus(dnd, now)).to.equal("dnd");
-		expect(pillStatus({...dnd, away: {on: true, at: 1}}, now)).to.equal("dnd");
+		// DND ending leaves the global mode as it was.
+		expect(pillStatus(turnOff(dnd, now), now)).to.equal("online");
 	});
 });
