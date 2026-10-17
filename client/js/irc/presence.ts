@@ -116,12 +116,34 @@ export function effectiveDnd(client: IrcClient): boolean {
 	return client.globalDnd.active || client.presenceMode === "dnd" || client.remoteDnd;
 }
 
-/** Whether this connection should be `AWAY *` (ignoring `/away`). */
+/** The away message without `draft/pre-away`, where `AWAY *` would be a literal "*". */
+export const AWAY_PLAIN = "Away";
+
+/**
+ * The server knows `AWAY *` (`draft/pre-away`, negotiated or requested in
+ * this registration). Elsewhere `AWAY *` is an away message of "*", and the
+ * attention-driven away of Auto would tell the whole channel about every
+ * tab switch, so Auto then sends nothing and an away is a real message.
+ */
+function speaksPreAway(client: IrcClient): boolean {
+	return client.caps.hasCapability(PRE_AWAY_CAP) || client.caps.isRequesting(PRE_AWAY_CAP);
+}
+
+/** The line that marks this connection away for no given reason. */
+function awayLine(client: IrcClient): string {
+	return speaksPreAway(client)
+		? formatLine({command: "AWAY", params: [AWAY_STAR]})
+		: trailingLine("AWAY", [AWAY_PLAIN]);
+}
+
+/** Whether this connection should be away (ignoring `/away`): `AWAY *`, or `AWAY :Away`. */
 export function wantsStar(client: IrcClient): boolean {
 	const mode = client.effectiveMode;
 
 	return (
-		effectiveDnd(client) || mode === "away" || (mode === "auto" && !client.presence.attended)
+		effectiveDnd(client) ||
+		mode === "away" ||
+		(mode === "auto" && !client.presence.attended && speaksPreAway(client))
 	);
 }
 
@@ -151,7 +173,7 @@ export function syncPresence(client: IrcClient): void {
 		if (want && !p.starSent) {
 			p.starSent = true;
 			p.quietReplies++;
-			client.send(formatLine({command: "AWAY", params: [AWAY_STAR]}));
+			client.send(awayLine(client));
 		} else if (!want && p.starSent) {
 			p.starSent = false;
 			p.quietReplies++;
@@ -245,7 +267,7 @@ export function sendBack(client: IrcClient): void {
 	const p = client.presence;
 	const star = wantsStar(client);
 	p.starSent = star;
-	client.send(formatLine({command: "AWAY", params: star ? [AWAY_STAR] : []}));
+	client.send(star ? awayLine(client) : formatLine({command: "AWAY", params: []}));
 	reportPresence(client);
 }
 

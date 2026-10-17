@@ -12,7 +12,7 @@ import {
 } from "../../client/js/irc/presenceShare";
 import {MUTE_READ_DELAY_MS} from "../../client/js/irc/pushMute";
 
-const CAPS = "server-time message-tags batch labeled-response draft/metadata-2";
+const CAPS = "server-time message-tags batch labeled-response draft/metadata-2 draft/pre-away";
 const LOGIN = ":irc.test 900 alice alice!a@h alice :You are now logged in as alice";
 const T0 = Date.UTC(2026, 9, 15, 12, 0, 0);
 const MODES = ["online", "auto", "away", "dnd"];
@@ -256,6 +256,20 @@ describe("shared presence on the wire (irc/presenceShare.ts)", function () {
 			h.transport.line(`:irc.test FAIL METADATA RATE_LIMITED ${PRESENCE_KEY} 5 :Rate limit`);
 			expect(sets(h, PRESENCE_KEY)).to.deep.equal([]);
 			expect(h.client.presenceMode).to.equal("away");
+		});
+
+		it("a FAIL METADATA for our own keys is shown to nobody; another key's still is", function () {
+			// A server with draft/metadata-2 that does not take these key names
+			// answers every SUB and GET with FAILs on each connect.
+			const h = connected();
+
+			for (const key of ["draft/webpush/mute", PRESENCE_KEY, MODE_KEY]) {
+				h.transport.line(`:irc.test FAIL METADATA KEY_INVALID ${key} :Invalid key`);
+			}
+
+			expect(h.messages().filter((m) => /METADATA/.test(m.text ?? ""))).to.deep.equal([]);
+			h.transport.line(":irc.test FAIL METADATA KEY_INVALID user/avatar :Invalid key");
+			expect(h.messages().filter((m) => /METADATA/.test(m.text ?? ""))).to.have.length(1);
 		});
 
 		it("never reads or writes without an account or the cap", function () {

@@ -151,7 +151,7 @@ class FakeTransport implements Transport {
 	}
 }
 
-const CAPS = "server-time message-tags batch labeled-response draft/metadata-2";
+const CAPS = "server-time message-tags batch labeled-response draft/metadata-2 draft/pre-away";
 
 function connect(opts: {account?: boolean; metadata?: boolean} = {}) {
 	const transport = new FakeTransport();
@@ -251,7 +251,8 @@ describe("push mute on the wire (irc/pushMute.ts)", function () {
 			clock.tick(MUTE_READ_DELAY_MS);
 			// The raw lines: sent() hides SUB and GET, the very lines this pins.
 			expect(h.transport.sent.filter((l) => l.includes("METADATA"))).to.deep.equal([]);
-			expect(h.sent()).to.include("AWAY *");
+			// Its no-metadata server offers no pre-away either: a real away message there.
+			expect(h.sent()).to.include(opts.metadata === false ? "AWAY :Away" : "AWAY *");
 		}
 	});
 

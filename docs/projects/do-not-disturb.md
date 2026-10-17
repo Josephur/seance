@@ -265,6 +265,33 @@ old build got wrong was the close: the star never got out, and the held
 session showed `WHO … G` with no 301 and no `AWAY` to `away-notify` clients.
 With the worker, one `AWAY :Away` reaches them about 5.3 s after the close.
 
+### On a server without `draft/pre-away`
+
+Audited 2026-10-17 against InspIRCd 3.15 behind a WebSocket→TCP gateway and
+nefarious2 with the drafts stripped from `CAP LS`. Without the cap,
+`AWAY *` is not "away for no reason" but an away message of `*`: other
+clients showed "is away: \*", and an Auto page told the channel away and back
+on every tab switch. So when the server does not know `draft/pre-away`
+(neither negotiated nor requested in this registration — `presence.ts`
+`speaksPreAway`):
+
+- Auto's attention counts for nothing: hiding or unfocusing the page sends
+  no `AWAY`, and coming back none either. Such a server has no notion of
+  one connection being unattended, so there is nothing true to say.
+- Away (the network's or the global mode), do not disturb and `/back` under
+  one of them send a real away message, `AWAY :Away` (`AWAY_PLAIN`), for
+  both — as before, others cannot tell Away from DND.
+- `/away <text>`, its survival across a reload (said again after
+  registration) and everything else are unchanged.
+
+nefarious2 itself treats `AWAY *` as its star even without the cap, so this
+only changes what other servers see. A `FAIL METADATA` for one of the keys
+this client keeps by itself (`draft/webpush/mute`, `seance/presence`,
+`seance/mode`) is not shown either (`standard-replies.ts`): a server with
+`draft/metadata-2` that does not take those names refused every `SUB` and
+`GET` on each connect, six error lines in the lobby, and nothing is written
+after a read that failed.
+
 ### Server notes (candidate upstream issues, not changed here)
 
 - `s_user.c` applies a pre-registration `AWAY` at registration and then

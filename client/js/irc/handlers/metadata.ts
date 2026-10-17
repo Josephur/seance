@@ -32,6 +32,9 @@ const SHARED: Record<string, (client: Parameters<Handler>[0], value: string) => 
 
 const ownKey = (key: string | undefined) => key !== undefined && OWN_KEYS.has(key);
 
+/** A key this client reads and writes itself (its FAILs are not news, standard-replies.ts). */
+export const isOwnMetadataKey = ownKey;
+
 const ours = (client: Parameters<Handler>[0], target: string, visibility: string) =>
 	visibility === "private" || client.isSelf(target);
 

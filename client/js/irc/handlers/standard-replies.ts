@@ -17,6 +17,7 @@ import {MessageType} from "../../../../shared/types/msg";
 import {chatHistoryFailed} from "../history";
 import {multilineCooldown, multilineRejected} from "../multiline";
 import {inRestorationWindow, noteRestorationActivity, persistenceFailed} from "../persistence";
+import {isOwnMetadataKey} from "./metadata";
 import type {Handler} from "../types";
 import type {IrcClient} from "../client";
 import type {IrcMessage} from "../message";
@@ -210,6 +211,14 @@ function reply(kind: "FAIL" | "WARN" | "NOTE"): Handler {
 			persistenceFailed(client, msg)
 		) {
 			return; // a refused / unknown catch-up cursor: nothing for the user
+		}
+
+		if (kind === "FAIL" && command.toUpperCase() === "METADATA" && isOwnMetadataKey(rest[0])) {
+			// A key this client keeps by itself (the push mute, the shared
+			// presence): a server with draft/metadata-2 that does not take the
+			// name refuses every SUB and GET on each connect. Nothing the user
+			// asked for, and nothing written follows a read that failed.
+			return;
 		}
 
 		if (kind === "NOTE" && command.toUpperCase() === "BOUNCER") {

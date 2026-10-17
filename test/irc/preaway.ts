@@ -289,12 +289,17 @@ describe("the away state across reloads and reconnects (draft/pre-away)", functi
 			expect(aways(h.sent())).to.deep.equal([]);
 		});
 
-		it("a hidden page says AWAY * after registration, once", function () {
+		it("a hidden page on Auto says nothing; Away mode says a real away message", function () {
+			// Without the cap `AWAY *` is an away message of "*", and Auto would
+			// tell the channel about every tab switch (presence.ts speaksPreAway).
 			const h = client();
 			h.client.setAttended(false);
 			const [before, after] = connect(h, ALL_CAPS);
 			expect(aways(before)).to.deep.equal([]);
-			expect(aways(after)).to.deep.equal(["AWAY *"]);
+			expect(aways(after)).to.deep.equal([]);
+
+			h.client.setPresenceMode("away");
+			expect(aways(h.sent())).to.deep.equal(["AWAY :Away"]);
 		});
 
 		it("a NAKed draft/pre-away falls back to after registration", function () {
