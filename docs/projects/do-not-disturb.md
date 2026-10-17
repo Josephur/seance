@@ -104,9 +104,10 @@ third input, `remoteDnd` on the client.
 
 The mode is shared between the account's devices — the most recent choice
 wins, including one made while a device was offline — through the private
-account metadata key `seance/presence`, and the pill gained a global away
-(Available / Away above the DND choices, shared as `seance/away`): see
-[shared-presence-modes.md](shared-presence-modes.md).
+account metadata key `seance/presence`, and the pill gained a global mode
+(Online / Auto / Away above the DND choices, shared as `seance/mode`; a
+network's own mode overrides it, Same as global being every network's
+default): see [shared-presence-modes.md](shared-presence-modes.md).
 
 The **effective state** of a network:
 

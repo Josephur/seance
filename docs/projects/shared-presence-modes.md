@@ -2,7 +2,7 @@
 
 Status: shared modes and global away built 2026-10-15 on branch `dnd` (the
 commits after 1b4fb464); § 5 and § 9 record what the two-device runs
-changed. **Revised 2026-10-16** (not built yet): global away becomes a
+changed. **Revised 2026-10-16** and built 2026-10-17: global away becomes a
 global _mode_ (§ 2), and a network's own mode overrides it. Builds on [do-not-disturb.md](do-not-disturb.md), which
 introduced the presence modes, the pill and the shared do not disturb this
 reuses.
