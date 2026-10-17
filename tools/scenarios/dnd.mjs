@@ -329,6 +329,31 @@ export default async function run(page) {
 			`global Auto: the pill reads Auto (${await pillNowText()})`,
 			/^Auto/.test(await pillNowText())
 		);
+		// Auto with nobody looking: the networks following it are away, and so
+		// is the pill's dot (spec § 2: "Auto green, or amber while this
+		// device is unattended").
+		await page.evaluate(`(() => {
+			Object.defineProperty(document, "visibilityState", {configurable: true, get: () => "hidden"});
+			Object.defineProperty(document, "hidden", {configurable: true, get: () => true});
+			window.dispatchEvent(new Event("blur"));
+			document.dispatchEvent(new Event("visibilitychange"));
+		})()`);
+		await page.sleep(500);
+		page.check(
+			"global Auto, unattended: the pill's dot is amber",
+			(await page.count(`${PILL} .presence-dot.is-away`)) === 1
+		);
+		await page.evaluate(`(() => {
+			delete document.visibilityState;
+			delete document.hidden;
+			document.dispatchEvent(new Event("visibilitychange"));
+			window.dispatchEvent(new Event("focus"));
+		})()`);
+		await page.sleep(500);
+		page.check(
+			"global Auto, attended again: the pill's dot is green",
+			(await page.count(`${PILL} .presence-dot.is-online`)) === 1
+		);
 
 		// ---- The dot: no navigation, no drag, its own context menu. With a
 		// channel open, so a click that reached the lobby row would move the view.

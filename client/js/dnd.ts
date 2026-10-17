@@ -118,7 +118,19 @@ const pillState = computed(() => {
 		return "dnd";
 	}
 
-	return state.mode.value === "away" ? "away" : "online";
+	if (state.mode.value === "away") {
+		return "away";
+	}
+
+	// Auto with nobody looking: amber once every connected network following
+	// the pill is away (spec § 2), read off what the networks report.
+	const following = connected.value.filter((n) => n.presence?.mode === "global");
+	const unattended =
+		state.mode.value === "auto" &&
+		following.length > 0 &&
+		following.every((n) => n.presence?.away);
+
+	return unattended ? "away" : "online";
 });
 
 function start(): void {
