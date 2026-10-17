@@ -10,7 +10,8 @@
 // 2. B closed, A changes, B reopens and shows A's mode after its login read;
 // 3. B disconnected, B changes, B reconnects and A shows B's mode;
 // 4. both change while apart (A, then B later): both end on B's;
-// 5. Away on A's pill reaches B; Available on B brings both back.
+// 5. The global mode: a network on Same as global follows the pill on both
+//    devices, and a network's own mode overrides it.
 
 import {observe} from "./lib/irc-observer.mjs";
 import {FAKE_PUSH_API} from "./lib/fake-push.mjs";
@@ -180,34 +181,42 @@ export default async function run(page) {
 			await waitMode(page, /^Do not disturb/, "4a")
 		);
 
-		// 5. Global away.
-		await setMode(page, "online");
-		await waitMode(b, /^Online/, "5 setup");
+		// 5. The global mode: a network on Same as global follows the pill on both devices.
+		await setMode(page, "global");
+		page.check(
+			"5. B's network follows A to Same as global",
+			await waitMode(b, / · global$/, "5 setup")
+		);
 		await pick(page, PILL, "status-away");
 		page.check("5. B's pill reads Away", await waitText(b, PILL_TEXT, /^Away/, "5 pill", 6000));
 		page.check(
-			"5. B's dot reads Online · away",
-			await waitMode(b, /^Online · away/, "5 dot", 6000)
+			"5. B's dot reads Away · global",
+			await waitMode(b, /^Away · global$/, "5 dot", 6000)
 		);
 		await page.sleep(1500);
 		const flag5 = await obs.who(me);
 		page.check(`5. others see the account away (${flag5})`, flag5 === "G");
-		await pick(b, PILL, "status-auto");
+		await setMode(b, "online");
 		page.check(
-			"5. Available on B: A's pill leaves Away",
-			await waitText(page, PILL_TEXT, /^(?!Away)/, "5 back", 6000)
-		);
-		page.check(
-			"5. and A's dot is plain Online again",
-			await waitMode(page, /^Online$/, "5 back dot", 6000)
+			"5. B's own Online reaches A's dot",
+			await waitMode(page, /^Online$/, "5 own", 6000)
 		);
 		await page.sleep(1500);
 		const flag5b = await obs.who(me);
-		page.check(`5. others see the account present (${flag5b})`, flag5b === "H");
+		page.check(
+			`5. the network's own Online wins over the global Away (${flag5b})`,
+			flag5b === "H"
+		);
+		await pick(b, PILL, "status-online");
+		page.check(
+			"5. Online on B: A's pill reads Online",
+			await waitText(page, PILL_TEXT, /^Online/, "5 back", 6000)
+		);
 
-		// Leave the account on Auto.
-		await setMode(page, "auto");
-		await waitMode(b, /^Auto/, "cleanup");
+		// Leave the account on Same as global and Auto.
+		await setMode(page, "global");
+		await pick(page, PILL, "status-auto");
+		await waitMode(b, /^Auto · global/, "cleanup");
 	} finally {
 		await b.close();
 		obs?.close();

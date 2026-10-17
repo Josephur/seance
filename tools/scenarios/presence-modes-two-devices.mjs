@@ -238,10 +238,10 @@ export default async function run(page) {
 		r = await record("8. B reopened alone (A closed)", {aOpen: false});
 
 		// Leave the account as found: B back to Auto, A back to Auto.
-		await menu(b, DOT, "presence-auto");
+		await menu(b, DOT, "presence-global");
 		await reopen(page);
 		await page.sleep(SETTLE);
-		await menu(page, DOT, "presence-auto");
+		await menu(page, DOT, "presence-global");
 	} finally {
 		console.log("\n  RESULTS");
 		for (const row of results) {
