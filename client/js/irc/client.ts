@@ -52,7 +52,12 @@ import {
 	markReadAt,
 	scheduleMarkRead,
 } from "./handlers/markread";
-import type {GlobalAway, PresenceMode} from "../helpers/dnd";
+import {
+	effectiveMode,
+	type GlobalModeState,
+	type NetworkMode,
+	type PresenceMode,
+} from "../helpers/dnd";
 import {
 	PresenceState,
 	initialPresence,
@@ -65,7 +70,7 @@ import {
 } from "./presence";
 import {abortHistory, retryLostHistory} from "./history";
 import {globalUntil, MUTE_KEY, MUTE_READ_DELAY_MS, type PendingMute, releaseMute} from "./pushMute";
-import {AWAY_KEY, PRESENCE_KEY, syncShared, type Stamped} from "./presenceShare";
+import {MODE_KEY, PRESENCE_KEY, syncShared, type Stamped} from "./presenceShare";
 import {getMuteMemory, setMuteMemory, type MuteMemory} from "./muteMemory";
 import {getUserAway} from "./userAwayStore";
 import {
@@ -256,16 +261,17 @@ export class IrcClient {
 	/** Attention and away bookkeeping (presence.ts). */
 	readonly presence: PresenceState = initialPresence();
 	/** Online / Auto / Away / Do not disturb (docs/projects/do-not-disturb.md). */
-	presenceMode: PresenceMode = "auto";
+	/** This network's own mode; `global` follows the pill (helpers/dnd.ts effectiveMode). */
+	presenceMode: NetworkMode = "global";
 	/** When `presenceMode` was chosen (Unix ms); undefined = never (presenceShare.ts). */
 	presenceAt: number | undefined = undefined;
-	/** The device's global away switch (client/js/dnd.ts, manager.setGlobalAwayAll). */
-	globalAway: GlobalAway = {on: false, at: null};
+	/** The pill's global mode (client/js/dnd.ts, manager.setGlobalModeAll). */
+	globalMode: GlobalModeState = {value: "auto", at: null};
 	/** The shared mode / switch was read on this connection, and the server's last value. */
 	presenceKnown = false;
 	presenceServer: Stamped | null = null;
-	awayKnown = false;
-	awayServer: Stamped | null = null;
+	globalKnown = false;
+	globalServer: Stamped | null = null;
 	/**
 	 * The mute and the shared keys are subscribed on this connection: before
 	 * `CAP END` when the server offers `draft/metadata-2=before-connect` and
@@ -1087,7 +1093,7 @@ export class IrcClient {
 				(caps.hasCapability("draft/metadata-2") || caps.isRequesting("draft/metadata-2"))
 			) {
 				this.metadataSubscribed = true;
-				lines.push(`METADATA * SUB ${MUTE_KEY} ${PRESENCE_KEY} ${AWAY_KEY}`);
+				lines.push(`METADATA * SUB ${MUTE_KEY} ${PRESENCE_KEY} ${MODE_KEY}`);
 			}
 
 			const line = registrationAwayLine(this);
@@ -1214,8 +1220,8 @@ export class IrcClient {
 		this.muteKnown = false;
 		this.presenceKnown = false;
 		this.presenceServer = null;
-		this.awayKnown = false;
-		this.awayServer = null;
+		this.globalKnown = false;
+		this.globalServer = null;
 		this.metadataSubscribed = false;
 		this.mutePending.length = 0;
 		presenceClosed(this);
@@ -2059,7 +2065,7 @@ export class IrcClient {
 	 * adopted from the server: its time) and shares it (presenceShare.ts);
 	 * without one the time is left as it is.
 	 */
-	setPresenceMode(mode: PresenceMode, at?: number): void {
+	setPresenceMode(mode: NetworkMode, at?: number): void {
 		if (at !== undefined) {
 			this.presenceAt = at;
 		}
@@ -2074,14 +2080,19 @@ export class IrcClient {
 		}
 	}
 
-	/** The device's global away switch (docs/projects/shared-presence-modes.md § 2). */
-	setGlobalAway(away: GlobalAway): void {
-		if (this.globalAway.on === away.on && this.globalAway.at === away.at) {
+	/** The mode in force: this network's own, or the global one (helpers/dnd.ts). */
+	get effectiveMode(): PresenceMode {
+		return effectiveMode(this.presenceMode, this.globalMode.value);
+	}
+
+	/** The pill's global mode (docs/projects/shared-presence-modes.md § 2). */
+	setGlobalMode(mode: GlobalModeState): void {
+		if (this.globalMode.value === mode.value && this.globalMode.at === mode.at) {
 			return;
 		}
 
-		const changed = this.globalAway.on !== away.on;
-		this.globalAway = {on: away.on, at: away.at};
+		const changed = this.globalMode.value !== mode.value;
+		this.globalMode = {value: mode.value, at: mode.at};
 
 		if (changed) {
 			syncPresence(this);
@@ -2121,10 +2132,10 @@ export class IrcClient {
 			if (this.isWelcomed && this.transport.state === "open") {
 				if (!this.metadataSubscribed) {
 					this.metadataSubscribed = true;
-					this.send(`METADATA * SUB ${MUTE_KEY} ${PRESENCE_KEY} ${AWAY_KEY}`);
+					this.send(`METADATA * SUB ${MUTE_KEY} ${PRESENCE_KEY} ${MODE_KEY}`);
 				}
 
-				this.send(`METADATA * GET ${MUTE_KEY} ${PRESENCE_KEY} ${AWAY_KEY}`);
+				this.send(`METADATA * GET ${MUTE_KEY} ${PRESENCE_KEY} ${MODE_KEY}`);
 			}
 		}, MUTE_READ_DELAY_MS);
 		// Never what keeps a process (mocha) alive.

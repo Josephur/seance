@@ -1,7 +1,7 @@
 /**
  * METADATA lines and replies (draft/metadata-2). The account's push mute list
  * (`draft/webpush/mute`) and the shared presence values (`seance/presence`,
- * `seance/away`, irc/presenceShare.ts) are read into the client
+ * `seance/mode`, irc/presenceShare.ts) are read into the client
  * (irc/pushMute.ts: shared do not disturb). The replies for the keys this client writes itself — the
  * mute list and the webpush payload tier (webpush.ts) — stay silent; a reply
  * for any other key (a user's own `/metadata`) is shown as it always was,
@@ -15,19 +15,19 @@
  */
 import type {Handler} from "../types";
 import {MUTE_KEY, onMuteValue} from "../pushMute";
-import {AWAY_KEY, PRESENCE_KEY, onAwayValue, onPresenceValue} from "../presenceShare";
+import {MODE_KEY, PRESENCE_KEY, onGlobalModeValue, onPresenceValue} from "../presenceShare";
 // index.ts imports this module too; `unhandled` is only called at run time.
 import {unhandled} from "./index";
 
 /** The webpush payload tier (webpush.ts writes it through `webpush:metadata`). */
 export const PAYLOAD_KEY = "draft/webpush/payload";
 
-const OWN_KEYS = new Set([MUTE_KEY, PAYLOAD_KEY, PRESENCE_KEY, AWAY_KEY]);
+const OWN_KEYS = new Set([MUTE_KEY, PAYLOAD_KEY, PRESENCE_KEY, MODE_KEY]);
 
 /** The shared keys this client reads (irc/presenceShare.ts). */
 const SHARED: Record<string, (client: Parameters<Handler>[0], value: string) => void> = {
 	[PRESENCE_KEY]: onPresenceValue,
-	[AWAY_KEY]: onAwayValue,
+	[MODE_KEY]: onGlobalModeValue,
 };
 
 const ownKey = (key: string | undefined) => key !== undefined && OWN_KEYS.has(key);

@@ -13,7 +13,7 @@ import {request} from "./request";
 import * as saved from "./saved-networks";
 import {checkServices, servicesBan} from "./services";
 import type {ConnectOptions} from "./types";
-import type {PresenceMode} from "../helpers/dnd";
+import type {NetworkMode} from "../helpers/dnd";
 import {REPLY_TAG} from "./wire";
 
 export interface ClientRegistry {
@@ -346,7 +346,7 @@ export function registerBusHandlers(bus: EventBus, registry: ClientRegistry): vo
 	// another device's DND Off: a choice made on this device, applied at
 	// once, stamped with its time and shared (irc/presenceShare.ts), and
 	// saved when the network is a saved one.
-	const setPresenceMode = (network: string, mode: PresenceMode): void => {
+	const setPresenceMode = (network: string, mode: NetworkMode): void => {
 		const client = registry.clientForNetwork(network);
 		const existing = saved.get(network);
 		const at = Date.now();
@@ -354,7 +354,7 @@ export function registerBusHandlers(bus: EventBus, registry: ClientRegistry): vo
 		if (existing) {
 			saved.save({
 				...existing,
-				presenceMode: mode === "auto" ? undefined : mode,
+				presenceMode: mode === "global" ? undefined : mode,
 				presenceAt: at,
 			});
 		}
@@ -379,7 +379,7 @@ export function registerBusHandlers(bus: EventBus, registry: ClientRegistry): vo
 		if (existing) {
 			saved.save({
 				...existing,
-				presenceMode: mode === "auto" ? undefined : mode,
+				presenceMode: mode === "global" ? undefined : mode,
 				presenceAt: at,
 			});
 		}

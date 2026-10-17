@@ -18,6 +18,7 @@ import {dispatchInput} from "../../client/js/irc/commands";
 import {MARKREAD_DEBOUNCE_MS} from "../../client/js/irc/handlers/markread";
 import {AWAY_STAR} from "../../client/js/irc/presence";
 import {MessageType} from "../../shared/types/msg";
+import {effectiveMode, type GlobalMode, type NetworkMode} from "../../client/js/helpers/dnd";
 import type {Transport} from "../../client/js/irc/types";
 import type {TransportEvent, TransportState} from "../../client/js/irc/transport";
 
@@ -315,6 +316,7 @@ describe("presence modes and do not disturb (presence.ts)", function () {
 					expect(h.client.presence.starSent).to.equal(star);
 					expect(h.client.presenceSnapshot()).to.deep.equal({
 						mode,
+						effective: mode,
 						dnd: dnd || mode === "dnd",
 						away: star,
 					});
@@ -323,24 +325,27 @@ describe("presence modes and do not disturb (presence.ts)", function () {
 		}
 	}
 
-	it("global away puts every mode away, and lifting it hands back to the mode", function () {
-		for (const mode of ["online", "auto", "away", "dnd"] as const) {
+	it("a network on Same as global follows the global mode; its own mode ignores it", function () {
+		const cases: [NetworkMode, GlobalMode, boolean, string][] = [
+			["global", "online", false, "present"],
+			["global", "auto", true, "present"],
+			["global", "auto", false, "AWAY *"],
+			["global", "away", true, "AWAY *"],
+			["online", "away", true, "present"],
+			["away", "online", true, "AWAY *"],
+		];
+
+		for (const [own, global, attended, want] of cases) {
 			const h = connect();
-			h.client.setPresenceMode(mode);
-			h.sent();
-			h.client.setGlobalAway({on: true, at: 1});
-			const wanted = mode === "online" || mode === "auto" ? ["AWAY *"] : [];
-			expect(
-				h.sent().filter((l) => l.startsWith("AWAY")),
-				mode
-			).to.deep.equal(wanted);
-			expect(h.client.presenceSnapshot().away, mode).to.equal(true);
-			h.client.setGlobalAway({on: false, at: 2});
-			const back = mode === "online" || mode === "auto" ? ["AWAY"] : [];
-			expect(
-				h.sent().filter((l) => l.startsWith("AWAY")),
-				`${mode} back`
-			).to.deep.equal(back);
+			h.client.setGlobalMode({value: global, at: 1});
+			h.client.setPresenceMode(own);
+			h.client.setAttended(attended);
+			const aways = h.transport.sent.filter((l) => l === "AWAY" || l === "AWAY *");
+			const label = `${own} under global ${global}, ${attended ? "attended" : "unattended"}`;
+			expect(aways.at(-1) ?? "AWAY", label).to.equal(want === "present" ? "AWAY" : "AWAY *");
+			expect(h.client.presenceSnapshot().effective, label).to.equal(
+				effectiveMode(own, global)
+			);
 		}
 	});
 
@@ -396,9 +401,14 @@ describe("presence modes and do not disturb (presence.ts)", function () {
 		const call = h.dispatch.getCalls().find((c) => c.args[0] === "network:presence");
 		expect(call?.args[1]).to.deep.equal({
 			network: "presence-net",
-			presence: {mode: "dnd", dnd: true, away: true},
+			presence: {mode: "dnd", effective: "dnd", dnd: true, away: true},
 		});
-		expect(h.client.network.presence).to.deep.equal({mode: "dnd", dnd: true, away: true});
+		expect(h.client.network.presence).to.deep.equal({
+			mode: "dnd",
+			effective: "dnd",
+			dnd: true,
+			away: true,
+		});
 	});
 
 	it("sends nothing before registration, then AWAY * once welcomed", function () {

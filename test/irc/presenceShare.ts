@@ -4,7 +4,7 @@ import sinon from "ts-sinon";
 // pushMute ↔ presence ↔ client import cycle).
 import {register, setup, type Harness} from "./support";
 import {
-	AWAY_KEY,
+	MODE_KEY,
 	PRESENCE_KEY,
 	formatStamped,
 	newer,
@@ -23,7 +23,10 @@ describe("shared presence values (irc/presenceShare.ts)", function () {
 			value: "away",
 			at: 1792000000000,
 		});
-		expect(parseStamped("on 5", ["on", "off"])).to.deep.equal({value: "on", at: 5});
+		expect(parseStamped("away 5", ["online", "auto", "away"])).to.deep.equal({
+			value: "away",
+			at: 5,
+		});
 
 		for (const bad of [
 			"",
@@ -39,7 +42,7 @@ describe("shared presence values (irc/presenceShare.ts)", function () {
 			expect(parseStamped(bad, MODES), bad).to.equal(null);
 		}
 
-		expect(parseStamped("maybe 5", ["on", "off"])).to.equal(null);
+		expect(parseStamped("maybe 5", ["online", "auto", "away"])).to.equal(null);
 	});
 
 	it("formats it back", function () {
@@ -100,8 +103,8 @@ describe("shared presence on the wire (irc/presenceShare.ts)", function () {
 		const h = registered();
 		clock.tick(MUTE_READ_DELAY_MS);
 		expect(h.sent().filter((l) => / (SUB|GET) /.test(l))).to.deep.equal([
-			`METADATA * SUB draft/webpush/mute ${PRESENCE_KEY} ${AWAY_KEY}`,
-			`METADATA * GET draft/webpush/mute ${PRESENCE_KEY} ${AWAY_KEY}`,
+			`METADATA * SUB draft/webpush/mute ${PRESENCE_KEY} ${MODE_KEY}`,
+			`METADATA * GET draft/webpush/mute ${PRESENCE_KEY} ${MODE_KEY}`,
 		]);
 	});
 
@@ -187,7 +190,7 @@ describe("shared presence on the wire (irc/presenceShare.ts)", function () {
 		it("ignores a value it cannot read", function () {
 			const h = connected();
 			answer(h, PRESENCE_KEY, `busy ${T0 - 10}`);
-			expect(h.client.presenceMode).to.equal("auto");
+			expect(h.client.presenceMode).to.equal("global");
 			expect(sets(h, PRESENCE_KEY)).to.deep.equal([]);
 			h.client.setPresenceMode("away", T0 - 5);
 			expect(sets(h, PRESENCE_KEY)).to.deep.equal([
@@ -264,6 +267,33 @@ describe("shared presence on the wire (irc/presenceShare.ts)", function () {
 			}
 		});
 
+		it("global is a network's shared mode like the others", function () {
+			const h = connected();
+			h.client.setPresenceMode("online", T0 - 5000);
+			answer(h, PRESENCE_KEY, `global ${T0 - 1000}`);
+			expect(h.client.presenceMode).to.equal("global");
+			expect(h.client.effectiveMode).to.equal("auto");
+		});
+
+		it("a network on global follows the global mode live, its own mode and time unchanged", function () {
+			const h = connected();
+			h.client.setPresenceMode("global", T0 - 9000);
+			answer(h, PRESENCE_KEY, `global ${T0 - 9000}`);
+			answer(h, MODE_KEY, `auto ${T0 - 9000}`);
+			h.sent();
+			live(h, MODE_KEY, `away ${T0 - 10}`);
+			expect(h.client.effectiveMode).to.equal("away");
+			expect(h.client.presenceMode).to.equal("global");
+			expect(h.client.presenceAt).to.equal(T0 - 9000);
+			expect(h.sent()).to.include("AWAY *");
+		});
+
+		it("seance/away (the 2026-10-15 key) is not read", function () {
+			const h = connected();
+			live(h, "seance/away", `on ${T0}`);
+			expect(h.client.globalMode).to.deep.equal({value: "auto", at: null});
+		});
+
 		it("a mode set with no time leaves the time alone", function () {
 			const h = connected();
 			h.client.setPresenceMode("away");
@@ -271,65 +301,65 @@ describe("shared presence on the wire (irc/presenceShare.ts)", function () {
 		});
 	});
 
-	describe("global away (seance/away)", function () {
+	describe("the global mode (seance/mode)", function () {
 		it("adopts a newer server switch: applied here and reported to the page", function () {
 			const h = connected();
-			answer(h, AWAY_KEY, `on ${T0 - 1000}`);
-			expect(h.client.globalAway).to.deep.equal({on: true, at: T0 - 1000});
+			answer(h, MODE_KEY, `away ${T0 - 1000}`);
+			expect(h.client.globalMode).to.deep.equal({value: "away", at: T0 - 1000});
 			expect(h.sent()).to.include("AWAY *");
-			expect(h.payloads("away:shared")).to.deep.equal([
-				{network: h.client.uuid, on: true, at: T0 - 1000},
+			expect(h.payloads("mode:shared")).to.deep.equal([
+				{network: h.client.uuid, mode: "away", at: T0 - 1000},
 			]);
 		});
 
 		it("writes the device's newer switch, then its echoes write nothing", function () {
 			const h = connected();
-			h.client.setGlobalAway({on: true, at: T0 - 100});
+			h.client.setGlobalMode({value: "away", at: T0 - 100});
 			h.sent();
-			answer(h, AWAY_KEY, `off ${T0 - 5000}`);
-			expect(sets(h, AWAY_KEY)).to.deep.equal([
-				`METADATA * SET ${AWAY_KEY} private :on ${T0 - 100}`,
+			answer(h, MODE_KEY, `auto ${T0 - 5000}`);
+			expect(sets(h, MODE_KEY)).to.deep.equal([
+				`METADATA * SET ${MODE_KEY} private :away ${T0 - 100}`,
 			]);
-			answer(h, AWAY_KEY, `on ${T0 - 100}`);
-			live(h, AWAY_KEY, `on ${T0 - 100}`);
-			expect(sets(h, AWAY_KEY)).to.deep.equal([]);
-			expect(h.payloads("away:shared")).to.deep.equal([]);
+			answer(h, MODE_KEY, `away ${T0 - 100}`);
+			live(h, MODE_KEY, `away ${T0 - 100}`);
+			expect(sets(h, MODE_KEY)).to.deep.equal([]);
+			expect(h.payloads("mode:shared")).to.deep.equal([]);
 		});
 
 		it("a switch never touched writes nothing to an empty server", function () {
 			const h = connected();
-			answer(h, AWAY_KEY, null);
-			expect(sets(h, AWAY_KEY)).to.deep.equal([]);
+			answer(h, MODE_KEY, null);
+			expect(sets(h, MODE_KEY)).to.deep.equal([]);
 		});
 
 		it("the page's switch after the read is written at once, and turning it off sends AWAY", function () {
 			const h = connected();
-			answer(h, AWAY_KEY, null);
-			h.client.setGlobalAway({on: true, at: T0});
+			answer(h, MODE_KEY, null);
+			h.client.setGlobalMode({value: "away", at: T0});
 			expect(h.sent()).to.deep.equal([
 				"AWAY *",
-				`METADATA * SET ${AWAY_KEY} private :on ${T0}`,
+				`METADATA * SET ${MODE_KEY} private :away ${T0}`,
 			]);
-			h.client.setGlobalAway({on: false, at: T0 + 1});
+			h.client.setGlobalMode({value: "auto", at: T0 + 1});
 			expect(h.sent()).to.deep.equal([
 				"AWAY",
-				`METADATA * SET ${AWAY_KEY} private :off ${T0 + 1}`,
+				`METADATA * SET ${MODE_KEY} private :auto ${T0 + 1}`,
 			]);
 		});
 
 		it("an unknown value is not answered with a write, even with a switch of our own", function () {
 			const h = connected();
-			h.client.setGlobalAway({on: true, at: T0 - 100});
-			answer(h, AWAY_KEY, `maybe ${T0}`);
-			expect(sets(h, AWAY_KEY)).to.deep.equal([]);
-			expect(h.client.globalAway).to.deep.equal({on: true, at: T0 - 100});
+			h.client.setGlobalMode({value: "away", at: T0 - 100});
+			answer(h, MODE_KEY, `maybe ${T0}`);
+			expect(sets(h, MODE_KEY)).to.deep.equal([]);
+			expect(h.client.globalMode).to.deep.equal({value: "away", at: T0 - 100});
 		});
 
 		it("ignores a value it cannot read", function () {
 			const h = connected();
-			answer(h, AWAY_KEY, `maybe ${T0}`);
-			expect(h.client.globalAway).to.deep.equal({on: false, at: null});
-			expect(sets(h, AWAY_KEY)).to.deep.equal([]);
+			answer(h, MODE_KEY, `maybe ${T0}`);
+			expect(h.client.globalMode).to.deep.equal({value: "auto", at: null});
+			expect(sets(h, MODE_KEY)).to.deep.equal([]);
 		});
 	});
 });
@@ -345,8 +375,8 @@ describe("subscribing to the shared keys (client.ts)", function () {
 		clock.restore();
 	});
 
-	const SUB = `METADATA * SUB draft/webpush/mute ${PRESENCE_KEY} ${AWAY_KEY}`;
-	const GET = `METADATA * GET draft/webpush/mute ${PRESENCE_KEY} ${AWAY_KEY}`;
+	const SUB = `METADATA * SUB draft/webpush/mute ${PRESENCE_KEY} ${MODE_KEY}`;
+	const GET = `METADATA * GET draft/webpush/mute ${PRESENCE_KEY} ${MODE_KEY}`;
 
 	/** A SASL login on a server offering `metadata`; returns the CAP END flush. */
 	function saslLogin(h: Harness, metadata: string): string[] {

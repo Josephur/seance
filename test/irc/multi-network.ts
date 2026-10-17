@@ -607,7 +607,8 @@ describe("multiple networks", function () {
 			expect(saved.get("net-a")?.presenceMode).to.equal("away");
 			socket.emit("network:presence-mode", {network: "net-a", mode: "auto"});
 			expect(a.presenceMode).to.equal("auto");
-			expect(saved.get("net-a")).to.not.have.property("presenceMode");
+			// An explicit auto is kept: no key is Same as global now.
+			expect(saved.get("net-a")?.presenceMode).to.equal("auto");
 		});
 
 		it("network:presence-mode on an unsaved network applies it and saves nothing", function () {
@@ -670,6 +671,15 @@ describe("multiple networks", function () {
 			socket.dispatch("dnd:cleared", {network: "net-a"});
 			expect(a.presenceMode).to.equal("away");
 			expect(saved.get("net-a")?.presenceMode).to.equal("away");
+		});
+
+		it("network:presence-mode global clears the saved mode and follows the global one", function () {
+			saved.save({...stored(), presenceMode: "away"});
+			const a = manager.createNetwork({uuid: "net-a", nick: "alice"});
+			socket.emit("network:presence-mode", {network: "net-a", mode: "global"});
+			expect(a.presenceMode).to.equal("global");
+			expect(saved.get("net-a")).to.not.have.property("presenceMode");
+			expect(saved.get("net-a")?.presenceAt).to.be.a("number");
 		});
 
 		it("a choice on the dot is stamped, on the client and the saved entry", function () {

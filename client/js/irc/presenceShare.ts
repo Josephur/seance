@@ -2,8 +2,9 @@
  * Shared presence (docs/projects/shared-presence-modes.md): each network's
  * mode and the device-wide global away switch are the same on every device
  * of the account. They live in the account's private metadata as
- * `seance/presence` = `<mode> <changedAt>` and `seance/away` =
- * `<on|off> <changedAt>` (Unix ms of the user's choice, on the device that
+ * `seance/presence` = `<mode> <changedAt>` (a network's own mode, `global`
+ * included) and `seance/mode` = `<online|auto|away> <changedAt>` (the
+ * global mode) (Unix ms of the user's choice, on the device that
  * made it), and the most recent choice wins — an equal time goes to the
  * later word, so every device picks the same one.
  *
@@ -17,16 +18,20 @@
  *
  * Vue-free and DOM-free; bus.ts saves an adopted mode
  * (`network:presence-shared`), client/js/dnd.ts an adopted switch
- * (`away:shared`).
+ * (`mode:shared`).
  */
 
 import type {IrcClient} from "./client";
-import {PRESENCE_MODES, type GlobalAway, type PresenceMode} from "../helpers/dnd";
+import {
+	GLOBAL_MODES,
+	NETWORK_MODES,
+	type GlobalMode,
+	type GlobalModeState,
+	type NetworkMode,
+} from "../helpers/dnd";
 
 export const PRESENCE_KEY = "seance/presence";
-export const AWAY_KEY = "seance/away";
-
-const AWAY_WORDS = ["on", "off"] as const;
+export const MODE_KEY = "seance/mode";
 
 export interface Stamped {
 	value: string;
@@ -87,9 +92,9 @@ function localMode(client: IrcClient): Stamped | null {
 		: {value: client.presenceMode, at: client.presenceAt};
 }
 
-function localAway(client: IrcClient): Stamped | null {
-	const a = client.globalAway;
-	return a.at === null ? null : {value: a.on ? "on" : "off", at: a.at};
+function localGlobal(client: IrcClient): Stamped | null {
+	const g = client.globalMode;
+	return g.at === null ? null : {value: g.value, at: g.at};
 }
 
 /** Write `mine` when it is newer than what the server holds; remember it as held. */
@@ -122,27 +127,27 @@ export function syncShared(client: IrcClient): void {
 		client.presenceServer,
 		localMode(client)
 	);
-	client.awayServer = writeIfNewer(
+	client.globalServer = writeIfNewer(
 		client,
-		AWAY_KEY,
-		client.awayKnown,
-		client.awayServer,
-		localAway(client)
+		MODE_KEY,
+		client.globalKnown,
+		client.globalServer,
+		localGlobal(client)
 	);
 }
 
 /** A `seance/presence` value read (761, 766 as "", or the subscription's line). */
 export function onPresenceValue(client: IrcClient, value: string): void {
 	const mine = localMode(client);
-	const server = readValue(value, PRESENCE_MODES, mine);
+	const server = readValue(value, NETWORK_MODES, mine);
 	client.presenceKnown = true;
 	client.presenceServer = server;
 
 	if (server && !server.opaque && (!mine || newer(server, mine))) {
-		client.setPresenceMode(server.value as PresenceMode, server.at);
+		client.setPresenceMode(server.value as NetworkMode, server.at);
 		client.dispatchBus("network:presence-shared", {
 			network: client.uuid,
-			mode: server.value as PresenceMode,
+			mode: server.value as NetworkMode,
 			at: server.at,
 		});
 		return;
@@ -151,17 +156,17 @@ export function onPresenceValue(client: IrcClient, value: string): void {
 	syncShared(client);
 }
 
-/** A `seance/away` value read: adopt it here (the page fans it out) or write ours. */
-export function onAwayValue(client: IrcClient, value: string): void {
-	const mine = localAway(client);
-	const server = readValue(value, AWAY_WORDS, mine);
-	client.awayKnown = true;
-	client.awayServer = server;
+/** A `seance/mode` value read: adopt it here (the page fans it out) or write ours. */
+export function onGlobalModeValue(client: IrcClient, value: string): void {
+	const mine = localGlobal(client);
+	const server = readValue(value, GLOBAL_MODES, mine);
+	client.globalKnown = true;
+	client.globalServer = server;
 
 	if (server && !server.opaque && (!mine || newer(server, mine))) {
-		const away: GlobalAway = {on: server.value === "on", at: server.at};
-		client.setGlobalAway(away);
-		client.dispatchBus("away:shared", {network: client.uuid, on: away.on, at: server.at});
+		const mode: GlobalModeState = {value: server.value as GlobalMode, at: server.at};
+		client.setGlobalMode(mode);
+		client.dispatchBus("mode:shared", {network: client.uuid, mode: mode.value, at: server.at});
 		return;
 	}
 

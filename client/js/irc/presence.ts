@@ -25,9 +25,9 @@
  * (`wantsStar`), reports the snapshot to the store and keeps the push mute
  * in step (pushMute.ts).
  *
- * Global away (client/js/dnd.ts, `IrcClient.globalAway`) wants `AWAY *` on
- * every network whatever its mode; do not disturb outranks it only in that
- * DND also mutes push.
+ * The global mode (client/js/dnd.ts, `IrcClient.globalMode`) is the default
+ * of every network on Same as global; a network's own mode overrides it
+ * (`effectiveMode`).
  *
  * The away state is declared before `CAP END` (`registrationAwayLine`,
  * `draft/pre-away`), so a held bouncer session is never counted present
@@ -118,13 +118,10 @@ export function effectiveDnd(client: IrcClient): boolean {
 
 /** Whether this connection should be `AWAY *` (ignoring `/away`). */
 export function wantsStar(client: IrcClient): boolean {
-	const mode = client.presenceMode;
+	const mode = client.effectiveMode;
 
 	return (
-		effectiveDnd(client) ||
-		client.globalAway.on ||
-		mode === "away" ||
-		(mode === "auto" && !client.presence.attended)
+		effectiveDnd(client) || mode === "away" || (mode === "auto" && !client.presence.attended)
 	);
 }
 
@@ -133,6 +130,7 @@ export function presenceSnapshot(client: IrcClient): SharedNetworkPresence {
 
 	return {
 		mode: client.presenceMode,
+		effective: client.effectiveMode,
 		dnd: effectiveDnd(client),
 		away: p.userAway || p.starSent,
 	};
@@ -464,7 +462,7 @@ export function leavesAwayToWorker(client: IrcClient, stashed: (uuid: string) =>
 	const p = client.presence;
 
 	return (
-		client.presenceMode === "auto" &&
+		client.effectiveMode === "auto" &&
 		client.isConnected &&
 		client.transport.state === "open" &&
 		heldByBouncer(client) &&

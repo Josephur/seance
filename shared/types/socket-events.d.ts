@@ -4,6 +4,7 @@ import {
 	ServicesConfig,
 	SharedNetwork,
 	SharedNetworkPresence,
+	SharedNetworkMode,
 	SharedPresenceMode,
 	SharedServerOptions,
 } from "./network";
@@ -76,10 +77,10 @@ interface ServerToClientEvents {
 	"network:presence": EventHandler<{network: string; presence: SharedNetworkPresence}>;
 	"network:presence-shared": EventHandler<{
 		network: string;
-		mode: SharedPresenceMode;
+		mode: SharedNetworkMode;
 		at: number;
 	}>;
-	"away:shared": EventHandler<{network: string; on: boolean; at: number}>;
+	"mode:shared": EventHandler<{network: string; mode: "online" | "auto" | "away"; at: number}>;
 	/** Another device removed the shared do-not-disturb entry while this one wanted it. */
 	"dnd:cleared": EventHandler<{network: string}>;
 	"network:status": EventHandler<{
@@ -359,7 +360,7 @@ interface ClientToServerEvents {
 	"network:get": (uuid: string) => void;
 	// TODO typing
 	"network:edit": (data: Record<string, any>) => void;
-	"network:presence-mode": (data: {network: string; mode: SharedPresenceMode}) => void;
+	"network:presence-mode": (data: {network: string; mode: SharedNetworkMode}) => void;
 	"network:new": (data: Record<string, any>) => void;
 
 	"sign-out": (token?: string) => void;

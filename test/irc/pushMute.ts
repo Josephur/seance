@@ -231,8 +231,8 @@ describe("push mute on the wire (irc/pushMute.ts)", function () {
 		expect(metadata()).to.deep.equal([]);
 		clock.tick(1);
 		expect(metadata()).to.deep.equal([
-			"METADATA * SUB draft/webpush/mute seance/presence seance/away",
-			"METADATA * GET draft/webpush/mute seance/presence seance/away",
+			"METADATA * SUB draft/webpush/mute seance/presence seance/mode",
+			"METADATA * GET draft/webpush/mute seance/presence seance/mode",
 		]);
 	});
 
