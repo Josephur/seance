@@ -645,7 +645,7 @@ export default async function run(page) {
 			);
 
 			// ---- The pill menu, every item.
-			await openMenu(PILL, "status-available");
+			await openMenu(PILL, "status-auto");
 			await shot("pill-menu", [PILL, MENU], 10);
 			const onScreen = await menuOnScreen();
 			record(theme, "the pill menu is wholly on screen", onScreen.ok, onScreen.box);
@@ -785,7 +785,7 @@ export default async function run(page) {
 			await openDrawer();
 			await checkGeom("huge step, long label");
 			await shot("pill-dnd-long-huge", ["#sidebar .logo-container", LOBBY]);
-			await openMenu(PILL, "status-available");
+			await openMenu(PILL, "status-auto");
 			const hugeMenu = await menuOnScreen();
 			record(
 				theme,
@@ -800,7 +800,7 @@ export default async function run(page) {
 			await setSetting("use12hClock", false);
 
 			// Off.
-			await choose(PILL, "status-available");
+			await choose(PILL, "status-auto");
 			text = await pillText();
 			record(theme, "Off: back to Online · auto", text === "Online · auto", text);
 			record(theme, "… and the dot is green", (await dotClass()) === "green");

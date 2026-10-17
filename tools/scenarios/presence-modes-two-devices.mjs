@@ -162,7 +162,7 @@ export default async function run(page) {
 
 		// Clean start: the mute read lands, DND off, no /away.
 		await page.sleep(11000);
-		await menu(page, PILL, "status-available");
+		await menu(page, PILL, "status-auto");
 		await command(page, "/back");
 		await page.evaluate(SHOW);
 

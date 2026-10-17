@@ -183,8 +183,8 @@ export default async function run(page) {
 			`document.querySelector('${PILL}').textContent.trim()`
 		);
 		page.check(
-			`the pill starts "Online · auto" (${pillText})`,
-			/^Online\s·\sauto$/.test(pillText)
+			`the pill starts on the global mode Auto (${pillText})`,
+			/^Auto$/.test(pillText)
 		);
 		page.check("the dot starts green", (await page.count(`${DOT}.is-online`)) === 1);
 
@@ -285,35 +285,50 @@ export default async function run(page) {
 		);
 
 		// ---- Off.
-		await choose(PILL, "status-available");
+		await choose(PILL, "status-auto");
 		await page.waitFor(`!document.querySelector('${PILL}.is-dnd')`, {label: "pill off"});
 		await page.sleep(500);
 		page.check("Off sent AWAY", awayLines(page).at(-1) === "AWAY");
 		page.check("the dot is green again", (await page.count(`${DOT}.is-online`)) === 1);
 
-		// ---- Global away (docs/projects/shared-presence-modes.md § 2).
+		// ---- The global mode (docs/projects/shared-presence-modes.md § 2).
 		const pillNowText = () =>
 			page.evaluate(`document.querySelector('${PILL}').textContent.trim()`);
 		const dotTitle = () =>
 			page.evaluate(`document.querySelector('${DOT}').getAttribute("title")`);
+		page.check(
+			`a network starts on Same as global (${await dotTitle()})`,
+			(await dotTitle()) === "Auto · global"
+		);
 		await choose(PILL, "status-away");
 		await page.sleep(500);
 		page.check(
-			`global away: the pill reads Away (${await pillNowText()})`,
+			`global Away: the pill reads Away (${await pillNowText()})`,
 			/^Away/.test(await pillNowText())
 		);
-		page.check("global away sent AWAY *", awayLines(page).at(-1) === "AWAY *");
+		page.check("global Away sent AWAY *", awayLines(page).at(-1) === "AWAY *");
 		page.check(
-			`global away: the dot reads its own mode, away (${await dotTitle()})`,
-			/ · away$/.test(await dotTitle())
+			`global Away: the dot reads Away · global (${await dotTitle()})`,
+			(await dotTitle()) === "Away · global"
 		);
-		await choose(PILL, "status-available");
+		await choose(DOT, "presence-online");
 		await page.sleep(500);
 		page.check(
-			`Available: the pill leaves Away (${await pillNowText()})`,
-			!/^Away/.test(await pillNowText())
+			`its own Online overrides it (${await dotTitle()})`,
+			(await dotTitle()) === "Online"
 		);
-		page.check("Available sent AWAY", awayLines(page).at(-1) === "AWAY");
+		page.check("its own Online sent AWAY", awayLines(page).at(-1) === "AWAY");
+		await choose(DOT, "presence-global");
+		await page.sleep(300);
+		await choose(PILL, "status-online");
+		await page.sleep(500);
+		page.check(`global Online (${await dotTitle()})`, (await dotTitle()) === "Online · global");
+		await choose(PILL, "status-auto");
+		await page.sleep(500);
+		page.check(
+			`global Auto: the pill reads Auto (${await pillNowText()})`,
+			/^Auto/.test(await pillNowText())
+		);
 
 		// ---- The dot: no navigation, no drag, its own context menu. With a
 		// channel open, so a click that reached the lobby row would move the view.
@@ -392,13 +407,13 @@ export default async function run(page) {
 			});
 			page.check(
 				"a right-click on the dot opens the presence menu",
-				(await page.count(`${MENU} [class*="context-menu-presence-"]`)) === 4
+				(await page.count(`${MENU} [class*="context-menu-presence-"]`)) === 5 // Same as global and the four modes
 			);
 			page.check(
 				"and not the lobby's menu",
 				(await page.count(`${MENU} .context-menu-edit, ${MENU} .context-menu-list`)) === 0
 			);
-			await page.click(MENU_ITEM("presence-auto")); // the current mode: closes it
+			await page.click(MENU_ITEM("presence-global")); // the current mode: closes it
 			await page.waitFor(`!document.querySelector('${MENU}')`, {label: "the menu to close"});
 		}
 
@@ -415,17 +430,16 @@ export default async function run(page) {
 			`document.querySelector('${PILL}').textContent.trim()`
 		);
 		page.check(
-			`every network in Away: the pill says Away, its dot amber (${awayPill})`,
-			awayPill === "Away" && (await page.count(`${PILL} .presence-dot.is-away`)) === 1
+			`a network's own Away: the pill keeps the global mode, Auto (${awayPill})`,
+			awayPill === "Auto"
 		);
 		await choose(DOT, "presence-online");
 		await page.waitFor(`document.querySelector('${DOT}.is-online')`, {label: "dot green"});
 		await page.sleep(500);
 		page.check("Online sent AWAY", awayLines(page).at(-1) === "AWAY");
 		page.check(
-			"Online turns the pill's auto off",
-			(await page.evaluate(`document.querySelector('${PILL}').textContent.trim()`)) ===
-				"Online"
+			`its own Online: the dot reads Online (${await dotTitle()})`,
+			(await dotTitle()) === "Online"
 		);
 
 		// ---- The mode is saved on the network entry.
@@ -438,11 +452,11 @@ export default async function run(page) {
 		await page.sleep(500);
 		page.check("the network's DND sent AWAY *", awayLines(page).at(-1) === "AWAY *");
 
-		// Every network in mode dnd, the global switch off: the pill reads
-		// Do not disturb, so its menu ticks nothing in the global section.
+		// A network in mode dnd, the global switch off: the pill keeps the
+		// global mode (it no longer sums the networks) and ticks it.
 		await openDrawer();
 		await press(PILL);
-		await page.waitFor(`document.querySelector('${MENU_ITEM("status-available")}')`, {
+		await page.waitFor(`document.querySelector('${MENU_ITEM("status-auto")}')`, {
 			label: "the pill menu",
 		});
 		const globalTicks = await page.evaluate(
@@ -450,10 +464,10 @@ export default async function run(page) {
 		);
 		const pillNow = await page.evaluate(`document.querySelector('${PILL}').textContent.trim()`);
 		page.check(
-			`all networks in mode dnd: the pill says Do not disturb and Off is not ticked (${pillNow}; ticked ${JSON.stringify(
+			`a network in mode dnd: the pill keeps Auto, and only Auto is ticked (${pillNow}; ticked ${JSON.stringify(
 				globalTicks
 			)})`,
-			pillNow === "Do not disturb" && globalTicks.length === 0
+			pillNow === "Auto" && JSON.stringify(globalTicks) === JSON.stringify(["Auto"])
 		);
 
 		// A menu opened over another: the first trigger is told it closed.
@@ -568,7 +582,7 @@ export default async function run(page) {
 			huge.dotShown
 		);
 		await page.screenshot("dnd-huge", {selector: "#sidebar"});
-		await choose(PILL, "status-available");
+		await choose(PILL, "status-auto");
 		await page.evaluate(`document.documentElement.dataset.fontSize = ${JSON.stringify(step)}`);
 
 		// ---- The schedule's window in the menu follows the clock setting.
@@ -588,7 +602,7 @@ export default async function run(page) {
 			);
 			const text = raw.replace(/\u2060/g, "").replace(/\u00a0/g, " ");
 			// Off closes it and changes nothing here (DND is off by now).
-			await press(MENU_ITEM("status-available"));
+			await press(MENU_ITEM("status-auto"));
 			await page.waitFor(`!document.querySelector('${MENU}')`, {label: "the menu to close"});
 			return text;
 		};

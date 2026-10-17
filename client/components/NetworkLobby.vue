@@ -110,10 +110,12 @@ import webpush from "../js/webpush";
 import ChannelWrapper from "./ChannelWrapper.vue";
 
 import type {ClientChan, ClientNetwork} from "../js/types";
-import type {PresenceMode} from "../js/helpers/dnd";
+import {NETWORK_MODES, type NetworkMode} from "../js/helpers/dnd";
+import dnd from "../js/dnd";
 import type {ContextMenuItem} from "../js/helpers/contextMenu";
 
-const MODE_LABELS: Record<PresenceMode, string> = {
+const MODE_LABELS: Record<NetworkMode, string> = {
+	global: "Same as global",
 	online: "Online",
 	auto: "Auto",
 	away: "Away",
@@ -228,7 +230,9 @@ export default defineComponent({
 		);
 		const presenceText = computed(() => {
 			const p = presence.value;
-			const mode = MODE_LABELS[p?.mode ?? "auto"];
+			const effective = MODE_LABELS[p?.effective ?? "auto"];
+			// A network following the pill says so; one set on its own does not.
+			const mode = p?.mode === "global" ? `${effective} · global` : effective;
 
 			if (offline.value) {
 				return `${mode} · not connected`;
@@ -239,21 +243,27 @@ export default defineComponent({
 			}
 
 			// Away mode is away already: "Away", never "Away · away".
-			return p?.away && p.mode !== "away" ? `${mode} · away` : mode;
+			return p?.away && p.effective !== "away" ? `${mode} · away` : mode;
 		});
 
 		const openPresenceMenu = (event: MouseEvent) => {
-			const current = presence.value?.mode ?? "auto";
-			const items: ContextMenuItem[] = (Object.keys(MODE_LABELS) as PresenceMode[]).map(
-				(mode) => ({
-					label: MODE_LABELS[mode],
+			const current = presence.value?.mode ?? "global";
+			// "Same as global (Away)": what following the pill means right now.
+			const globalLabel = `Same as global (${MODE_LABELS[dnd.state.mode.value]})`;
+			const items: ContextMenuItem[] = NETWORK_MODES.flatMap((mode): ContextMenuItem[] => {
+				const item: ContextMenuItem = {
+					label: mode === "global" ? globalLabel : MODE_LABELS[mode],
 					type: "item",
 					class: `presence-${mode}`,
 					checked: mode === current,
 					action: () =>
-						socket.emit("network:presence-mode", {network: props.network.uuid, mode}),
-				})
-			);
+						socket.emit("network:presence-mode", {
+							network: props.network.uuid,
+							mode,
+						}),
+				};
+				return mode === "global" ? [item, {type: "divider"}] : [item];
+			});
 			eventbus.emit("contextmenu:items", {event, items});
 			// After the emit: opening it closed any other menu first.
 			presenceMenuOpened();

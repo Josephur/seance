@@ -287,13 +287,14 @@ the server tab on new connection"
 						name="presenceMode"
 						aria-describedby="connect-presence-hint"
 					>
+						<option value="global">Same as global</option>
 						<option value="online">Online</option>
 						<option value="auto">Auto</option>
 						<option value="away">Away</option>
 						<option value="dnd">Do not disturb</option>
 					</select>
 					<div id="connect-presence-hint" class="presence-mode-hint">
-						{{ PRESENCE_HINTS[presenceMode] }}
+						{{ presenceHint }}
 					</div>
 				</div>
 			</div>
@@ -488,7 +489,8 @@ import {
 	SavedNetwork,
 	SERVICE_ROLES,
 } from "../js/irc/saved-networks";
-import type {PresenceMode} from "../js/helpers/dnd";
+import type {NetworkMode} from "../js/helpers/dnd";
+import dnd from "../js/dnd";
 import {SERVICES_PROFILES, servicesProfileById} from "../js/irc/services/index";
 import {describeServiceCheck} from "../js/irc/services";
 import {servicesCheck} from "../js/helpers/operRequest";
@@ -497,7 +499,8 @@ import {useStore} from "../js/store";
 import webpush from "../js/webpush";
 import type {ServicesConfig, SharedNetworkStatus} from "../../shared/types/network";
 // What each presence mode means, under the select (the dot menu's words).
-const PRESENCE_HINTS: Record<PresenceMode, string> = {
+const PRESENCE_HINTS: Record<NetworkMode, string> = {
+	global: "Follows the global mode under the logo.",
 	online: "Never away.",
 	auto: "Away when you're not looking.",
 	away: "Always away.",
@@ -577,11 +580,11 @@ export default defineComponent({
 		// The network's presence mode (the lobby dot's four, client/js/dnd.ts).
 		// Until the select is touched it shows the live mode, which the dot
 		// may have changed since this form was filled, and the field is not
-		// posted, so saving the form keeps what is stored. A stored "auto" is
+		// posted, so saving the form keeps what is stored. Same as global is
 		// no key at all, hence presenceModeOf; a pick is posted as is, and
-		// "auto" clears the key.
+		// "global" clears the key.
 		const presenceTouched = ref(false);
-		const presenceMode = computed<PresenceMode>({
+		const presenceMode = computed<NetworkMode>({
 			get: () =>
 				presenceTouched.value
 					? presenceModeOf(props.defaults)
@@ -591,6 +594,14 @@ export default defineComponent({
 				props.defaults.presenceMode = mode;
 			},
 		});
+		// Same as global names what the global mode is now.
+		const presenceHint = computed(() =>
+			presenceMode.value === "global"
+				? `Follows the global mode under the logo, now ${
+						{online: "Online", auto: "Auto", away: "Away"}[dnd.state.mode.value]
+				  }.`
+				: PRESENCE_HINTS[presenceMode.value]
+		);
 		// Another network (or a fresh copy of this one) is a fresh form.
 		watch(
 			() => props.defaults,
@@ -813,7 +824,7 @@ export default defineComponent({
 
 		return {
 			presenceMode,
-			PRESENCE_HINTS,
+			presenceHint,
 			pushInfo,
 			renewPush,
 			onNotifyToggle,

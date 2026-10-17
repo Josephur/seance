@@ -254,7 +254,7 @@ export default async function run(page) {
 		await page.sleep(11000);
 		const shared = await page.evaluate(`document.querySelector('${PILL}').textContent.trim()`);
 		console.log(`  pill after the account's mute list was read: ${JSON.stringify(shared)}`);
-		await menu(PILL, "status-available");
+		await menu(PILL, "status-auto");
 		await command("/back");
 		await page.evaluate(SHOW);
 		await page.sleep(SETTLE);
@@ -313,7 +313,7 @@ export default async function run(page) {
 			`/away + DND: no AWAY line, still out to lunch (${JSON.stringify(r.aways)})`,
 			r.aways.length === 0 && r.away === "out to lunch"
 		);
-		r = await step("/away + DND off", () => menu(PILL, "status-available"));
+		r = await step("/away + DND off", () => menu(PILL, "status-auto"));
 		page.check(
 			`/away + DND off: still out to lunch (${JSON.stringify(r.aways)})`,
 			r.aways.length === 0 && r.away === "out to lunch"
@@ -379,7 +379,7 @@ export default async function run(page) {
 		s = await state("DND, second device gone");
 		page.check("DND: second device gone, away again to others", s.flag === "G");
 
-		r = await step("DND off", () => menu(PILL, "status-available"));
+		r = await step("DND off", () => menu(PILL, "status-auto"));
 		page.check(
 			`DND off: observer sees back (${JSON.stringify(r.aways)})`,
 			r.flag === "H" && r.away === null && r.aways.some((l) => / AWAY\s*$/.test(l))
@@ -495,7 +495,7 @@ export default async function run(page) {
 			)})`,
 			x.flag === "G" && x.away !== null && noBack(x.lines)
 		);
-		r = await step("DND off after reload", () => menu(PILL, "status-available"));
+		r = await step("DND off after reload", () => menu(PILL, "status-auto"));
 		page.check("DND off after reload: present", r.flag === "H" && r.away === null);
 
 		// --- 9. Away mode across a hide and a reconnect. --------------------

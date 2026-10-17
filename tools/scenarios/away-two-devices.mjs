@@ -166,7 +166,7 @@ export default async function run(page) {
 
 		// Clean start: wait out the account's mute read, then Off and /back.
 		await page.sleep(11000);
-		await menu(page, PILL, "status-available");
+		await menu(page, PILL, "status-auto");
 		await command(page, "/back");
 		await page.evaluate(SHOW);
 
@@ -241,7 +241,7 @@ export default async function run(page) {
 			)}, ${JSON.stringify(obs.awaysSince(me, t4a))})`,
 			s.flag === "G" && s.away === "lunch"
 		);
-		r = await step("Off on B, A still /away", () => menu(b, PILL, "status-available"), 3000);
+		r = await step("Off on B, A still /away", () => menu(b, PILL, "status-auto"), 3000);
 		page.check(
 			`4a. after Off the account is present (${r.flag}, ${JSON.stringify(r.lines)})`,
 			r.flag === "H" && r.away === null
@@ -286,7 +286,7 @@ export default async function run(page) {
 			)})`,
 			s.flag === "G" && s.away !== null
 		);
-		r = await step("Off on B", () => menu(b, PILL, "status-available"), 3000);
+		r = await step("Off on B", () => menu(b, PILL, "status-auto"), 3000);
 		const aOff =
 			!/Do not disturb/i.test((await pillText(page)) ?? "") && !(await dotIsDnd(page));
 		page.check(`4b. Off on B turns A's DND off (A's pill ${await pillText(page)})`, aOff);

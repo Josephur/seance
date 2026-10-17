@@ -39,7 +39,7 @@ import type {ContextMenuItem} from "../js/helpers/contextMenu";
 const HOUR = 3600_000;
 
 // The global presence switch under the sidebar logo (client/js/dnd.ts):
-// Available, Away (global away) or do not disturb; the pill says what holds
+// Online, Auto, Away (the global mode) or do not disturb; the pill says what holds
 // now, its menu sets it.
 export default defineComponent({
 	name: "PresencePill",
@@ -83,23 +83,18 @@ export default defineComponent({
 
 			const following = schedule.enabled && schedule.days.length > 0;
 			const items: ContextMenuItem[] = [
-				{
-					label: "Available",
-					type: "item",
-					class: "status-available",
-					// Only while the pill does not read DND: with every network in
-					// mode dnd the global switch is off, but the pill says Do not
-					// disturb, and a ticked Available would not.
-					checked: dnd.status.value === "available" && dnd.pillState.value !== "dnd",
-					action: () => dnd.available(),
-				},
-				{
-					label: "Away",
-					type: "item",
-					class: "status-away",
-					checked: dnd.status.value === "away",
-					action: () => dnd.setAway(true),
-				},
+				// The global mode. Only while the pill does not read DND: with
+				// every network in mode dnd, or another device's DND, the pill says
+				// Do not disturb and a ticked mode would not.
+				...(["online", "auto", "away"] as const).map(
+					(mode): ContextMenuItem => ({
+						label: {online: "Online", auto: "Auto", away: "Away"}[mode],
+						type: "item",
+						class: `status-${mode}`,
+						checked: dnd.pillState.value !== "dnd" && dnd.status.value === mode,
+						action: () => dnd.setGlobalMode(mode),
+					})
+				),
 				{type: "divider"},
 				forSpan(HOUR, "Do not disturb for 1 hour", "dnd-1h"),
 				forSpan(8 * HOUR, "Do not disturb for 8 hours", "dnd-8h"),

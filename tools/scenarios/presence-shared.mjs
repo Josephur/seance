@@ -121,7 +121,7 @@ export default async function run(page) {
 		page.check(`B on the same session (${bNick})`, bNick === me);
 		obs = await observe(IRCD, `pso${RUN}`, {caps: ["away-notify"], join: "#seance"});
 		await page.sleep(READ_MS); // both login reads answered
-		await pick(page, PILL, "status-available");
+		await pick(page, PILL, "status-auto");
 
 		// Start from Online on both.
 		await setMode(page, "online");
@@ -192,7 +192,7 @@ export default async function run(page) {
 		await page.sleep(1500);
 		const flag5 = await obs.who(me);
 		page.check(`5. others see the account away (${flag5})`, flag5 === "G");
-		await pick(b, PILL, "status-available");
+		await pick(b, PILL, "status-auto");
 		page.check(
 			"5. Available on B: A's pill leaves Away",
 			await waitText(page, PILL_TEXT, /^(?!Away)/, "5 back", 6000)

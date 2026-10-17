@@ -1,12 +1,12 @@
 /**
- * The global do-not-disturb and global away, page side: the stored state (`thelounge.dnd`,
+ * The global do-not-disturb and the global mode, page side: the stored state (`thelounge.dnd`,
  * kept in step across this device's tabs by the `storage` event), the
  * verdict re-judged on every change and whenever it can next change by
  * itself (helpers/dnd.ts `nextChangeAt`), pushed to every
  * IRC client (manager.setGlobalDndAll); a DND shared from another device
- * read off the networks' presence. Global away (`state.away`) goes to every
- * client too (manager.setGlobalAwayAll) and is shared through the networks'
- * metadata (irc/presenceShare.ts, `away:shared`). Model: helpers/dnd.ts.
+ * read off the networks' presence. The global mode (`state.mode`) goes to every
+ * client too (manager.setGlobalModeAll) and is shared through the networks'
+ * metadata (irc/presenceShare.ts, `mode:shared`). Model: helpers/dnd.ts.
  * Specs: docs/projects/do-not-disturb.md, docs/projects/shared-presence-modes.md.
  */
 import {computed, reactive, ref} from "vue";
@@ -20,20 +20,18 @@ import {
 	nextChangeAt,
 	parseDndState,
 	pillStatus,
-	presenceSummary,
-	SUMMARY_LABELS,
 	reconcileRemote,
 	serializeDndState,
 	turnOff as modelTurnOff,
 	type DndManual,
 	type DndSchedule,
 	type DndState,
-	type GlobalAway,
+	type GlobalMode,
 } from "./helpers/dnd";
 import {
 	claimMuteAll,
 	clearRemoteDndAll,
-	setGlobalAwayAll,
+	setGlobalModeAll,
 	setGlobalDndAll,
 	syncPresenceAll,
 } from "./irc/manager";
@@ -42,7 +40,7 @@ const KEY = "thelounge.dnd";
 const now = ref(new Date());
 const state = reactive<DndState>(parseDndState(storage.get(KEY)));
 const verdict = computed(() => dndAt(state, now.value));
-/** Available / away / dnd: what the pill ticks and says (helpers/dnd.ts pillStatus). */
+/** The global mode or dnd: what the pill ticks and says (helpers/dnd.ts pillStatus). */
 const status = computed(() => pillStatus(state, now.value));
 
 let started = false;
@@ -50,7 +48,7 @@ let wakeTimer: ReturnType<typeof setTimeout> | null = null;
 
 function apply(): void {
 	setGlobalDndAll(verdict.value.active, verdict.value.until);
-	setGlobalAwayAll(state.away);
+	setGlobalModeAll(state.mode);
 
 	if (started) {
 		armWake();
@@ -103,41 +101,24 @@ const remoteOnly = computed(
 		connected.value.every((n) => n.presence?.dnd && n.presence.mode !== "dnd")
 );
 
-const summary = computed(() =>
-	presenceSummary(store.state.networks.map((n) => n.presence?.mode ?? "auto"))
-);
+const MODE_WORDS: Record<GlobalMode, string> = {online: "Online", auto: "Auto", away: "Away"};
 
-/**
- * The pill's words: the page's own DND (with its end), then one shared from
- * another device, then what the networks' modes say together.
- */
+/** The pill's words: its own DND (with its end), one shared from another device, else the global mode. */
 const pillLabel = computed(() => {
 	if (verdict.value.active) {
 		return describeDnd(verdict.value, now.value, !!store.state.settings.use12hClock);
 	}
 
-	if (remoteOnly.value) {
-		return "Do not disturb";
-	}
-
-	if (state.away.on) {
-		return "Away";
-	}
-
-	return SUMMARY_LABELS[summary.value];
+	return remoteOnly.value ? "Do not disturb" : MODE_WORDS[state.mode.value];
 });
 
-/** The pill dot's colour: `dnd`, `away`, `mixed` or `online`. */
+/** The pill dot's colour: `dnd`, `away` or `online`. */
 const pillState = computed(() => {
-	if (verdict.value.active || remoteOnly.value || summary.value === "dnd") {
+	if (verdict.value.active || remoteOnly.value) {
 		return "dnd";
 	}
 
-	if (state.away.on) {
-		return "away";
-	}
-
-	return summary.value === "away" || summary.value === "mixed" ? summary.value : "online";
+	return state.mode.value === "away" ? "away" : "online";
 });
 
 function start(): void {
@@ -156,14 +137,14 @@ function start(): void {
 			apply();
 		}
 	});
-	// Another device's global away, adopted on one network
+	// Another device's global mode, adopted on one network
 	// (irc/presenceShare.ts): taken here when newer, and handed to every
 	// network (apply), each of which writes it to its server if older there.
-	socket.on("away:shared", ({on, at}) => {
-		const mine = state.away;
+	socket.on("mode:shared", ({mode, at}) => {
+		const mine = state.mode;
 
-		if (mine.at === null || at > mine.at || (at === mine.at && on && !mine.on)) {
-			save({...state, away: {on, at}});
+		if (mine.at === null || at > mine.at || (at === mine.at && mode > mine.value)) {
+			save({...state, mode: {value: mode, at}});
 		}
 	});
 	// Another device turned the shared DND off (irc/pushMute.ts).
@@ -185,26 +166,15 @@ export default {
 	pillState,
 	status,
 	start,
-	/** A DND choice; it switches global away off (one status at a time). */
+	/** A DND choice; the global mode stays underneath. */
 	setManual(manual: DndManual): void {
 		now.value = new Date();
-		const away = state.away.on ? {on: false, at: Date.now()} : state.away;
-		saveByHand({...state, manual, away});
+		saveByHand({...state, manual});
 	},
-	/** The pill's Away: global away on, do not disturb off. */
-	setAway(on: boolean): void {
+	/** The pill's Online / Auto / Away: the global mode, and do not disturb off. */
+	setGlobalMode(mode: GlobalMode): void {
 		now.value = new Date();
-		const away: GlobalAway = {on, at: Date.now()};
-		saveByHand({...(on ? modelTurnOff(state, now.value) : state), away});
-
-		if (on) {
-			clearRemoteDndAll();
-		}
-	},
-	/** The pill's Available: global away off and do not disturb off. */
-	available(): void {
-		now.value = new Date();
-		saveByHand({...modelTurnOff(state, now.value), away: {on: false, at: Date.now()}});
+		saveByHand({...modelTurnOff(state, now.value), mode: {value: mode, at: Date.now()}});
 		clearRemoteDndAll();
 	},
 	setSchedule(schedule: DndSchedule): void {
