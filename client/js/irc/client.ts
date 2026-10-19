@@ -2214,9 +2214,15 @@ export class IrcClient {
 		const chan = this.channelById(chanId);
 
 		if (chan) {
-			chan.shared.unread = 0;
-			chan.shared.highlight = 0;
-			scheduleMarkRead(this, chan);
+			// Only a person looking reads it: a page that lands here hidden
+			// (a cold start, a deep link) leaves that to attention returning
+			// (presence.ts).
+			if (this.presence.attended) {
+				chan.shared.unread = 0;
+				chan.shared.highlight = 0;
+				scheduleMarkRead(this, chan);
+			}
+
 			prioritiseCatchup(this, chan);
 
 			if (

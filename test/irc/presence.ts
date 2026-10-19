@@ -239,6 +239,28 @@ describe("attention and AWAY * (presence.ts)", function () {
 		]);
 	});
 
+	it("opening a channel nobody is looking at reads nothing until attention returns", function () {
+		const h = connect();
+		const chanId = joined(h);
+		clock.tick(MARKREAD_DEBOUNCE_MS);
+		live(h, 1);
+		live(h, 2);
+		const chan = h.client.channelById(chanId)!;
+		h.client.setAttended(false);
+		h.sent();
+
+		// A hidden page lands on it (a cold start, a deep link): not read yet.
+		socket.emit("open", chanId);
+		clock.tick(MARKREAD_DEBOUNCE_MS);
+		expect(chan.shared.unread).to.equal(2);
+		expect(h.sent().filter((l) => l.startsWith("MARKREAD"))).to.deep.equal([]);
+
+		h.client.setAttended(true);
+		clock.tick(MARKREAD_DEBOUNCE_MS);
+		expect(chan.shared.unread).to.equal(0);
+		expect(h.sent()).to.include("MARKREAD #seance timestamp=2026-08-25T12:02:00.000Z");
+	});
+
 	it("prints nothing for the replies to its own AWAY * and AWAY, but still for the user's", function () {
 		const h = connect();
 		const lobby = h.client.lobby;
