@@ -1,42 +1,37 @@
 ---
 name: perf-measure
-description: Measure and optimise Seance's animation and rendering cost (the ps theme scene, any CSS/SVG/canvas animation, glass/blur) on a real iPhone, Android and Chrome without fooling yourself. Use before claiming a performance win, before deploying a perf change to preview, when picking between two ways to animate something, or when a scene "feels heavy". Not for IRC-layer logic or bundle size.
+description: Performance measurement for Seance's animation and rendering cost (the ps scene, any CSS/SVG/canvas animation, glass/blur) on the iPhone, Android and Chrome. Use before deploying or claiming a perf change, when choosing between two ways to animate something, or when a scene feels heavy or a number regressed. Not for IRC-layer logic or bundle size.
 ---
 
 # Measuring Seance performance
 
-Written from ps NG (spec `docs/projects/ps-ng.md` §8–§11, results in §10.6, §11.4 and §11.5). Most rules below exist because a wrong conclusion was drawn once.
+Learned on ps NG; the spec `docs/projects/ps-ng.md` (§8–§11) holds every reading. Each step's _why_ is a wrong conclusion drawn once.
 
-## Rules
+## Procedure
 
-1. **The scene must be on screen.** An opaque viewport hides it and makes every variant look free (the canvas fire was "measured" behind a solid navy `#viewport`). Screenshot the device first.
-2. **iOS: sum WebContent + GPU + backboardd** (Activity Monitor via xctrace), as % of one core. Work moves between the three; one process alone lies. A change that drops WebContent and raises backboardd is not a win.
-3. **Measure on every platform the change touches** (iPhone, Android, Chrome) before deploying or reporting. Chrome numbers rank; they do not transfer. `steps()` saves compositing in Chrome but costs WebContent in WebKit (spec §2, §11.2), a moved SVG sprite was repainted in WebKit (the wing-strip measurement of 2026-10-08, recorded in the author's notes, not the spec), and a paused animation still costs backboardd on iOS (§8.1).
-4. **A/B before naming a cause.** Change one thing: hidden / frozen / on. Add a switch (`&x=name` in the harness) rather than editing the build. A cause guessed without an isolating run was wrong both times it was tried (a 6×5 tiling, the clip).
-5. **Bisect by commit when a number regresses.** Build each suspect commit, run the same slots. Plan 5's 60-point dusk regression was `65bf63c7` (the `.psng-strip` wrapper and its placed pose boxes; which of them was not isolated), found in three runs; the prime suspect (`overflow: clip`) was innocent.
-6. **Re-baseline in the same run.** Earlier readings were taken at other host loads, so put coffee (the floor, ~1) and the last known-good build in the same sitting. Plan 5's bisect re-ran `826f8736` (the plan-4 tree with classic deleted) beside the suspects: it read 29.4, close to §10.6's 28.4 from `f0cbbc6a`, which is what made the 14.6 / 43.3 comparison trustworthy.
-7. **n ≥ 2 rounds, slots rotated** each round; read the IQR. Quote a number only when its readings agree within a few points; otherwise say "rank only".
-8. **Host load:** check `uptime` first. This Mac idles at 5–14; gate at ~10–15, never run builds or mocha during a run, and call a run "rank only" above that. Android emulator: also check swap and `MemAvailable`, cold-boot it.
+1. **Gate the host.** `sysctl -n vm.loadavg`; build nothing and run no mocha until the run ends. This Mac idles at 5–14 on 12 cores, so the harness's 1-min gate (`MAXLOAD` 2.5) rarely opens: `run-chrome.mjs` waits 2 min for it and then runs anyway, `droid-plan3.sh` waits 2 h and then skips (exit 3), `MAXLOAD=` raises either, and every script records the load per slot. Android also needs a cold-booted emulator (`-no-snapshot-load`), guest swap under 50 MB and MemAvailable over 600 MB. Done when the run's load is known before it starts.
+2. **Write the A/B as variants**, one change each (hidden / frozen / on), as `lib.mjs` `VARIANTS` entries with an `&x=` switch rather than an edited build, each with an `ok(beacon)` that proves it applied (e.g. the right animation names). Put coffee (the floor, ~1) and the last known-good build in the same sitting: readings from other sittings were taken at other loads. Done when the slot list holds the variants, coffee and the baseline. _Why: a cause named without an isolating run was wrong both times (a 6×5 tiling, the clip)._
+3. **Prove the variants in Chrome**: `node run-chrome.mjs <rounds> [label regex] > chrome-x.jsonl`. Done when every slot's `ok()` passes. Phone time is spent only after this.
+4. **Screenshot each device with the scene on it.** Done when the scene is visible in the screenshot. _Why: the canvas fire was once "measured" behind an opaque navy `#viewport`, where every variant is free._
+5. **Run every platform the change touches**, n ≥ 2 rounds (the scripts rotate slots by 3 each round). Chrome ranks; its numbers do not transfer: `steps()` saves compositing in Chrome and costs WebContent in WebKit (§2, §11.2), WebKit repainted a moved SVG sprite (the wing strips, 2026-10-08, not in the spec), and a paused animation still costs backboardd on iOS (§8.1). Done when each platform has n ≥ 2 valid readings per slot.
+6. **Read the sum, quote or rank.** On iOS the cost is **WebContent + GPU + backboardd**, as % of one core: work moves between the three, so a drop in one and a rise in another is no win. Quote a number only when its readings agree within a few points at a low load; otherwise call it _rank only_. Done when every figure in the report is a median with its IQR or marked rank only.
+7. **Bisect by commit when a number regresses**: build each suspect commit, same slots, same sitting. Done when one commit owns the regression. _Why: plan 5's 60-point dusk regression was `65bf63c7`, found in three runs; the prime suspect (`overflow: clip`) was innocent._
+8. **End a phone run visibly**: `xcrun devicectl device process launch --device <UDID> com.apple.Preferences`, or stop `serve.py`. The harness page looks the same mid-run and after; the user reads the switch as "done".
+9. **Record, then deploy.** Add a §11.x to `docs/projects/ps-ng.md` (§11.4 style: the slots, rounds, load and pinned moments, a table, then what it rules out). A change goes to `preview` only after this.
 
-## What is cheap and what is not (iPhone 16, measured)
+## What is cheap and what is not (iPhone 16)
 
-- Compositor-only `transform`/`opacity` via CSS animations: cheap when each layer is ≤ the viewport; in the spike, 1 to 12 tiled layers add only +2 to +4 backboardd, WebContent and GPU 0. The absolute level moves between sittings: §2 read 20–21.5 at 1 layer and 23–24.5 at 12; the re-measurement of 2026-10-18 (§11.6) read 13.3 and 15.5–17.1, rank only (load 10–37, slots not rotated).
-- Not cheap (measured): SVG attribute (SMIL) animation, the animated feTurbulence filter (the old sun on `upstream/develop` c9a70e1b, noon, classic as shipped: total 392.7, of it WebKit GPU 376, three readings 390.5–392.7; with only the filter removed 108.1; with the whole sun removed 103.4; re-measured 2026-10-18, §11.6), WebGL (48–70), `steps()` in WebKit (+4–6 WebContent), a paused-but-present animation scene (19.1 against 1.1 for none, spec §8.1), and the skeins' ~196 nested animations (§10.1, §10.6). In Chrome, 130 per-drop animations meant 130 layers; 3 rain sheets took the rain from 28–35 to 20–24 (no rain 19–22; PR #98, closed, never measured on a phone).
-- Rule of thumb from the spike, not measured on a device: keep every animated box within the viewport (giant strips cost GPU memory on mobile).
-- In calm, backboardd pays per moving cloud, but not a fixed amount each (§11.4): at noon five clouds read 31.3 and two 19.3 (about 4 per cloud removed); in a storm nine read 34.2 and two 20.4 (about 2 per cloud removed).
-- A *still* scene costs ~1–2 (coffee ≈ 1): the target for hidden, unattended, query and reduced-motion states is no animation object at all, not `pause()`.
+- **Cheap**: compositor-only `transform`/`opacity` CSS animations with every animated box within the viewport. 1 to 12 tiled layers add about +2 to +4, all backboardd (§2, §11.6). Giant strips cost GPU memory on mobile (the spike's rule of thumb, not measured).
+- **Free**: a _still_ scene, ~1–2 (coffee ≈ 1). Hidden, unattended, query and reduced-motion states get no animation object at all, never `pause()`: a paused-but-present scene read 19.1 against 1.1 (§8.1).
+- **Dear**: the animated `feTurbulence` filter, ~285 % of a core on its own (the old sun, §11.6); WebGL 48–70; SVG attribute (SMIL) animation; `steps()` in WebKit, +4–6 WebContent; the skeins' ~196 nested animations (§10.1, §10.6).
+- **Per moving cloud** in calm, backboardd pays about 4 at noon and 2 in a storm (§11.4).
+- **Chrome only**: one animation per raindrop is one layer each; three rain sheets took 28–35 to 20–24 (PR #98, closed, never measured on a phone).
 
-## The harness (gitignored, `tmp/perf/ng2/`)
+## The harness (`tmp/perf/ng2/`, gitignored)
 
-If it is gone, rebuild it from this shape; do not invent a new method.
+If it is gone, rebuild it in this shape; the method is the point.
 
-- `app/` is `tmp/psng`'s production `public/` plus `spike.js` (a timed playlist player: `?plan=a~b&t0=&dwell=`, `&x=` CSS switches, `&g=` groups, `&at=` pinned clock). `./refresh-app.sh` rebuilds and rsyncs it (keeps `spike.js`). `serve.py` serves it on 8113 with `no-store`, plus the ircd forward on 8068.
-- `lib.mjs` `VARIANTS` (label → query + `ok(beacon)` that proves the variant actually applied, e.g. the right animation names) and slot lists (`GATE5`, `PLAN2`…) for `run-chrome.mjs`. `ios-run.sh` `SHORT=<name>` picks slots from its own hardcoded `WANT` lists, so a new list goes in both files; `DRYRUN=1` prints the plan. Run `run-chrome.mjs` (a full headless-Chrome measurement, rounds rotated) first to prove every variant's `ok()` passes before spending phone time.
-- iPhone: USB, unlocked, Auto-Lock Never, charger; `ios-run.sh <rounds>` (about 55 s a slot) records 15 s of Activity Monitor inside each slot; `node summarize.mjs ios ios-2.jsonl <rid>` prints the table. The dev ircd and `serve.py` must be up (`ios-run.sh` refuses otherwise). Over Wi-Fi xctrace does not work.
-- Android: emulator numbers are release-WebView `top` + `gfxinfo` and need a quiet host (swap under 50 MB, MemAvailable over 600 MB, cold boot); profile inside only with a release build that has `webContentsDebuggingEnabled: true` in `capacitor.config.ts`'s android block, signed with the release key so it installs over (revert the config after). Use the SDK's `adb`, not Homebrew's, which hangs.
-
-## Before reporting
-
-- Say which slots, rounds, load and moments (noon/night/dusk/storm are pinned dates in `lib.mjs`).
-- Record results in `docs/projects/ps-ng.md` (§11.4 style: table, then what it rules out).
-- A change goes to `preview` only after the A/B, not before.
+- `app/` is a production `public/` plus `spike.js`, a timed playlist player: `?plan=a~b&t0=&dwell=`, `&x=` CSS switches, `&g=` groups, `&at=` a pinned clock. `./refresh-app.sh` rebuilds it from its `WT` worktree and rsyncs (keeps `spike.js`). `serve.py` serves it on 8113 with `no-store`, plus the ircd forward on 8068.
+- `lib.mjs` holds `VARIANTS` (label → query + `ok`), the pinned moments (`MOMENTS`: noon, night, dusk, rain, storm) and slot lists (`GATE5`, `PLAN2`…). `ios-run.sh` takes `SLOTS="a b"` or `SHORT=<name>` from its own `WANT` lists, so a new list goes in both files; `DRYRUN=1` prints the plan and duration.
+- **iPhone**: USB for xctrace (over Wi-Fi it does not work) and the Mac's Wi-Fi for the page; unlocked, Auto-Lock Never, on the charger. `ios-run.sh [rounds]` (55 s a slot) records 15 s of Activity Monitor inside each slot and refuses to start without `serve.py` and the ircd forward. `node summarize.mjs ios ios-2.jsonl <rid>` prints the table.
+- **Android**: `droid-plan3.sh [rounds]` on the emulator's Chrome, rank only (`top` per process; the sum is Chrome's processes + surfaceflinger; the page via `adb reverse`). Use the SDK's `adb` (`~/Library/Android/sdk/platform-tools/adb`); Homebrew's hangs. To profile inside, build release with `webContentsDebuggingEnabled: true` in `capacitor.config.ts`'s android block, signed with the release key so it installs over, and revert the config after.
