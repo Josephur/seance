@@ -29,7 +29,7 @@ import type {
 import type {PushSession, ServerToClientEvents} from "../../../shared/types/socket-events";
 import {CapNegotiator, SEANCE_CAPS, webpushVapidOf, WEBPUSH_CAP} from "./caps";
 import {casefold, namesEqual} from "./casemap";
-import {Channel, MsgRef, SAID_TYPES} from "./channel";
+import {Channel, MsgRef, SAID_TYPES, countsAsUnread} from "./channel";
 import {QueryLog} from "./querylog";
 import {commandNames, dispatchInput} from "./commands";
 import {describeClose} from "./disconnect";
@@ -78,6 +78,7 @@ import {
 	cancelCatchup,
 	dropFromCatchup,
 	enqueueCatchup,
+	enqueueMarkerFetch,
 	prefetchCatchup,
 	prioritiseCatchup,
 } from "./catchup";
@@ -1434,6 +1435,12 @@ export class IrcClient {
 	 * on the channel the user is looking at.
 	 */
 	autojoin(): void {
+		for (const chan of this.channels) {
+			if (chan.type === ChanType.QUERY) {
+				enqueueMarkerFetch(this, chan);
+			}
+		}
+
 		const joining = this.channels.filter(
 			(chan) =>
 				chan.type === ChanType.CHANNEL && chan.autoJoin && chan.state === ChanState.PARTED
@@ -2519,6 +2526,10 @@ export class IrcClient {
 			}
 		}
 
+		if (type === ChanType.QUERY) {
+			channel.onReadMarker = (time) => this.queryLog.setRead(channel.name, time);
+		}
+
 		this.channels.splice(index, 0, channel);
 		return {channel, index};
 	}
@@ -2559,10 +2570,33 @@ export class IrcClient {
 
 			const ids = this.historyIds(messages.length);
 			let lastRef: MsgRef | undefined;
+			// Lines this device had not read when the page went away count
+			// again; with no read point kept, nothing does (as before).
+			const read = this.queryLog.readUpTo(chan.name);
+			let lastRead = 0;
+			let unread = 0;
+			let highlight = 0;
 
 			messages.forEach((msg, i) => {
 				msg.id = ids[i];
-				lastRef = chan.remember(msg);
+				const ref = chan.remember(msg);
+				lastRef = ref;
+
+				if (!read) {
+					return;
+				}
+
+				if (ref.time.getTime() <= read.getTime()) {
+					lastRead = msg.id;
+				} else if (countsAsUnread(msg)) {
+					ref.unread = true;
+					unread++;
+
+					if (msg.highlight) {
+						ref.highlight = true;
+						highlight++;
+					}
+				}
 			});
 
 			for (const [msgid, index] of this.queryLog.aliases(chan.name)) {
@@ -2579,6 +2613,23 @@ export class IrcClient {
 				totalMessages: chan.shared.totalMessages,
 				moreAvailable: false,
 			});
+
+			if (read) {
+				chan.readMarker = read;
+			}
+
+			if (unread > 0) {
+				// `more` carries no counters; `markread` is the event that sets them.
+				chan.shared.unread += unread;
+				chan.shared.highlight += highlight;
+				chan.shared.firstUnread = lastRead || chan.shared.firstUnread;
+				this.bus.dispatch("markread", {
+					chan: chan.id,
+					firstUnread: chan.shared.firstUnread,
+					unread: chan.shared.unread,
+					highlight: chan.shared.highlight,
+				});
+			}
 		}
 	}
 

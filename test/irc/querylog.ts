@@ -3,6 +3,7 @@ import sinon from "ts-sinon";
 import socket from "../../client/js/socket";
 import {IrcClient} from "../../client/js/irc/client";
 import {IdAllocator} from "../../client/js/irc/ids";
+import {CATCHUP_INTERVAL_MS} from "../../client/js/irc/catchup";
 import * as saved from "../../client/js/irc/saved-networks";
 import {
 	MAX_CHARS,
@@ -382,7 +383,10 @@ describe("Query log (irc/querylog.ts)", function () {
 		}
 
 		/** A client on the saved network, registered. */
-		function page(): {client: IrcClient; transport: FakeTransport} {
+		function page(caps = "message-tags server-time echo-message"): {
+			client: IrcClient;
+			transport: FakeTransport;
+		} {
 			const transport = new FakeTransport();
 			const client = new IrcClient({
 				uuid: UUID,
@@ -401,8 +405,8 @@ describe("Query log (irc/querylog.ts)", function () {
 			clients.push(client);
 			client.connect();
 			transport.open();
-			transport.line(":irc.test CAP * LS :message-tags server-time echo-message");
-			transport.line(":irc.test CAP alice ACK :message-tags server-time echo-message");
+			transport.line(`:irc.test CAP * LS :${caps}`);
+			transport.line(`:irc.test CAP alice ACK :${caps}`);
 			transport.line(":irc.test 001 alice :Welcome");
 			transport.line(":irc.test 422 alice :MOTD File is missing");
 			return {client, transport};
@@ -442,6 +446,40 @@ describe("Query log (irc/querylog.ts)", function () {
 			expect(more[0].messages.every((m) => m.id < 0)).to.equal(true);
 			// Known by msgid, so a server replay of the same lines is deduplicated.
 			expect(query.idOf("p1")).to.equal(more[0].messages[0].id);
+		});
+
+		it("keeps an unread private message unread across a reload, until it is read elsewhere", function () {
+			const caps = "message-tags server-time echo-message draft/read-marker";
+			const first = page(caps);
+			first.transport.line(
+				"@time=2026-09-26T11:00:00.000Z;msgid=p1 :bob!b@h PRIVMSG alice :are you there?"
+			);
+			const query = first.client.findChannel("bob")!;
+			first.client.open(query.id); // read it
+			first.client.open(first.client.lobby.id);
+			first.transport.line(
+				"@time=2026-09-26T11:05:00.000Z;msgid=p2 :bob!b@h PRIVMSG alice :hello?"
+			);
+			expect(query.shared.unread).to.equal(1);
+			clock.tick(SAVE_DELAY_MS);
+			first.client.queryLog.dispose();
+
+			dispatch.resetHistory();
+			const second = page(caps);
+			const restored = second.client.findChannel("bob")!;
+			expect(restored.shared.unread, "p2 was never read").to.equal(1);
+			expect(restored.shared.highlight).to.equal(1);
+			expect(payloads<{chan: number; unread: number}>("markread").pop()).to.include({
+				chan: restored.id,
+				unread: 1,
+			});
+
+			// The server is asked for the query's marker, behind the channels,
+			// and lowers the count: p2 was read on another device.
+			clock.tick(CATCHUP_INTERVAL_MS * 3);
+			expect(second.transport.sent).to.include("MARKREAD bob");
+			second.transport.line(":irc.test MARKREAD bob timestamp=2026-09-26T11:05:00.000Z");
+			expect(restored.shared.unread).to.equal(0);
 		});
 
 		it("follows an edit and a reaction in a query, and forgets a closed one", function () {

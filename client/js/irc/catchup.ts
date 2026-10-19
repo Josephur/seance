@@ -35,6 +35,8 @@ interface PendingCatchup {
 	before: MsgRef | undefined;
 	/** History + marker already went out with the JOIN; only the modes are left. */
 	prefetched: boolean;
+	/** A query: no history to fetch, only its read marker (served after the channels). */
+	markerOnly?: boolean;
 }
 
 interface CatchupState {
@@ -106,6 +108,22 @@ export function enqueueCatchup(client: IrcClient, chan: Channel, before: MsgRef 
 	pump(client, state);
 }
 
+/**
+ * After registration: ask for a query's read marker, so a private message
+ * read on another device while this one was away stops counting here.
+ * Queries are never JOINed, so nothing else asks, and the server volunteers
+ * markers only for channels. Behind every channel, and skipped without
+ * spending a slot while the query has nothing unread to lower.
+ */
+export function enqueueMarkerFetch(client: IrcClient, chan: Channel): void {
+	const state = stateOf(client);
+
+	if (!state.queue.some((p) => p.chan === chan)) {
+		state.queue.push({chan, before: undefined, prefetched: false, markerOnly: true});
+		pump(client, state);
+	}
+}
+
 /** The user opened `chan`: if it is still waiting, serve it immediately. */
 export function prioritiseCatchup(client: IrcClient, chan: Channel): void {
 	const state = stateOf(client);
@@ -116,6 +134,11 @@ export function prioritiseCatchup(client: IrcClient, chan: Channel): void {
 	}
 
 	const [pending] = state.queue.splice(index, 1);
+
+	if (pending.markerOnly) {
+		return; // opening the query reads it: its own MARKREAD follows
+	}
+
 	state.queue.unshift(pending);
 	serveNow(client, state);
 }
@@ -171,9 +194,26 @@ function pump(client: IrcClient, state: CatchupState): void {
 }
 
 function step(client: IrcClient, state: CatchupState): void {
-	const next = state.queue.shift();
+	const channel = state.queue.findIndex((p) => !p.markerOnly);
+	const [next] = state.queue.splice(channel === -1 ? 0 : channel, 1);
 
 	if (!next) {
+		return;
+	}
+
+	if (next.markerOnly) {
+		if (
+			next.chan.shared.unread === 0 ||
+			!client.channels.includes(next.chan) ||
+			client.transport.state !== "open"
+		) {
+			pump(client, state);
+			return;
+		}
+
+		state.lastStepAt = Date.now();
+		fetchReadMarker(client, next.chan);
+		pump(client, state);
 		return;
 	}
 

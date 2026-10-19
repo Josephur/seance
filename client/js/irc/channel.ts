@@ -22,6 +22,18 @@ export const SAID_TYPES: ReadonlySet<MessageType> = new Set([
 	MessageType.NOTICE,
 ]);
 
+/**
+ * A line delivered without a live `pushMessage` (a history page, a restored
+ * query log) counts as unread past the read marker when a live one would
+ * have: something someone else said, not an edit, or a highlight.
+ */
+export function countsAsUnread(msg: SharedMsg): boolean {
+	return (
+		!msg.self &&
+		((SAID_TYPES.has(msg.type ?? MessageType.MESSAGE) && !msg.editOf) || !!msg.highlight)
+	);
+}
+
 /** What a CHATHISTORY request can point at: a message's msgid and/or time. */
 export interface MsgRef {
 	msgid?: string;
@@ -103,7 +115,21 @@ export class Channel {
 	 * server has told us was read, on any of the account's sessions. Messages
 	 * at or before it never count as unread.
 	 */
-	readMarker: Date | undefined = undefined;
+	get readMarker(): Date | undefined {
+		return this.marker;
+	}
+
+	set readMarker(time: Date | undefined) {
+		this.marker = time;
+
+		if (time) {
+			this.onReadMarker?.(time);
+		}
+	}
+
+	private marker: Date | undefined = undefined;
+	/** Told when {@link readMarker} moves: a query's is kept with its log (querylog.ts). */
+	onReadMarker: ((time: Date) => void) | null = null;
 	/** Pending debounced `MARKREAD` send (handlers/markread.ts). */
 	markReadTimer: ReturnType<typeof setTimeout> | null = null;
 	/** A debounced `MARKREAD` came due while the connection was not

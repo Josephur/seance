@@ -40,8 +40,8 @@
  */
 
 import {ChanType} from "../../../shared/types/chan";
-import {MessageType, type SharedMsg} from "../../../shared/types/msg";
-import {SAID_TYPES, type Channel, type MsgRef} from "./channel";
+import type {SharedMsg} from "../../../shared/types/msg";
+import {countsAsUnread, type Channel, type MsgRef} from "./channel";
 import type {IrcClient, ReplayCollection} from "./client";
 import type {BatchHandler} from "./handlers/batch";
 import {formatLine, IrcMessage} from "./message";
@@ -447,13 +447,14 @@ function deliverPrepend(
 		msg.id = ids[i];
 		lastRef = chan.remember(msg);
 
-		if (marker && !looking && !msg.self && lastRef.time.getTime() > marker.getTime()) {
-			const said = SAID_TYPES.has(msg.type ?? MessageType.MESSAGE) && !msg.editOf;
-
-			if (said || msg.highlight) {
-				lastRef.unread = true;
-				unread++;
-			}
+		if (
+			marker &&
+			!looking &&
+			countsAsUnread(msg) &&
+			lastRef.time.getTime() > marker.getTime()
+		) {
+			lastRef.unread = true;
+			unread++;
 
 			if (msg.highlight) {
 				lastRef.highlight = true;
