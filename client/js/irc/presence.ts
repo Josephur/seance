@@ -269,6 +269,11 @@ export function setAttended(client: IrcClient, attended: boolean): void {
 		const chan = client.activeChannel();
 
 		if (chan) {
+			// Looking at it reads it, as opening it does (IrcClient.open):
+			// what counted while nobody looked must not resurface as a badge
+			// once the user moves to another channel.
+			chan.shared.unread = 0;
+			chan.shared.highlight = 0;
 			scheduleMarkRead(client, chan);
 		}
 	}

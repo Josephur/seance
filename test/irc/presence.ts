@@ -227,8 +227,11 @@ describe("attention and AWAY * (presence.ts)", function () {
 		live(h, 2);
 		clock.tick(MARKREAD_DEBOUNCE_MS * 2);
 		expect(h.sent(), "a hidden page read nothing").to.deep.equal([]);
+		const chan = h.client.channelById(chanId)!;
+		expect(chan.shared.unread, "counted while nobody looked").to.equal(2);
 
 		h.client.setAttended(true);
+		expect(chan.shared.unread, "read by looking, as opening it would").to.equal(0);
 		clock.tick(MARKREAD_DEBOUNCE_MS);
 		expect(h.sent()).to.deep.equal([
 			"AWAY",
