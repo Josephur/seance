@@ -32,6 +32,7 @@ socket.on("msg", function (data) {
 	}
 
 	let channel = receivingChannel.channel;
+	let rerouted = false;
 	let isActiveChannel =
 		store.state.activeChannel && store.state.activeChannel.channel === channel;
 
@@ -48,6 +49,7 @@ socket.on("msg", function (data) {
 			// Do not update unread/highlight counters for this channel
 			// as we are putting this message in the active channel
 			isActiveChannel = true;
+			rerouted = true;
 
 			if (data.chan === channel.id) {
 				// If active channel is the intended channel for this message,
@@ -61,9 +63,12 @@ socket.on("msg", function (data) {
 		}
 	}
 
-	// Do not set unread counter for channel if it is currently active on this client
-	// It may increase on the server before it processes channel open event from this client
-	if (!isActiveChannel) {
+	// The counters are the IRC layer's (IrcClient.pushMessage), in process:
+	// they stay 0 for the open conversation while someone looks at it and
+	// count while nobody does (a phone in a pocket), which is what the app
+	// badge should show. Only a notice rerouted here carries another
+	// channel's counters.
+	if (!rerouted) {
 		if (typeof data.highlight !== "undefined") {
 			channel.highlight = data.highlight;
 		}

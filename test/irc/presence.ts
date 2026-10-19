@@ -76,6 +76,7 @@ const CAPS = "server-time message-tags batch labeled-response draft/read-marker"
 interface Harness {
 	client: IrcClient;
 	transport: FakeTransport;
+	dispatch: sinon.SinonSpy;
 	sent(): string[];
 	dispatch: sinon.SinonSpy;
 }
@@ -127,6 +128,7 @@ function connect(opts: {attended?: boolean; preAway?: boolean} = {}): Harness {
 
 	return {
 		client,
+		dispatch,
 		transport,
 		dispatch,
 		sent() {
@@ -232,6 +234,10 @@ describe("attention and AWAY * (presence.ts)", function () {
 
 		h.client.setAttended(true);
 		expect(chan.shared.unread, "read by looking, as opening it would").to.equal(0);
+		// …and the page is told: it shows the open conversation's count
+		// (the app badge) while nobody looks.
+		const told = h.dispatch.getCalls().filter((c) => c.args[0] === "markread");
+		expect(told.pop()?.args[1]).to.include({chan: chanId, unread: 0, highlight: 0});
 		clock.tick(MARKREAD_DEBOUNCE_MS);
 		expect(h.sent()).to.deep.equal([
 			"AWAY",

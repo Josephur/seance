@@ -274,6 +274,12 @@ export function setAttended(client: IrcClient, attended: boolean): void {
 			// once the user moves to another channel.
 			chan.shared.unread = 0;
 			chan.shared.highlight = 0;
+			client.dispatch("markread", {
+				chan: chan.id,
+				firstUnread: chan.shared.firstUnread,
+				unread: 0,
+				highlight: 0,
+			});
 			scheduleMarkRead(client, chan);
 		}
 	}
