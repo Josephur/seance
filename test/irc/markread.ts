@@ -474,13 +474,13 @@ describe("Read markers (handlers/markread.ts)", function () {
 		expect(h.transport.sent.some((l) => l.startsWith("MARKREAD"))).to.equal(false);
 	});
 
-	it("asks for the stored marker after our JOIN, after the history request", function () {
+	it("asks for the stored marker after our JOIN, before the history it counts", function () {
 		const h = setup();
 		const lines = join(h);
 		const history = lines.findIndex((l) => l.includes("CHATHISTORY LATEST #seance"));
 		const fetch = lines.indexOf("MARKREAD #seance");
-		expect(history, "CHATHISTORY LATEST").to.be.at.least(0);
-		expect(fetch, "MARKREAD fetch").to.be.greaterThan(history);
+		expect(fetch, "MARKREAD fetch").to.be.at.least(0);
+		expect(history, "CHATHISTORY LATEST").to.be.greaterThan(fetch);
 
 		const without = setup({readMarker: false});
 		expect(join(without)).to.not.include("MARKREAD #seance");
