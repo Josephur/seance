@@ -1021,7 +1021,7 @@ describe("Chat history (history.ts)", function () {
 			expect(reconnect(h).some((l) => / CHATHISTORY BEFORE /.test(l))).to.equal(false);
 		});
 
-		it("fills the gap from LATEST back to the newest message seen, appended in order without unread effects", function () {
+		it("fills the gap from LATEST back to the newest message seen, appended in order and counted as unread", function () {
 			const h = setup();
 			const id = joined(h);
 			const chan = h.client.findChannel("#seance")!;
@@ -1032,8 +1032,7 @@ describe("Chat history (history.ts)", function () {
 			expect(chan.shared.unread).to.equal(1);
 
 			const sent = reconnect(h);
-			// (Our own JOIN line is a `self` message, which resets the counter.)
-			const unreadBefore = chan.shared.unread;
+			expect(chan.shared.unread, "our re-JOIN is quiet").to.equal(1);
 			// The spec's loop starts from the present, not from our anchor.
 			expect(sent.find((l) => l.includes("CHATHISTORY"))).to.match(
 				/CHATHISTORY LATEST #seance \* 100$/
@@ -1052,16 +1051,53 @@ describe("Chat history (history.ts)", function () {
 			const gap = msgs(id).filter((p) => p.msg.msgid?.startsWith("gap"));
 			expect(gap.map((p) => p.msg.text)).to.deep.equal(["alice you there?", "guess not"]);
 			expect(msgs(id).filter((p) => p.msg.msgid === "last-seen")).to.have.length(0);
-			// The mention renders highlighted; the replay flag keeps the
-			// consumer from notifying, and no counters move.
+			// The mention renders highlighted and both lines count, as they
+			// would have live; the replay flag keeps the consumer from notifying.
 			expect(gap.map((p) => p.msg.highlight)).to.deep.equal([true, false]);
 			expect(gap.map((p) => p.replay)).to.deep.equal([true, true]);
 			expect(gap.every((p) => p.msg.id > 0)).to.equal(true);
-			expect(chan.shared.unread).to.equal(unreadBefore);
-			expect(chan.shared.highlight).to.equal(0);
+			expect(chan.shared.unread).to.equal(3);
+			expect(chan.shared.highlight).to.equal(1);
 			expect(chan.newestRef?.msgid).to.equal("gap-2");
 			expect(pendingHistory(h.client)).to.have.length(0);
 			expect(h.sent().filter((l) => l.includes("CHATHISTORY"))).to.deep.equal([]);
+		});
+
+		it("catch-up: our own replayed JOIN keeps the counters, and a later read marker recounts them", function () {
+			const h = setup();
+			joined(h);
+			const chan = h.client.findChannel("#seance")!;
+			h.transport.line(
+				"@msgid=a;time=2026-08-25T12:10:00.000Z :bob!bob@host PRIVMSG #seance :before the drop"
+			);
+			h.client.open(h.client.lobby.id);
+			const sent = reconnect(h);
+
+			reply(h, sent, [
+				"@time=2026-08-25T12:10:00.000Z;msgid=a :bob!bob@host PRIVMSG #seance :before the drop",
+				"@time=2026-08-25T12:20:00.000Z;msgid=b :bob!bob@host PRIVMSG #seance :missed",
+				"@time=2026-08-25T12:30:00.000Z;msgid=join-2 :alice!alice@host JOIN #seance",
+			]);
+			expect(chan.shared.unread).to.equal(2);
+
+			// Read on another device up to "missed"'s predecessor: one left.
+			h.transport.line(":irc.test MARKREAD #seance timestamp=2026-08-25T12:15:00.000Z");
+			expect(chan.shared.unread).to.equal(1);
+		});
+
+		it("catch-up: lines at or before a known read marker do not count", function () {
+			const h = setup();
+			joined(h);
+			const chan = h.client.findChannel("#seance")!;
+			h.client.open(h.client.lobby.id);
+			h.transport.line(":irc.test MARKREAD #seance timestamp=2026-08-25T12:15:00.000Z");
+			const sent = reconnect(h);
+
+			reply(h, sent, [
+				"@time=2026-08-25T12:10:00.000Z;msgid=a :bob!bob@host PRIVMSG #seance :read elsewhere",
+				"@time=2026-08-25T12:20:00.000Z;msgid=b :bob!bob@host PRIVMSG #seance :not yet",
+			]);
+			expect(chan.shared.unread).to.equal(1);
 		});
 
 		it("pages BEFORE while pages are full and the gap is not yet closed, then appends oldest first", function () {

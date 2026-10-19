@@ -245,8 +245,11 @@ export const SASL_REQUIRED_HINT =
 /** Prefix characters a channel name may start with when the user omits one. */
 const CHANNEL_PREFIXES = "#&!+";
 
-/** Own messages of these types mean the user read the channel (draft/read-marker). */
-const SELF_READ_TYPES: ReadonlySet<MessageType> = new Set([
+/**
+ * Lines someone says. Our own mean we read the channel (draft/read-marker);
+ * someone else's count as unread, live or caught up.
+ */
+const SAID_TYPES: ReadonlySet<MessageType> = new Set([
 	MessageType.MESSAGE,
 	MessageType.ACTION,
 	MessageType.NOTICE,
@@ -2650,10 +2653,10 @@ export class IrcClient {
 	/**
 	 * Allocate an id, keep the unread counters and dispatch `msg`. Mirrors
 	 * `Chan.pushMessage` in the old server. With `replay` (history catch-up
-	 * appends) the message is delivered — highlight included, so a replayed
-	 * mention renders as one — but stays silent: no unread / highlight
-	 * counting here, and the flag travels on the `msg` event so the
-	 * consumer skips notifications and the mentions list.
+	 * appends) the message counts as unread as it would have live — what
+	 * someone else said, not an edit, newer than the read marker — and
+	 * `increasesUnread` is ignored; the flag travels on the `msg` event so
+	 * the consumer skips notifications and the mentions list.
 	 */
 	pushMessage(
 		chan: Channel,
@@ -2683,15 +2686,19 @@ export class IrcClient {
 		// Already read on another session (draft/read-marker), e.g. a catch-up.
 		const read =
 			chan.readMarker !== undefined && ref.time.getTime() <= chan.readMarker.getTime();
+		const said = SAID_TYPES.has(msg.type ?? MessageType.MESSAGE);
+		// A catch-up line counts as privmsg.ts counts a live one.
+		const counts = replay ? said && !msg.editOf : increasesUnread;
 
 		if (msg.self) {
-			shared.unread = 0;
-			shared.highlight = 0;
 			shared.firstUnread = msg.id;
 
 			// Something we said is read by definition; our own JOIN/MODE
-			// echoes are not (a reconnect must not advance the marker).
-			if (SELF_READ_TYPES.has(msg.type ?? MessageType.MESSAGE)) {
+			// are not (a reconnect, or a catch-up replaying our JOIN, must
+			// neither clear the counters nor advance the read marker).
+			if (said) {
+				shared.unread = 0;
+				shared.highlight = 0;
 				scheduleMarkRead(this, chan);
 			}
 		} else if (chan.id === this.activeChanId && this.presence.attended) {
@@ -2703,12 +2710,12 @@ export class IrcClient {
 				shared.firstUnread = msg.id;
 			}
 
-			if ((increasesUnread || msg.highlight) && !replay) {
+			if (counts || msg.highlight) {
 				shared.unread++;
 				ref.unread = true;
 			}
 
-			if (msg.highlight && !replay) {
+			if (msg.highlight) {
 				shared.highlight++;
 				ref.highlight = true;
 			}

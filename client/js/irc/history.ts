@@ -24,9 +24,9 @@
  *   by an anchor the server can no longer see (a presence gap, retention,
  *   a clock disagreement): it stops where the server's history meets ours.
  *   The pages are gathered and appended once, oldest first, as ordinary
- *   `msg` events flagged `replay` (shown with their highlights, but no
- *   unread / notification side effects). The server
- *   can drive the same thing itself off a `PERSISTENCE ATTACH` cursor, in
+ *   `msg` events flagged `replay`: counted as unread like live ones
+ *   (`IrcClient.pushMessage`), but no notification or mention entry. The
+ *   server can drive the same thing itself off a `PERSISTENCE ATTACH` cursor, in
  *   which case its `chathistory` batches arrive unasked inside a
  *   `evilnet.github.io/bouncer-replay` wrapper and take the same path
  *   (persistence.ts).
@@ -404,8 +404,8 @@ function replay(client: IrcClient, chan: Channel, lines: IrcMessage[]): Replayed
 		}
 
 		// msg.highlight is kept: a replayed mention renders highlighted.
-		// Delivery is what stays silent (no counters, no notification) —
-		// deliverAppend pushes with `replay` and `more` never notifies.
+		// Delivery is what stays silent (no notification) — deliverAppend
+		// pushes with `replay` and `more` never notifies.
 		messages.push(msg);
 	}
 
@@ -462,7 +462,7 @@ function deliverPrepend(
 	client.dispatch("more", {chan: chan.id, messages, totalMessages, moreAvailable});
 }
 
-/** Append catch-up messages as live ones, without unread / notification effects. */
+/** Append catch-up messages as live ones: counted as unread, never notified. */
 function deliverAppend(client: IrcClient, chan: Channel, messages: SharedMsg[]): void {
 	for (const msg of messages) {
 		// pushMessage copies; write the id back so post-replay work
@@ -609,9 +609,9 @@ export const chathistoryBatch: BatchHandler = (client, batch) => {
 
 /**
  * One inner batch of the server-driven catch-up (persistence.ts): appended
- * like the gathered pages of our own catch-up — highlights kept but silent
- * (`replay`), no unread, msgid dedupe against what the channel already shows. A PM from someone we have
- * no window for opens one, as a live message would.
+ * like the gathered pages of our own catch-up — counted as unread but silent
+ * (`replay`), msgid dedupe against what the channel already shows. A PM from
+ * someone we have no window for opens one, as a live message would.
  */
 function deliverCatchup(client: IrcClient, target: string, lines: IrcMessage[]): void {
 	if (!target) {
