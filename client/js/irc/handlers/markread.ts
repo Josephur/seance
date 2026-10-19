@@ -195,7 +195,9 @@ export function markReadAt(client: IrcClient, target: string, time: Date): void 
 
 		cancelMarkRead(chan);
 		chan.markReadDeferred = false;
-		chan.readMarker = time;
+		// Moves the badge too: the server's echo of this same marker is
+		// not newer, so applyReadMarker would ignore it.
+		applyReadMarker(client, chan, time);
 	}
 
 	client.send(

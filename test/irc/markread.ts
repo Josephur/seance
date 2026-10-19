@@ -499,6 +499,14 @@ describe("Read markers (handlers/markread.ts)", function () {
 				time: "2026-08-25T12:02:00.000Z",
 			});
 			expect(h.sent()).to.deep.equal(["MARKREAD #seance timestamp=2026-08-25T12:02:00.000Z"]);
+			// …and the badge with it: the server's echo of the same marker
+			// changes nothing, so it is applied here.
+			const chan = h.client.findChannel("#seance")!;
+			expect(chan.shared.unread).to.equal(0);
+			expect(payloads<{chan: number; unread: number}>("markread").pop()).to.include({
+				chan: chanId,
+				unread: 0,
+			});
 
 			// The channel's marker moved with it: opening it has nothing newer to send.
 			socket.emit("open", chanId);
