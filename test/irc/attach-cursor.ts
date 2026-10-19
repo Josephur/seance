@@ -190,6 +190,25 @@ describe("PERSISTENCE ATTACH catch-up cursor (irc/persistence.ts)", function () 
 				time: Date.parse("2026-08-28T11:30:00.000Z"),
 			});
 		});
+
+		it("counts the catch-up as unread, through our own JOIN at its end", function () {
+			const h = setup();
+			joined(h);
+			const chan = h.client.findChannel("#seance")!;
+			h.client.open(h.client.lobby.id);
+			const lastRead = chan.shared.firstUnread;
+
+			bouncerReplay(h, "#seance", [
+				"@time=2026-08-28T11:30:00.000Z;msgid=r1 :bob!bob@host PRIVMSG #seance :missed",
+				"@time=2026-08-28T11:31:00.000Z;msgid=r2 :bob!bob@host PRIVMSG #seance :alice: you there?",
+				"@time=2026-08-28T11:32:00.000Z;msgid=r3 :alice!alice@host JOIN #seance",
+			]);
+			expect(chan.shared.unread).to.equal(2);
+			expect(chan.shared.highlight).to.equal(1);
+			expect(chan.shared.firstUnread, "the new-messages line stays above them").to.equal(
+				lastRead
+			);
+		});
 	});
 
 	describe("persisting it", function () {

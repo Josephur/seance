@@ -249,7 +249,7 @@ const CHANNEL_PREFIXES = "#&!+";
  * Lines someone says. Our own mean we read the channel (draft/read-marker);
  * someone else's count as unread, live or caught up.
  */
-const SAID_TYPES: ReadonlySet<MessageType> = new Set([
+export const SAID_TYPES: ReadonlySet<MessageType> = new Set([
 	MessageType.MESSAGE,
 	MessageType.ACTION,
 	MessageType.NOTICE,
@@ -2691,11 +2691,14 @@ export class IrcClient {
 		const counts = replay ? said && !msg.editOf : increasesUnread;
 
 		if (msg.self) {
-			shared.firstUnread = msg.id;
-
 			// Something we said is read by definition; our own JOIN/MODE
-			// are not (a reconnect, or a catch-up replaying our JOIN, must
-			// neither clear the counters nor advance the read marker).
+			// are not (a reconnect must not advance the read marker), and
+			// replayed by a catch-up they leave the counters and the
+			// new-messages line where the lines before them put them.
+			if (said || !replay) {
+				shared.firstUnread = msg.id;
+			}
+
 			if (said) {
 				shared.unread = 0;
 				shared.highlight = 0;

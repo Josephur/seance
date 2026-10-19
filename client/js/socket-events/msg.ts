@@ -10,6 +10,7 @@ import {recordSeenMsgid} from "../push-seen";
 import webpush from "../webpush";
 import {attachMediaPreviews} from "../helpers/messagePreviews";
 import * as saved from "../irc/saved-networks";
+import {SAID_TYPES} from "../irc/client";
 import {insertMessage} from "../helpers/messageUpdates";
 
 let pop;
@@ -96,7 +97,10 @@ socket.on("msg", function (data) {
 	}
 
 	if (data.msg.self) {
-		channel.firstUnread = data.msg.id;
+		// Our own JOIN in a catch-up is not reading the channel (IrcClient.pushMessage).
+		if (!data.replay || SAID_TYPES.has(data.msg.type ?? MessageType.MESSAGE)) {
+			channel.firstUnread = data.msg.id;
+		}
 	} else if (!data.replay && (!data.msg.editOf || data.msg.highlight)) {
 		// An edit is not news (it replaces a message in place) unless it
 		// brings a highlight with it.
