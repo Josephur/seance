@@ -9,6 +9,7 @@ import {expect} from "chai";
 import sinon from "ts-sinon";
 import {CURSOR_SAVE_INTERVAL_MS} from "../../client/js/irc/client";
 import {requestHistory, requestMore} from "../../client/js/irc/history";
+import {MARKREAD_DEBOUNCE_MS} from "../../client/js/irc/handlers/markread";
 import * as saved from "../../client/js/irc/saved-networks";
 import type {StorageBackend} from "../../client/js/irc/saved-networks";
 import {MessageType, SharedMsg} from "../../shared/types/msg";
@@ -398,6 +399,26 @@ describe("PERSISTENCE ATTACH catch-up cursor (irc/persistence.ts)", function () 
 			h.sent();
 			return h;
 		}
+
+		it("history arriving in the channel being looked at marks it read", function () {
+			const h = saslClient();
+			h.client.open(h.client.findChannel("#seance")!.id);
+			authenticate(h, `${SASL_CAPS} draft/read-marker`);
+			h.transport.line(":irc.test PERSISTENCE ATTACH default");
+			finishRegistration(h, HOLD);
+			restore(h); // a quiet JOIN: no line of its own to read
+			batch(
+				h,
+				[
+					"@time=2026-08-28T11:00:00.000Z;msgid=h1 :bob!bob@host PRIVMSG #seance :one",
+					"@time=2026-08-28T11:01:00.000Z;msgid=h2 :bob!bob@host PRIVMSG #seance :two",
+				],
+				{label: labelOf(h.transport.sent)}
+			);
+			h.sent();
+			clock.tick(MARKREAD_DEBOUNCE_MS);
+			expect(h.sent()).to.include("MARKREAD #seance timestamp=2026-08-28T11:01:00.000Z");
+		});
 
 		it("appends the replay as messages, not as older history, and dedupes by msgid", function () {
 			const h = resumed();

@@ -44,6 +44,7 @@ import type {SharedMsg} from "../../../shared/types/msg";
 import {countsAsUnread, type Channel, type MsgRef} from "./channel";
 import type {IrcClient, ReplayCollection} from "./client";
 import type {BatchHandler} from "./handlers/batch";
+import {scheduleMarkRead} from "./handlers/markread";
 import {formatLine, IrcMessage} from "./message";
 import {settlePendingLabel} from "./pending";
 import {inBouncerReplay, inServerCatchup} from "./persistence";
@@ -473,6 +474,11 @@ function deliverPrepend(
 
 	if (!chan.newestRef && lastRef) {
 		chan.newestRef = lastRef;
+	}
+
+	if (looking && messages.length > 0) {
+		// Shown to someone looking: read, as a live line would be.
+		scheduleMarkRead(client, chan);
 	}
 
 	chan.shared.totalMessages += messages.length;
