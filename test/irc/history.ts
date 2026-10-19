@@ -1105,6 +1105,29 @@ describe("Chat history (history.ts)", function () {
 			expect(chan.shared.unread).to.equal(1);
 		});
 
+		it("catch-up: an old line of ours clears only what came before it", function () {
+			const h = setup();
+			joined(h);
+			const chan = h.client.findChannel("#seance")!;
+			h.transport.line(
+				"@msgid=a;time=2026-08-25T12:10:00.000Z :bob!bob@host PRIVMSG #seance :before the drop"
+			);
+			h.client.open(h.client.lobby.id);
+			const sent = reconnect(h);
+			// A live line lands while the catch-up is still out.
+			h.transport.line(
+				"@msgid=live;time=2026-08-25T12:40:00.000Z :bob!bob@host PRIVMSG #seance :just now"
+			);
+			const before = chan.shared.unread;
+
+			reply(h, sent, [
+				"@time=2026-08-25T12:10:00.000Z;msgid=a :bob!bob@host PRIVMSG #seance :before the drop",
+				"@time=2026-08-25T12:20:00.000Z;msgid=mine :alice!alice@host PRIVMSG #seance :said elsewhere",
+			]);
+			expect(before).to.be.greaterThan(0);
+			expect(chan.shared.unread, "the live line is still unread").to.equal(1);
+		});
+
 		it("catch-up: lines at or before a known read marker do not count", function () {
 			const h = setup();
 			joined(h);

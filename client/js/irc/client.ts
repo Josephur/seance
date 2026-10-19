@@ -47,6 +47,7 @@ import {
 	sendMultiline,
 } from "./multiline";
 import {
+	applyReadMarker,
 	cancelMarkRead,
 	flushDeferredMarkRead,
 	markReadAt,
@@ -2746,7 +2747,12 @@ export class IrcClient {
 				shared.firstUnread = msg.id;
 			}
 
-			if (said) {
+			if (said && replay) {
+				// An old line of ours in a catch-up read what came before it,
+				// not a live line that arrived while the catch-up was out.
+				applyReadMarker(this, chan, ref.time);
+				scheduleMarkRead(this, chan);
+			} else if (said) {
 				shared.unread = 0;
 				shared.highlight = 0;
 				scheduleMarkRead(this, chan);
