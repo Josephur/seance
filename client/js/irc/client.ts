@@ -29,7 +29,7 @@ import type {
 import type {PushSession, ServerToClientEvents} from "../../../shared/types/socket-events";
 import {CapNegotiator, SEANCE_CAPS, webpushVapidOf, WEBPUSH_CAP} from "./caps";
 import {casefold, namesEqual} from "./casemap";
-import {Channel, MsgRef} from "./channel";
+import {Channel, MsgRef, SAID_TYPES} from "./channel";
 import {QueryLog} from "./querylog";
 import {commandNames, dispatchInput} from "./commands";
 import {describeClose} from "./disconnect";
@@ -244,16 +244,6 @@ export const SASL_REQUIRED_HINT =
 
 /** Prefix characters a channel name may start with when the user omits one. */
 const CHANNEL_PREFIXES = "#&!+";
-
-/**
- * Lines someone says. Our own mean we read the channel (draft/read-marker);
- * someone else's count as unread, live or caught up.
- */
-export const SAID_TYPES: ReadonlySet<MessageType> = new Set([
-	MessageType.MESSAGE,
-	MessageType.ACTION,
-	MessageType.NOTICE,
-]);
 
 export class IrcClient {
 	readonly uuid: string;

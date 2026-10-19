@@ -10,7 +10,7 @@ import {recordSeenMsgid} from "../push-seen";
 import webpush from "../webpush";
 import {attachMediaPreviews} from "../helpers/messagePreviews";
 import * as saved from "../irc/saved-networks";
-import {SAID_TYPES} from "../irc/client";
+import {SAID_TYPES} from "../irc/channel";
 import {insertMessage} from "../helpers/messageUpdates";
 
 let pop;

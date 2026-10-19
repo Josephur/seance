@@ -12,7 +12,9 @@
  *   `socket-events/more.ts` as one `more` event, oldest first, with ids
  *   below everything the channel already shows (`IdAllocator.historyIds`).
  *   A replayed mention keeps `highlight` (the line renders highlighted),
- *   but history never notifies and never counts as unread.
+ *   but history never notifies; what it holds past a known read marker
+ *   counts as unread (the first page after a JOIN is often all the
+ *   catch-up there is).
  * - **Catch-up** (re-JOIN after a reconnect): the spec's own gap-filling
  *   loop (chathistory.md, "Client pseudocode"): `CHATHISTORY LATEST`, then
  *   `BEFORE <oldest of the page>` back until a page overlaps what we already
@@ -38,8 +40,8 @@
  */
 
 import {ChanType} from "../../../shared/types/chan";
-import type {SharedMsg} from "../../../shared/types/msg";
-import type {Channel, MsgRef} from "./channel";
+import {MessageType, type SharedMsg} from "../../../shared/types/msg";
+import {SAID_TYPES, type Channel, type MsgRef} from "./channel";
 import type {IrcClient, ReplayCollection} from "./client";
 import type {BatchHandler} from "./handlers/batch";
 import {formatLine, IrcMessage} from "./message";
@@ -433,10 +435,32 @@ function deliverPrepend(
 ): void {
 	const ids = client.historyIds(messages.length);
 	let lastRef: MsgRef | undefined;
+	// The first page after a JOIN is the only catch-up when the server had
+	// no cursor to replay from, and the read marker (sent right after the
+	// JOIN) is known by then: what someone else said past it is unread.
+	const marker = chan.readMarker;
+	const looking = chan.id === client.activeChannelId && client.presence.attended;
+	let unread = 0;
+	let highlight = 0;
 
 	messages.forEach((msg, i) => {
 		msg.id = ids[i];
 		lastRef = chan.remember(msg);
+
+		if (marker && !looking && !msg.self && lastRef.time.getTime() > marker.getTime()) {
+			const said = SAID_TYPES.has(msg.type ?? MessageType.MESSAGE) && !msg.editOf;
+
+			if (said || msg.highlight) {
+				lastRef.unread = true;
+				unread++;
+			}
+
+			if (msg.highlight) {
+				lastRef.highlight = true;
+				highlight++;
+			}
+		}
+
 		// Older by definition, but a LATEST fill can still hold the newest
 		// line we have seen; noteCursor only ever moves forward.
 		client.noteCursor(msg);
@@ -460,6 +484,18 @@ function deliverPrepend(
 	// other way. Send the boolean; totalMessages stays for other readers.
 	const totalMessages = chan.shared.totalMessages + (moreAvailable ? 1 : 0);
 	client.dispatch("more", {chan: chan.id, messages, totalMessages, moreAvailable});
+
+	if (unread > 0) {
+		// `more` carries no counters; `markread` is the event that sets them.
+		chan.shared.unread += unread;
+		chan.shared.highlight += highlight;
+		client.dispatch("markread", {
+			chan: chan.id,
+			firstUnread: chan.shared.firstUnread,
+			unread: chan.shared.unread,
+			highlight: chan.shared.highlight,
+		});
+	}
 }
 
 /** Append catch-up messages as live ones: counted as unread, never notified. */

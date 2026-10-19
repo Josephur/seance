@@ -744,6 +744,26 @@ describe("Chat history (history.ts)", function () {
 			expect(pendingHistory(h.client)).to.have.length(0);
 		});
 
+		it("the first page after a JOIN counts what is past the read marker", function () {
+			const h = setup();
+			const sent = join(h);
+			const id = h.chan();
+			const chan = h.client.findChannel("#seance")!;
+			// nefarious2 sends the stored marker right after the JOIN.
+			h.transport.line(":irc.test MARKREAD #seance timestamp=2026-08-25T11:02:30.000Z");
+
+			batch(h, [hist(1), hist(2), hist(3, "bob", "alice: you there?"), hist(4)], {
+				label: labelOf(sent.find((l) => l.includes("CHATHISTORY"))),
+			});
+
+			expect(chan.shared.unread).to.equal(2);
+			expect(chan.shared.highlight).to.equal(1);
+			expect(payloads<{chan: number; unread: number}>("markread").pop()).to.include({
+				chan: id,
+				unread: 2,
+			});
+		});
+
 		it("history highlights mentions on the line but never notifies or counts", function () {
 			const h = setup();
 			const id = joined(h);

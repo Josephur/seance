@@ -12,6 +12,16 @@ import type {HistorySpec} from "./history";
 
 export type Casefold = (s: string) => string;
 
+/**
+ * Lines someone says. Our own mean we read the channel (draft/read-marker);
+ * someone else's count as unread, live or caught up.
+ */
+export const SAID_TYPES: ReadonlySet<MessageType> = new Set([
+	MessageType.MESSAGE,
+	MessageType.ACTION,
+	MessageType.NOTICE,
+]);
+
 /** What a CHATHISTORY request can point at: a message's msgid and/or time. */
 export interface MsgRef {
 	msgid?: string;
