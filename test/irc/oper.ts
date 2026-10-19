@@ -10,14 +10,17 @@ import {
 	trim,
 	MAX_AGE_MS,
 	MAX_ENTRIES,
+	SAVE_DELAY_MS,
 	useNoticeLogBackend,
 } from "../../client/js/irc/noticelog";
 import {
+	getNote,
 	getOperPrefs,
 	OPER_PREFS_KEY,
 	resetRoutes,
 	routeFor,
 	setRoute,
+	setNote,
 	setSnomaskPref,
 	setTemporaryRoute,
 	sweepTemporaryRoutes,
@@ -601,6 +604,63 @@ describe("oper tools: temporary routes (irc/operprefs.ts)", function () {
 		expect(getOperPrefs("n1")).to.deep.equal({routes: {"oper.up": "off"}, snomask: 5645});
 	});
 
+	it("drops a malformed temporary route from a restored file instead of throwing", function () {
+		prefsStore.set(
+			OPER_PREFS_KEY,
+			JSON.stringify({
+				n1: {temporary: {"client.connect": null, "oper.up": {route: "off"}}},
+			})
+		);
+		expect(sweepTemporaryRoutes("n1", now)).to.equal(false);
+		expect(routeFor("n1", "client.connect", "network", now)).to.equal("network");
+		expect(temporaryRouteFor("n1", "oper.up", now)).to.equal(undefined);
+	});
+
+	it("drops a restored network entry or `temporary` that is not an object", function () {
+		prefsStore.set(OPER_PREFS_KEY, JSON.stringify({n1: "x", n2: {temporary: [null]}}));
+		expect(getOperPrefs("n1")).to.deep.equal({});
+		expect(sweepTemporaryRoutes("n2", now)).to.equal(false);
+		expect(routeFor("n2", "oper.up", "active", now)).to.equal("active");
+		setRoute("n1", "oper.up", "off");
+		expect(getOperPrefs("n1")).to.deep.equal({routes: {"oper.up": "off"}});
+	});
+
+	it("drops a restored snomask, route or note of the wrong type", function () {
+		prefsStore.set(
+			OPER_PREFS_KEY,
+			JSON.stringify({
+				n1: {
+					snomask: "1 x",
+					wasOper: "yes",
+					routes: {"oper.up": "loud", "client.connect": "off"},
+					temporary: {"ban.add": {route: "off", until: now + HOUR, revert: "loud"}},
+					notes: {alice: "seen before", bob: 3},
+				},
+				n2: {notes: "abc"},
+			})
+		);
+		expect(getOperPrefs("n1")).to.deep.equal({
+			routes: {"client.connect": "off"},
+			temporary: {},
+			notes: {alice: "seen before"},
+		});
+		expect(getNote("n2", "0")).to.equal("");
+	});
+
+	it("keeps notes by their own keys, `constructor` and `__proto__` included", function () {
+		setNote("n1", "alice", "seen before");
+		expect(getNote("n1", "constructor")).to.equal("");
+		expect(getNote("n1", "toString")).to.equal("");
+
+		setNote("n1", "__proto__", "odd nick");
+		expect(getNote("n1", "__proto__")).to.equal("odd nick");
+		expect(getNote("n1", "alice")).to.equal("seen before");
+
+		setNote("n1", "__proto__", "");
+		expect(getNote("n1", "__proto__")).to.equal("");
+		expect(Object.keys(getOperPrefs("n1").notes ?? {})).to.deep.equal(["alice"]);
+	});
+
 	it("the IRC layer routes by it: a kind shown here for a while is promoted, then not", function () {
 		const {client, transport} = setup();
 		const line =
@@ -842,6 +902,28 @@ describe("oper tools: the notice log (irc/noticelog.ts)", function () {
 			log.append(entry(t + 2));
 			log.flush();
 			expect(logStore.get("n1")).to.have.length(4);
+		} finally {
+			clock.restore();
+		}
+	});
+
+	it("saves a line that arrived before the store was read, with no line after it", async function () {
+		const clock = sinon.useFakeTimers({
+			toFake: ["setTimeout", "clearTimeout"],
+			now: 5 * MAX_AGE_MS,
+		});
+
+		try {
+			const t = Date.now();
+			logStore.set("n1", [entry(t - 1000)]);
+			const log = new NoticeLog("n1", () => true);
+			log.append(entry(t));
+			log.flush(); // the page hiding before the read: nothing may be written yet
+			expect(logStore.get("n1")).to.have.length(1);
+
+			await log.load();
+			clock.tick(SAVE_DELAY_MS);
+			expect(logStore.get("n1")!.map((e) => e.time)).to.deep.equal([t - 1000, t]);
 		} finally {
 			clock.restore();
 		}
