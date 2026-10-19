@@ -14,6 +14,8 @@
  * `private` or names our nick (our own legacy public value).
  */
 import type {Handler} from "../types";
+import type {BatchHandler} from "./batch";
+import {sharedBurstRead} from "../presence";
 import {MUTE_KEY, onMuteValue} from "../pushMute";
 import {MODE_KEY, PRESENCE_KEY, onGlobalModeValue, onPresenceValue} from "../presenceShare";
 // index.ts imports this module too; `unhandled` is only called at run time.
@@ -102,6 +104,26 @@ const subOk: Handler = (client, msg) => {
 // 762 <me> :end of metadata. It names no key, so it cannot tell whose GET
 // it ends; it adds nothing to the 761/766 lines shown before it.
 const endOfMetadata: Handler = () => undefined;
+
+/**
+ * `BATCH +ref metadata <me>` right after 001: the subscribed keys the
+ * account has set, sent to a connection that subscribed before `CAP END`
+ * (nefarious2, client.ts finalLines). Its lines go through the handlers
+ * above; once it closes, presence.ts's shareUnread hold ends. A key it did
+ * not carry is *not* read as unset: the burst can come from a stale copy
+ * (measured: one without `draft/webpush/mute` while do not disturb was on),
+ * so writing, and an entry gone, wait for the 10 s GET. Any other metadata
+ * batch (the GET's answer names no target) is just unwrapped.
+ */
+export const metadataBatch: BatchHandler = (client, batch) => {
+	for (const msg of batch.messages) {
+		client.handleMessage(msg);
+	}
+
+	if (client.isSelf(batch.params[0] ?? "")) {
+		sharedBurstRead(client);
+	}
+};
 
 export default {
 	METADATA: metadata,

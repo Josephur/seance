@@ -19,6 +19,7 @@ import {forgetNetworkLog} from "./querylog";
 import {forgetNoticeLog} from "./noticelog";
 import {forgetOperPrefs} from "./operprefs";
 import {forgetMuteMemory} from "./muteMemory";
+import {forgetPresenceSync} from "./presenceSync";
 import {forgetUserAway} from "./userAwayStore";
 import type {ConnectOptions} from "./types";
 import {PRESENCE_MODES, type NetworkMode, type PresenceMode} from "../helpers/dnd";
@@ -470,6 +471,7 @@ export function remove(uuid: string): void {
 	forgetNoticeLog(uuid); // and its server notices
 	forgetOperPrefs(uuid);
 	forgetMuteMemory(uuid); // and what this device wrote to its push mute list
+	forgetPresenceSync(uuid); // and when it was last in sync with the shared presence
 	forgetUserAway(uuid); // and the /away it would declare at the next registration
 }
 

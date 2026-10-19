@@ -155,7 +155,13 @@ Away mode flashed back until the post-MOTD `AWAY *`). So:
   `finalLines` hook so the pipelined path, a late ACK/NAK and the SASL path —
   `PERSISTENCE ATTACH`, then the `AWAY`, then `CAP END` — all carry it):
   `AWAY :<text>` while a `/away` is in force, else `AWAY *` when `wantsStar`
-  (DND, Away mode, an unattended Auto page). On the pipelined path the cap
+  (DND, Away mode, an unattended Auto page, or — on a device out of sync
+  for longer than a reload, whose connection subscribed to the shared keys
+  before `CAP END` — the account's shared state not yet read,
+  `shareUnread`, so a device that missed another's global Away or DND
+  never shows the account back at login; the registration burst ends it,
+  docs/projects/shared-presence-modes.md § 5).
+  On the pipelined path the cap
   is only requested, not yet ACKed; the server reads the REQ first. No
   305/306 answers a pre-registration AWAY, so nothing is counted quiet.
 - **`presenceRegistered` says it once more after registration**, quietly
@@ -163,7 +169,8 @@ Away mode flashed back until the post-MOTD `AWAY *`). So:
   connection's own away record to present, which the session's aggregation
   and the push attention rule read (§ Server notes). The declaration keeps
   the attach itself from counting as present; the repeat makes it last.
-  `remoteDnd` is not known yet at that point; its GET follows.
+  `remoteDnd` is not known yet at that point; with `before-connect` the
+  burst right after 001 brings it, else its GET follows.
 - The `/away` text is remembered per network across reloads in
   `thelounge.state.away` (`irc/userAwayStore.ts`; `/back` forgets it, so
   does removing the network; never in the settings backup). It is this

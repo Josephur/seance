@@ -22,6 +22,7 @@
  */
 
 import type {IrcClient} from "./client";
+import {syncPresence} from "./presence";
 import {
 	GLOBAL_MODES,
 	NETWORK_MODES,
@@ -154,6 +155,8 @@ export function onPresenceValue(client: IrcClient, value: string): void {
 	}
 
 	syncShared(client);
+	// The read may end presence.ts's shareUnread hold.
+	syncPresence(client);
 }
 
 /** A `seance/mode` value read: adopt it here (the page fans it out) or write ours. */
@@ -171,4 +174,6 @@ export function onGlobalModeValue(client: IrcClient, value: string): void {
 	}
 
 	syncShared(client);
+	// The read may end presence.ts's shareUnread hold.
+	syncPresence(client);
 }

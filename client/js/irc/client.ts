@@ -72,6 +72,7 @@ import {abortHistory, retryLostHistory} from "./history";
 import {globalUntil, MUTE_KEY, MUTE_READ_DELAY_MS, type PendingMute, releaseMute} from "./pushMute";
 import {MODE_KEY, PRESENCE_KEY, syncShared, type Stamped} from "./presenceShare";
 import {getMuteMemory, setMuteMemory, type MuteMemory} from "./muteMemory";
+import {STAMP_EVERY_MS, lastInSync, mayHaveMissed, setInSync} from "./presenceSync";
 import {getUserAway} from "./userAwayStore";
 import {
 	cancelCatchup,
@@ -284,6 +285,16 @@ export class IrcClient {
 	 * the login read.
 	 */
 	metadataSubscribed = false;
+	/**
+	 * That subscription went out before `CAP END`, so the server sends the
+	 * account's subscribed keys at registration (handlers/metadata.ts
+	 * metadataBatch) and presence.ts holds this connection away until then.
+	 */
+	metadataBeforeConnect = false;
+	/** The last line received while in sync with the shared state (irc/presenceSync.ts). */
+	private syncLineAt: number | null = null;
+	/** When {@link syncLineAt} was last written down. */
+	private syncStampedAt = 0;
 	/** The global do-not-disturb, fed by client/js/dnd.ts. */
 	globalDnd: {active: boolean; until: number | null} = {active: false, until: null};
 	/** The account's push mute list as last read or written (irc/pushMute.ts). */
@@ -866,6 +877,7 @@ export class IrcClient {
 				this.onOpen();
 				break;
 			case "line":
+				this.noteSyncLine();
 				this.handleLine(ev.line);
 				break;
 			case "close":
@@ -1101,6 +1113,11 @@ export class IrcClient {
 				(caps.hasCapability("draft/metadata-2") || caps.isRequesting("draft/metadata-2"))
 			) {
 				this.metadataSubscribed = true;
+				this.metadataBeforeConnect = true;
+				this.presence.syncStale = mayHaveMissed(
+					Math.max(this.syncLineAt ?? -Infinity, lastInSync(this.uuid) ?? -Infinity),
+					Date.now()
+				);
 				lines.push(`METADATA * SUB ${MUTE_KEY} ${PRESENCE_KEY} ${MODE_KEY}`);
 			}
 
@@ -1224,6 +1241,11 @@ export class IrcClient {
 		this.connected = false;
 		this.welcomed = false;
 		this.clearMuteRead();
+
+		if (this.syncLineAt !== null) {
+			setInSync(this.uuid, this.syncLineAt);
+		}
+
 		// Unknown until read again: the snapshot below stops counting it.
 		this.muteKnown = false;
 		this.presenceKnown = false;
@@ -1231,6 +1253,7 @@ export class IrcClient {
 		this.globalKnown = false;
 		this.globalServer = null;
 		this.metadataSubscribed = false;
+		this.metadataBeforeConnect = false;
 		this.mutePending.length = 0;
 		presenceClosed(this);
 		// The wait before the transport's retry, for the UI to count down;
@@ -2148,6 +2171,27 @@ export class IrcClient {
 		}, MUTE_READ_DELAY_MS);
 		// Never what keeps a process (mocha) alive.
 		(this.muteReadTimer as {unref?: () => void}).unref?.();
+	}
+
+	/**
+	 * A line in on a connection in sync with the shared state (subscribed,
+	 * and read by the burst or the GET): this device has heard every change
+	 * up to now. Written down every STAMP_EVERY_MS (irc/presenceSync.ts).
+	 */
+	private noteSyncLine(): void {
+		const read = this.presence.burstRead || (this.presenceKnown && this.globalKnown);
+
+		if (!this.metadataSubscribed || !read) {
+			return;
+		}
+
+		const now = Date.now();
+		this.syncLineAt = now;
+
+		if (now - this.syncStampedAt >= STAMP_EVERY_MS) {
+			this.syncStampedAt = now;
+			setInSync(this.uuid, now);
+		}
 	}
 
 	private clearMuteRead(): void {

@@ -197,10 +197,36 @@ by minutes can lose a change made just after another device's. Accepted.
 - A connection that closes forgets the server's values and that it read
   them: the next login reads again.
 
-A device that missed a change while it was off still declares its old state
-during the next registration (`registrationAwayLine`, before `CAP END`); the
-registration burst brings the newer one a moment later, and it is adopted
-then. Accepted.
+**Away until read.** A device that missed a change while it was off (the
+global Away set on another device) used to declare its old state during the
+next registration, so a present-looking device showed the account back to
+everyone (`AWAY ` then `AWAY :*`, found live 2026-10-19) until the burst
+brought the newer state a moment later. Now a connection holds itself away
+until the read — `AWAY *` before `CAP END` and again at registration
+(`presence.ts` `shareUnread`, part of `wantsStar`) — when all of these hold:
+
+- it subscribed before `CAP END` (`before-connect`, so the burst follows
+  at registration) and speaks `draft/pre-away`;
+- this device **may have missed a change** on this network: it was never in
+  sync, or not for longer than `SYNC_WINDOW_MS` (120 s). "In sync" is dated
+  by the last line received on a connection that had read the shared state
+  (`irc/presenceSync.ts`, `thelounge.state.presenceSync`, uuid → ms, written
+  every 15 s and at the close, forgotten with the network, never in the
+  backup) — the last line in, not the close, because a socket the OS killed
+  in the background reports its close only when the page wakes. A reload or
+  a quick reconnect is inside the window and declares its own state as
+  before, so a present device's reload is no away blip; a change another
+  device makes inside the window still shows at this one's login (accepted).
+
+The burst (`handlers/metadata.ts` `metadataBatch`, `BATCH +ref metadata <own nick>`) ends the hold: what it carries is adopted through § 4, so a
+device meant to be present says `AWAY` once, right after it, and one meant
+to be away (the global Away, another device's DND) says nothing more. A key
+the burst does **not** carry is not read as unset — a burst can come from a
+stale copy (§ 9; measured: one without `draft/webpush/mute` while DND was
+on), and reading it as gone cleared DND — so writing and an entry gone
+still wait for the 10 s GET. The hold never outlasts `MUTE_READ_FALLBACK_MS`
+(a read refused or lost). Without `before-connect` there is no burst and no
+hold: the old state is declared and corrected at the 10 s read, as before.
 
 ## 6. Where it is kept on the device
 
@@ -261,7 +287,16 @@ then. Accepted.
   `FAIL METADATA` writing nothing, the login read's lines, and the
   subscription: before `CAP END` with `before-connect` after a SASL login
   (then the read only GETs), with the read without it, again after a
-  reconnect.
+  reconnect; away until read — a device never in sync declares `AWAY *`
+  at login and says `AWAY` once the empty burst is read, a burst carrying
+  the global Away (or another device's DND) sends nothing more, a burst
+  without a key reads nothing into it, Online is held too, the fallback
+  ends a hold no read answers, no `draft/metadata-2` means no hold, a quick
+  reconnect and a reload inside the window hold nothing, and a connection
+  silent past the window (however late its close) or a reload after it
+  holds. Browser check: `tools/scenarios/presence-connect-away.mjs` (an
+  observer with away-notify sees no AWAY line while A reloads, closes and
+  reopens and a new device B logs in and reloads, all under global Away).
 - **`test/irc/presence.ts`**: the effective mode — a network on Same as
   global follows each global mode (Online present even unattended, Auto by
   attention, Away `AWAY *`), a network with its own mode ignores the global

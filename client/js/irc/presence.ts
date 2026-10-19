@@ -79,6 +79,18 @@ export interface PresenceState {
 	resumeUnsure: boolean;
 	/** The mute read did not land in time: go on as if no other device were in DND. */
 	muteReadTimedOut: boolean;
+	/**
+	 * This device may have missed a change to the shared state since it was
+	 * last in sync on this network (irc/presenceSync.ts), judged as the
+	 * connection subscribes: only then does {@link shareUnread} hold it away.
+	 */
+	syncStale: boolean;
+	/** The registration burst closed (handlers/metadata.ts): the hold is over. */
+	burstRead: boolean;
+	/** The shared state's read did not land in time: {@link shareUnread} gives up. */
+	shareReadTimedOut: boolean;
+	/** Arms {@link shareReadTimedOut}. */
+	shareTimer: ReturnType<typeof setTimeout> | null;
 	/** Arms {@link muteReadTimedOut}. */
 	resumeTimer: ReturnType<typeof setTimeout> | null;
 	/**
@@ -100,6 +112,10 @@ export function initialPresence(): PresenceState {
 		starSent: false,
 		resumeUnsure: false,
 		muteReadTimedOut: false,
+		syncStale: false,
+		burstRead: false,
+		shareReadTimedOut: false,
+		shareTimer: null,
 		resumeTimer: null,
 		quietReplies: 0,
 		lastReported: "",
@@ -136,12 +152,48 @@ function awayLine(client: IrcClient): string {
 		: trailingLine("AWAY", [AWAY_PLAIN]);
 }
 
+/**
+ * What the account shares across devices is still to be read on this
+ * connection — the mode, the global mode (irc/presenceShare.ts) and the
+ * push mute's do not disturb (irc/pushMute.ts) — on a connection that
+ * subscribed to them before `CAP END` (so the server sends them at
+ * registration), speaks `AWAY *`, and belongs to a device that may have
+ * missed a change (out of sync for longer than a reload,
+ * irc/presenceSync.ts). Until then the
+ * device's own state may be stale — the global Away set on another device
+ * while this one was off — and declaring it present showed the account
+ * back to everyone for the moments before the read (measured live). So it
+ * says away until then, and back once the read says so: at the
+ * registration burst (handlers/metadata.ts metadataBatch), else at the
+ * 10 s read, never past its fallback. A reload or a quick reconnect holds
+ * nothing, so a present device's reload is no away blip.
+ */
+export function shareUnread(client: IrcClient): boolean {
+	const p = client.presence;
+
+	return (
+		client.metadataBeforeConnect &&
+		p.syncStale &&
+		!p.burstRead &&
+		!(client.presenceKnown && client.globalKnown && client.muteKnown) &&
+		!p.shareReadTimedOut &&
+		speaksPreAway(client)
+	);
+}
+
+/** The registration burst was read (handlers/metadata.ts): the hold is over. */
+export function sharedBurstRead(client: IrcClient): void {
+	client.presence.burstRead = true;
+	syncPresence(client);
+}
+
 /** Whether this connection should be away (ignoring `/away`): `AWAY *`, or `AWAY :Away`. */
 export function wantsStar(client: IrcClient): boolean {
 	const mode = client.effectiveMode;
 
 	return (
 		effectiveDnd(client) ||
+		shareUnread(client) ||
 		mode === "away" ||
 		(mode === "auto" && !client.presence.attended && speaksPreAway(client))
 	);
@@ -276,7 +328,11 @@ export function presenceClosed(client: IrcClient): void {
 	client.presence.starSent = false;
 	client.presence.resumeUnsure = false;
 	client.presence.muteReadTimedOut = false;
+	client.presence.shareReadTimedOut = false;
+	client.presence.syncStale = false;
+	client.presence.burstRead = false;
 	clearResumeTimer(client);
+	clearShareTimer(client);
 	client.presence.quietReplies = 0;
 	reportPresence(client);
 }
@@ -344,6 +400,7 @@ export function presenceRegistered(client: IrcClient): void {
 	}
 
 	armResumeCheck(client);
+	armShareFallback(client);
 	syncPresence(client);
 }
 
@@ -353,6 +410,39 @@ export function presenceRegistered(client: IrcClient): void {
  * limit, a lost reply); the read itself goes out at MUTE_READ_DELAY_MS.
  */
 export const MUTE_READ_FALLBACK_MS = MUTE_READ_DELAY_MS + 10_000;
+
+function clearShareTimer(client: IrcClient): void {
+	const p = client.presence;
+
+	if (p.shareTimer !== null) {
+		clearTimeout(p.shareTimer);
+		p.shareTimer = null;
+	}
+}
+
+/**
+ * {@link shareUnread}'s hold lasts until the read, and no longer than
+ * {@link MUTE_READ_FALLBACK_MS}: a read refused or lost must not leave the
+ * account away for the whole connection.
+ */
+function armShareFallback(client: IrcClient): void {
+	const p = client.presence;
+	clearShareTimer(client);
+	p.shareReadTimedOut = false;
+
+	if (!shareUnread(client)) {
+		return;
+	}
+
+	const timer = setTimeout(() => {
+		p.shareTimer = null;
+		p.shareReadTimedOut = true;
+		syncPresence(client);
+	}, MUTE_READ_FALLBACK_MS);
+	// Never what keeps a process (mocha) alive.
+	(timer as {unref?: () => void}).unref?.();
+	p.shareTimer = timer;
+}
 
 function clearResumeTimer(client: IrcClient): void {
 	const p = client.presence;

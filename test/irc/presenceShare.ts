@@ -11,6 +11,28 @@ import {
 	parseStamped,
 } from "../../client/js/irc/presenceShare";
 import {MUTE_READ_DELAY_MS} from "../../client/js/irc/pushMute";
+import {MUTE_READ_FALLBACK_MS} from "../../client/js/irc/presence";
+import {
+	SYNC_WINDOW_MS,
+	useStorageBackend as useSyncBackend,
+} from "../../client/js/irc/presenceSync";
+import type {StorageBackend} from "../../client/js/irc/saved-networks";
+
+class MemoryBackend implements StorageBackend {
+	data = new Map<string, string>();
+
+	get(key: string): string | null {
+		return this.data.get(key) ?? null;
+	}
+
+	set(key: string, value: string): void {
+		this.data.set(key, value);
+	}
+
+	remove(key: string): void {
+		this.data.delete(key);
+	}
+}
 
 const CAPS = "server-time message-tags batch labeled-response draft/metadata-2 draft/pre-away";
 const LOGIN = ":irc.test 900 alice alice!a@h alice :You are now logged in as alice";
@@ -440,5 +462,175 @@ describe("subscribing to the shared keys (client.ts)", function () {
 		welcome(h);
 		h.transport.closed();
 		expect(h.client.metadataSubscribed).to.equal(false);
+	});
+});
+
+describe("away until the shared state is read (presence.ts shareUnread)", function () {
+	// A device that missed a change (the global Away set on another device)
+	// declared its own stale state at login and showed the account back
+	// until the registration burst brought the change (measured live). Only
+	// a device that may have missed one holds: a reload or a quick reconnect
+	// of a connection that was in sync says nothing at all.
+	let clock: sinon.SinonFakeTimers;
+	let backend: MemoryBackend;
+
+	beforeEach(function () {
+		clock = sinon.useFakeTimers({now: T0, toFake: ["setTimeout", "clearTimeout", "Date"]});
+		backend = new MemoryBackend();
+		useSyncBackend(backend);
+	});
+
+	afterEach(function () {
+		clock.restore();
+		useSyncBackend(null);
+	});
+
+	const NEF =
+		"server-time message-tags batch sasl=PLAIN draft/pre-away draft/metadata-2=before-connect";
+
+	function login(
+		caps = NEF,
+		h = setup({join: "", sasl: "plain", saslAccount: "alice", saslPassword: "s3cret"})
+	): Harness {
+		h.client.connect();
+		h.transport.open();
+		h.transport.line(`:irc.test CAP * LS :${caps}`);
+		const req = h.transport.sent.filter((l) => l.startsWith("CAP REQ :")).pop() as string;
+		h.transport.line(`:irc.test CAP alice ACK :${req.slice("CAP REQ :".length)}`);
+		h.transport.lines(
+			"AUTHENTICATE +",
+			":irc.test 900 alice alice!a@h alice :You are now logged in as alice",
+			":irc.test 903 alice :SASL authentication successful"
+		);
+		return h;
+	}
+
+	const welcome = (h: Harness) =>
+		h.transport.lines(
+			":irc.test 001 alice :Welcome",
+			":irc.test 422 alice :MOTD File is missing"
+		);
+	const burst = (h: Harness, ...values: string[]) =>
+		h.transport.lines(
+			":irc.test BATCH +m1 metadata alice",
+			...values.map((v) => `@batch=m1 :irc.test METADATA alice ${v}`),
+			":irc.test BATCH -m1"
+		);
+	const aways = (lines: string[]) => lines.filter((l) => l.startsWith("AWAY"));
+	/** The same network after a reload: a new client with the old one's uuid. */
+	const reloaded = (h: Harness) =>
+		login(
+			NEF,
+			setup({
+				join: "",
+				sasl: "plain",
+				saslAccount: "alice",
+				saslPassword: "s3cret",
+				uuid: h.client.uuid,
+			})
+		);
+
+	/** A connection that read the shared state, then went quiet for `quietMs` and closed. */
+	function syncedThenClosed(quietMs: number): Harness {
+		const h = login();
+		welcome(h);
+		burst(h);
+		clock.tick(MUTE_READ_DELAY_MS);
+		h.transport.lines(
+			`:irc.test 766 alice alice draft/webpush/mute :key not set`,
+			`:irc.test 766 alice alice ${PRESENCE_KEY} :key not set`,
+			`:irc.test 766 alice alice ${MODE_KEY} :key not set`
+		);
+		clock.tick(quietMs);
+		h.transport.closed();
+		h.sent();
+		return h;
+	}
+
+	it("a device never in sync declares away at login, and says back once the burst is read", function () {
+		const h = login();
+		expect(aways(h.sent()), "declared before CAP END").to.deep.equal(["AWAY *"]);
+		welcome(h);
+		expect(aways(h.sent()), "the repeat after registration").to.deep.equal(["AWAY *"]);
+		burst(h, "draft/persistence/hold private :1");
+		expect(aways(h.sent()), "nothing shared says away: back").to.deep.equal(["AWAY"]);
+	});
+
+	it("the global Away read in the burst keeps it away: nobody sees it come back", function () {
+		const h = login();
+		welcome(h);
+		h.sent();
+		burst(
+			h,
+			`seance/mode private :away ${T0 - 1000}`,
+			`seance/presence private :global ${T0 - 2000}`
+		);
+		expect(aways(h.sent())).to.deep.equal([]);
+		expect(h.client.globalMode).to.deep.equal({value: "away", at: T0 - 1000});
+	});
+
+	it("another device's do not disturb in the burst keeps it away", function () {
+		const h = login();
+		welcome(h);
+		h.sent();
+		burst(h, "draft/webpush/mute private :*:0");
+		expect(aways(h.sent())).to.deep.equal([]);
+		expect(h.client.remoteDnd).to.equal(true);
+	});
+
+	it("a burst without the mute key reads nothing into it (the burst can be stale)", function () {
+		const h = login();
+		welcome(h);
+		burst(h);
+		expect(h.client.muteKnown).to.equal(false);
+		expect(h.client.presenceKnown).to.equal(false);
+		expect(h.client.globalKnown).to.equal(false);
+	});
+
+	it("Online is held away until the read too", function () {
+		const h = login();
+		h.client.setPresenceMode("online");
+		expect(aways(h.sent())).to.include("AWAY *");
+	});
+
+	it("with no burst and no answer, the read's fallback ends the hold", function () {
+		const h = login();
+		welcome(h);
+		h.sent();
+		clock.tick(MUTE_READ_FALLBACK_MS);
+		expect(aways(h.sent())).to.deep.equal(["AWAY"]);
+	});
+
+	it("a login without draft/metadata-2 shares nothing and declares nothing", function () {
+		const h = login("server-time message-tags batch sasl=PLAIN draft/pre-away");
+		expect(aways(h.sent())).to.deep.equal([]);
+	});
+
+	it("a quick reconnect of a connection in sync declares nothing", function () {
+		const h = syncedThenClosed(1000);
+		login(NEF, h);
+		expect(aways(h.sent())).to.deep.equal([]);
+		welcome(h);
+		burst(h);
+		expect(aways(h.sent())).to.deep.equal([]);
+	});
+
+	it("a reload in the window declares nothing: the time is kept on the device", function () {
+		const h = reloaded(syncedThenClosed(1000));
+		expect(aways(h.sent())).to.deep.equal([]);
+	});
+
+	it("a connection silent for longer than the window holds, however late its close came", function () {
+		// A socket the OS killed in the background reports its close only
+		// when the page wakes: the last line in, not the close, dates it.
+		const h = reloaded(syncedThenClosed(SYNC_WINDOW_MS + 1000));
+		expect(aways(h.sent())).to.deep.equal(["AWAY *"]);
+	});
+
+	it("a reload after the window holds", function () {
+		const old = syncedThenClosed(1000);
+		clock.tick(SYNC_WINDOW_MS);
+		const h = reloaded(old);
+		expect(aways(h.sent())).to.deep.equal(["AWAY *"]);
 	});
 });

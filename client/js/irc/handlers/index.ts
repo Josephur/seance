@@ -35,7 +35,7 @@ import names from "./names";
 import nick from "./nick";
 import numerics, {numericError} from "./numerics";
 import part from "./part";
-import metadata from "./metadata";
+import metadata, {metadataBatch} from "./metadata";
 import persistence from "./persistence";
 import webpush from "./webpush";
 import privmsg from "./privmsg";
@@ -93,6 +93,8 @@ registerBatchHandler("draft/persistence", persistenceBatch);
 registerBatchHandler(BOUNCER_REPLAY_BATCH, bouncerReplayBatch);
 // Ours resolve their request (../request.ts); anyone else's are unwrapped.
 registerBatchHandler("labeled-response", labeledBatch);
+// The registration burst ends presence.ts's wait for the shared presence.
+registerBatchHandler("metadata", metadataBatch);
 
 for (const mod of modules) {
 	for (const [command, handler] of Object.entries(mod)) {
