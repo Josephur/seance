@@ -17,6 +17,8 @@ import {registerBusHandlers} from "../../client/js/irc/bus";
 import {dispatchInput} from "../../client/js/irc/commands";
 import {MARKREAD_DEBOUNCE_MS} from "../../client/js/irc/handlers/markread";
 import {AWAY_STAR} from "../../client/js/irc/presence";
+import {MessageType} from "../../shared/types/msg";
+import {effectiveMode, type GlobalMode, type NetworkMode} from "../../client/js/helpers/dnd";
 import type {Transport} from "../../client/js/irc/types";
 import type {TransportEvent, TransportState} from "../../client/js/irc/transport";
 
@@ -75,9 +77,11 @@ interface Harness {
 	client: IrcClient;
 	transport: FakeTransport;
 	sent(): string[];
+	dispatch: sinon.SinonSpy;
 }
 
-function connect(opts: {attended?: boolean} = {}): Harness {
+/** `preAway` (default on): the server offers `draft/pre-away`, as nefarious2 does. */
+function connect(opts: {attended?: boolean; preAway?: boolean} = {}): Harness {
 	const transport = new FakeTransport();
 	const dispatch = sinon.spy();
 	const client = new IrcClient({
@@ -103,7 +107,7 @@ function connect(opts: {attended?: boolean} = {}): Harness {
 
 	client.connect();
 	transport.open();
-	transport.line(`:irc.test CAP * LS :${CAPS}`);
+	transport.line(`:irc.test CAP * LS :${CAPS}${opts.preAway === false ? "" : " draft/pre-away"}`);
 	const req = transport.sent.find((l) => l.startsWith("CAP REQ :"));
 	expect(req, "CAP REQ sent").to.be.a("string");
 	transport.line(`:irc.test CAP alice ACK :${(req as string).slice("CAP REQ :".length)}`);
@@ -124,6 +128,7 @@ function connect(opts: {attended?: boolean} = {}): Harness {
 	return {
 		client,
 		transport,
+		dispatch,
 		sent() {
 			const result = transport.sent.slice(mark);
 			mark = transport.sent.length;
@@ -200,9 +205,11 @@ describe("attention and AWAY * (presence.ts)", function () {
 		expect(h.sent(), "automatic again after /back").to.deep.equal([`AWAY ${AWAY_STAR}`]);
 	});
 
-	it("a page hidden while it connects says AWAY * once registered", function () {
+	it("a page hidden while it connects declares AWAY * and says it once more registered", function () {
+		// Before CAP END (draft/pre-away), then the repeat after registration
+		// (nefarious2 resets the declared state, presence.ts presenceRegistered).
 		const h = connect({attended: false});
-		expect(h.transport.sent.filter((l) => l === `AWAY ${AWAY_STAR}`)).to.have.length(1);
+		expect(h.transport.sent.filter((l) => l === `AWAY ${AWAY_STAR}`)).to.have.length(2);
 		h.client.setAttended(true);
 		expect(h.sent()).to.deep.equal(["AWAY"]);
 	});
@@ -265,9 +272,293 @@ describe("attention and AWAY * (presence.ts)", function () {
 		const before = query.shared.totalMessages;
 		h.transport.line(":bob!bob@host AWAY :*");
 		const chan = h.client.findChannel("#seance")!;
-		expect(chan.findUser("bob")?.away, "the star is not a reason to display").to.equal("");
+		// The marker itself: away with no reason, which is not present ("").
+		expect(chan.findUser("bob")?.away, "away, the star kept as its marker").to.equal("*");
 		expect(query.shared.totalMessages, "a star is not news in the query").to.equal(before);
 		h.transport.line(":bob!bob@host AWAY :lunch");
 		expect(query.shared.totalMessages, "a real away is").to.equal(before + 1);
+	});
+});
+
+describe("presence modes and do not disturb (presence.ts)", function () {
+	let clock: sinon.SinonFakeTimers;
+
+	beforeEach(function () {
+		clock = sinon.useFakeTimers({
+			now: new Date("2026-08-25T12:10:00.000Z"),
+			toFake: ["setTimeout", "clearTimeout", "Date"],
+		});
+	});
+
+	afterEach(function () {
+		clock.restore();
+		socket.removeAllListeners();
+	});
+
+	// Every mode × attention × the page's DND, on the wire: the last AWAY
+	// line says what the server shows. (A visible but unfocused page is
+	// unattended too: foreground.ts calls setAttended(false) after
+	// UNFOCUSED_AWAY_MS, the same call as a hidden page.)
+	for (const mode of ["online", "auto", "away", "dnd"] as const) {
+		for (const attended of [true, false]) {
+			for (const dnd of [false, true]) {
+				const star =
+					dnd || mode === "dnd" || mode === "away" || (mode === "auto" && !attended);
+				it(`${mode}, ${attended ? "attended" : "unattended"}, page DND ${
+					dnd ? "on" : "off"
+				}: ${star ? "AWAY *" : "present"}`, function () {
+					const h = connect();
+					h.client.setPresenceMode(mode);
+					h.client.setAttended(attended);
+					h.client.setGlobalDnd(dnd, null);
+					const aways = h.transport.sent.filter(
+						(l) => l === "AWAY" || l === `AWAY ${AWAY_STAR}`
+					);
+					const last = aways[aways.length - 1];
+					expect(last ?? "AWAY").to.equal(star ? `AWAY ${AWAY_STAR}` : "AWAY");
+					expect(h.client.presence.starSent).to.equal(star);
+					expect(h.client.presenceSnapshot()).to.deep.equal({
+						mode,
+						effective: mode,
+						dnd: dnd || mode === "dnd",
+						away: star,
+					});
+				});
+			}
+		}
+	}
+
+	it("a network on Same as global follows the global mode; its own mode ignores it", function () {
+		const cases: [NetworkMode, GlobalMode, boolean, string][] = [
+			["global", "online", false, "present"],
+			["global", "auto", true, "present"],
+			["global", "auto", false, "AWAY *"],
+			["global", "away", true, "AWAY *"],
+			["online", "away", true, "present"],
+			["away", "online", true, "AWAY *"],
+		];
+
+		for (const [own, global, attended, want] of cases) {
+			const h = connect();
+			h.client.setGlobalMode({value: global, at: 1});
+			h.client.setPresenceMode(own);
+			h.client.setAttended(attended);
+			const aways = h.transport.sent.filter((l) => l === "AWAY" || l === "AWAY *");
+			const label = `${own} under global ${global}, ${attended ? "attended" : "unattended"}`;
+			expect(aways.at(-1) ?? "AWAY", label).to.equal(want === "present" ? "AWAY" : "AWAY *");
+			expect(h.client.presenceSnapshot().effective, label).to.equal(
+				effectiveMode(own, global)
+			);
+		}
+	});
+
+	describe("without draft/pre-away (a standard server, docs/projects/do-not-disturb.md)", function () {
+		// There `AWAY *` is a literal away message "*", and every tab switch
+		// on Auto would be broadcast to the channel as away and back.
+		const aways = (h: Harness) => h.sent().filter((l) => l.startsWith("AWAY"));
+
+		it("Auto sends nothing when the page goes unattended or comes back", function () {
+			const h = connect({preAway: false});
+			h.sent();
+			h.client.setAttended(false);
+			expect(aways(h)).to.deep.equal([]);
+			h.client.setAttended(true);
+			expect(aways(h)).to.deep.equal([]);
+			expect(h.client.presenceSnapshot().away).to.equal(false);
+		});
+
+		it("Away and do not disturb send a real away message, and back sends AWAY", function () {
+			const h = connect({preAway: false});
+			h.sent();
+			h.client.setPresenceMode("away");
+			expect(aways(h)).to.deep.equal(["AWAY :Away"]);
+			h.client.setPresenceMode("online");
+			expect(aways(h)).to.deep.equal(["AWAY"]);
+			h.client.setGlobalDnd(true, null);
+			expect(aways(h)).to.deep.equal(["AWAY :Away"]);
+			h.client.setGlobalDnd(false, null);
+			// The global mode reaches a network following it.
+			h.client.setPresenceMode("global");
+			h.client.setGlobalMode({value: "away", at: 1});
+			expect(aways(h)).to.deep.equal(["AWAY", "AWAY :Away"]);
+		});
+
+		it("/back under do not disturb says the real message too", function () {
+			const h = connect({preAway: false});
+			h.client.setGlobalDnd(true, null);
+			dispatchInput(h.client, h.client.lobby, "/away lunch");
+			h.sent();
+			dispatchInput(h.client, h.client.lobby, "/back");
+			expect(aways(h)).to.deep.equal(["AWAY :Away"]);
+		});
+
+		it("with draft/pre-away an unattended Auto page still says AWAY *", function () {
+			const h = connect();
+			h.sent();
+			h.client.setAttended(false);
+			expect(aways(h)).to.deep.equal(["AWAY *"]);
+		});
+	});
+
+	it("online never sends AWAY *, even hidden", function () {
+		const h = connect();
+		h.client.setPresenceMode("online");
+		h.client.setAttended(false);
+		expect(h.sent()).to.deep.equal([]);
+	});
+
+	it("away sends AWAY * at once and keeps it when attention returns", function () {
+		const h = connect();
+		h.client.setPresenceMode("away");
+		expect(h.sent()).to.deep.equal([`AWAY ${AWAY_STAR}`]);
+		h.client.setAttended(false);
+		h.client.setAttended(true);
+		expect(h.sent()).to.deep.equal([]);
+	});
+
+	it("a mode change on a hidden page takes effect straight away", function () {
+		const h = connect();
+		h.client.setPresenceMode("online");
+		h.client.setAttended(false);
+		h.sent();
+		h.client.setPresenceMode("auto");
+		expect(h.sent()).to.deep.equal([`AWAY ${AWAY_STAR}`]);
+		h.client.setPresenceMode("online");
+		expect(h.sent()).to.deep.equal(["AWAY"]);
+	});
+
+	it("global DND makes even an online network away", function () {
+		const h = connect();
+		h.client.setPresenceMode("online");
+		h.client.setGlobalDnd(true, null);
+		expect(h.sent()).to.deep.equal([`AWAY ${AWAY_STAR}`]);
+		h.client.setGlobalDnd(false, null);
+		expect(h.sent()).to.deep.equal(["AWAY"]);
+	});
+
+	it("/away wins over every mode", function () {
+		const h = connect();
+		dispatchInput(h.client, h.client.lobby, "/away lunch");
+		h.sent();
+		h.client.setPresenceMode("away");
+		h.client.setGlobalDnd(true, null);
+		expect(h.sent()).to.deep.equal([]);
+	});
+
+	it("reports its presence to the store", function () {
+		const h = connect();
+		h.dispatch.resetHistory();
+		h.client.setPresenceMode("dnd");
+		const call = h.dispatch.getCalls().find((c) => c.args[0] === "network:presence");
+		expect(call?.args[1]).to.deep.equal({
+			network: "presence-net",
+			presence: {mode: "dnd", effective: "dnd", dnd: true, away: true},
+		});
+		expect(h.client.network.presence).to.deep.equal({
+			mode: "dnd",
+			effective: "dnd",
+			dnd: true,
+			away: true,
+		});
+	});
+
+	it("sends nothing before registration, then the away once welcomed (no pre-away: a real message)", function () {
+		const transport = new FakeTransport();
+		const client = new IrcClient({
+			bus: {dispatch: sinon.spy()},
+			host: "irc.test",
+			port: 8443,
+			tls: true,
+			nick: "carol",
+			join: "",
+			sasl: "",
+			saslAccount: "",
+			saslPassword: "",
+			uuid: "presence-pre",
+			ids: new IdAllocator(),
+			transportFactory: () => transport,
+			highlights: () => ({keywords: [], exceptions: []}),
+		});
+		client.connect();
+		transport.open();
+		client.setPresenceMode("away");
+		client.setGlobalDnd(true, null);
+		expect(transport.sent.filter((l) => l.startsWith("AWAY"))).to.deep.equal([]);
+		transport.line(`:irc.test CAP * LS :${CAPS}`);
+		const req = transport.sent.find((l) => l.startsWith("CAP REQ :")) as string;
+		transport.line(`:irc.test CAP carol ACK :${req.slice("CAP REQ :".length)}`);
+		transport.lines(
+			":irc.test 001 carol :Welcome to the SeanceDev IRC Network, carol",
+			":irc.test 005 carol CHANTYPES=#& PREFIX=(ov)@+ CASEMAPPING=rfc1459 :are supported by this server",
+			":irc.test 422 carol :MOTD File is missing"
+		);
+		expect(transport.sent.filter((l) => l.startsWith("AWAY"))).to.deep.equal(["AWAY :Away"]);
+	});
+
+	it("an unchanged snapshot dispatches no second network:presence", function () {
+		const h = connect();
+		h.client.setPresenceMode("dnd");
+		h.dispatch.resetHistory();
+		h.client.setAttended(false);
+		h.client.setGlobalDnd(true, null);
+		expect(
+			h.dispatch.getCalls().filter((c) => c.args[0] === "network:presence")
+		).to.have.length(0);
+	});
+
+	it("a closed connection is no longer reported away", function () {
+		const h = connect();
+		h.client.setPresenceMode("away");
+		h.dispatch.resetHistory();
+		h.transport.state = "closed";
+		(h.client as unknown as {onClose(c: number, r: string, w: boolean): void}).onClose(
+			1006,
+			"",
+			true
+		);
+		expect(h.client.presence.starSent).to.equal(false);
+		const call = h.dispatch.getCalls().find((c) => c.args[0] === "network:presence");
+		expect(call?.args[1].presence.away).to.equal(false);
+	});
+
+	describe("/back", function () {
+		it("in dnd mode sends only AWAY *, keeps the star, and shows the 306", function () {
+			const h = connect();
+			h.client.setPresenceMode("dnd");
+			h.transport.line(":irc.test 306 alice :You have been marked as being away"); // ours, quiet
+			dispatchInput(h.client, h.client.lobby, "/away lunch");
+			h.sent();
+			dispatchInput(h.client, h.client.lobby, "/back");
+			expect(h.sent()).to.deep.equal([`AWAY ${AWAY_STAR}`]);
+			expect(h.client.presence.starSent).to.equal(true);
+			h.dispatch.resetHistory();
+			h.transport.line(":irc.test 306 alice :You have been marked as being away");
+			const shown = h.dispatch
+				.getCalls()
+				.filter((c) => c.args[0] === "msg")
+				.map((c) => c.args[1] as {chan: number; msg: {type: string}});
+			expect(shown.map((m) => [m.chan, m.msg.type])).to.deep.equal([
+				[h.client.lobby.id, MessageType.AWAY],
+			]);
+		});
+
+		it("on an attended auto page sends only AWAY", function () {
+			const h = connect();
+			dispatchInput(h.client, h.client.lobby, "/away lunch");
+			h.sent();
+			dispatchInput(h.client, h.client.lobby, "/back");
+			expect(h.sent()).to.deep.equal(["AWAY"]);
+			expect(h.client.presence.starSent).to.equal(false);
+		});
+
+		it("on a hidden auto page sends only AWAY *", function () {
+			const h = connect();
+			h.client.setAttended(false);
+			dispatchInput(h.client, h.client.lobby, "/away x");
+			h.sent();
+			dispatchInput(h.client, h.client.lobby, "/back");
+			expect(h.sent()).to.deep.equal([`AWAY ${AWAY_STAR}`]);
+			expect(h.client.presence.starSent).to.equal(true);
+		});
 	});
 });

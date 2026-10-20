@@ -168,6 +168,13 @@ function notifyMessage(
 		return;
 	}
 
+	// Do not disturb (global, this network's mode, or another device's):
+	// nothing pops and nothing plays; unread counts and mentions are untouched.
+	// This also covers the push worker's page-notification path below.
+	if (network.presence?.dnd) {
+		return;
+	}
+
 	if (
 		msg.highlight ||
 		(store.state.settings.notifyAllMessages && msg.type === MessageType.MESSAGE)
