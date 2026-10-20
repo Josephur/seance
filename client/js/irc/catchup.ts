@@ -133,12 +133,18 @@ export function prioritiseCatchup(client: IrcClient, chan: Channel): void {
 		return;
 	}
 
-	const [pending] = state.queue.splice(index, 1);
+	if (state.queue[index].markerOnly) {
+		// Opened with someone looking, the query is read and its own MARKREAD
+		// follows; with nobody looking the open reads nothing (IrcClient.open),
+		// so the server's marker is still wanted, in its turn.
+		if (client.presence.attended) {
+			state.queue.splice(index, 1);
+		}
 
-	if (pending.markerOnly) {
-		return; // opening the query reads it: its own MARKREAD follows
+		return;
 	}
 
+	const [pending] = state.queue.splice(index, 1);
 	state.queue.unshift(pending);
 	serveNow(client, state);
 }

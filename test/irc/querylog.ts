@@ -501,6 +501,33 @@ describe("Query log (irc/querylog.ts)", function () {
 			expect(second.transport.sent).to.include("MARKREAD bob");
 		});
 
+		it("still asks for a query's read marker when it is opened with nobody looking", function () {
+			const caps = "message-tags server-time echo-message draft/read-marker";
+			const first = page(caps);
+			first.transport.line(
+				"@time=2026-09-26T11:00:00.000Z;msgid=p1 :bob!b@h PRIVMSG alice :are you there?"
+			);
+			first.transport.line(
+				"@time=2026-09-26T11:01:00.000Z;msgid=p2 :carol!c@h PRIVMSG alice :hi"
+			);
+			clock.tick(SAVE_DELAY_MS);
+			first.client.queryLog.dispose();
+
+			// bob's marker goes out at once, carol's waits for its slot.
+			const second = page(caps);
+			const carol = second.client.findChannel("carol")!;
+			expect(second.transport.sent).to.include("MARKREAD bob");
+			expect(second.transport.sent).not.to.include("MARKREAD carol");
+
+			// A cold start on a deep link with the page hidden: the open reads nothing.
+			second.client.setAttended(false);
+			second.client.open(carol.id);
+			expect(carol.shared.unread).to.equal(1);
+
+			clock.tick(CATCHUP_INTERVAL_MS * 3);
+			expect(second.transport.sent).to.include("MARKREAD carol");
+		});
+
 		it("keeps a private message read as it arrived read across a reload", function () {
 			const caps = "message-tags server-time echo-message draft/read-marker";
 			const first = page(caps);
