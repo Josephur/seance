@@ -115,21 +115,7 @@ export class Channel {
 	 * server has told us was read, on any of the account's sessions. Messages
 	 * at or before it never count as unread.
 	 */
-	get readMarker(): Date | undefined {
-		return this.marker;
-	}
-
-	set readMarker(time: Date | undefined) {
-		this.marker = time;
-
-		if (time) {
-			this.onReadMarker?.(time);
-		}
-	}
-
-	private marker: Date | undefined = undefined;
-	/** Told when {@link readMarker} moves: a query's is kept with its log (querylog.ts). */
-	onReadMarker: ((time: Date) => void) | null = null;
+	readMarker: Date | undefined = undefined;
 	/** Pending debounced `MARKREAD` send (handlers/markread.ts). */
 	markReadTimer: ReturnType<typeof setTimeout> | null = null;
 	/** A debounced `MARKREAD` came due while the connection was not

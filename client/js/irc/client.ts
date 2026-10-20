@@ -2533,10 +2533,6 @@ export class IrcClient {
 			}
 		}
 
-		if (type === ChanType.QUERY) {
-			channel.onReadMarker = (time) => this.queryLog.setRead(channel.name, time);
-		}
-
 		this.channels.splice(index, 0, channel);
 		return {channel, index};
 	}

@@ -56,6 +56,15 @@ export function parseMarker(param: string | undefined): Date | undefined {
 	return Number.isNaN(time.getTime()) ? undefined : time;
 }
 
+/** `chan` is read up to `time`; a query's read point is kept with its log. */
+function moveReadMarker(client: IrcClient, chan: Channel, time: Date): void {
+	chan.readMarker = time;
+
+	if (chan.type === ChanType.QUERY) {
+		client.queryLog.setRead(chan.name, time);
+	}
+}
+
 /**
  * The account read `chan` up to `time`: move `firstUnread`, recount the
  * counters and tell the UI. No-op when the marker is not newer than the one
@@ -66,7 +75,7 @@ export function applyReadMarker(client: IrcClient, chan: Channel, time: Date): v
 		return;
 	}
 
-	chan.readMarker = time;
+	moveReadMarker(client, chan, time);
 
 	let lastRead: [number, MsgRef] | undefined;
 	let unread = 0;
@@ -129,7 +138,7 @@ export function scheduleMarkRead(client: IrcClient, chan: Channel): void {
 		return;
 	}
 
-	chan.readMarker = newest.time;
+	moveReadMarker(client, chan, newest.time);
 
 	if (chan.markReadTimer !== null) {
 		return; // the pending send picks up the newer marker
