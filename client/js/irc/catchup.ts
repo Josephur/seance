@@ -246,10 +246,10 @@ function step(client: IrcClient, state: CatchupState): void {
 }
 
 function fetchFor(client: IrcClient, chan: Channel, before: MsgRef | undefined): void {
-	// nefarious2 volunteers the marker after JOIN for logged-in accounts, but
-	// not after every JOIN of a held session's restore; ask when we have none.
-	// First, so the answer is in before the history it decides the unread
-	// count of (deliverPrepend): the server replies in order.
+	// nefarious2 volunteers the marker after a logged-in account's JOIN, a
+	// held session's restore included; asking when we still have none is
+	// defensive. First, so the answer is in before the history it decides
+	// the unread count of (deliverPrepend): the server replies in order.
 	if (!chan.readMarker) {
 		fetchReadMarker(client, chan);
 	}
