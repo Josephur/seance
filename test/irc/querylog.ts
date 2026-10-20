@@ -482,6 +482,39 @@ describe("Query log (irc/querylog.ts)", function () {
 			expect(restored.shared.unread).to.equal(0);
 		});
 
+		it("keeps a private message nobody opened unread across a reload", function () {
+			const caps = "message-tags server-time echo-message draft/read-marker";
+			const first = page(caps);
+			first.transport.line(
+				"@time=2026-09-26T11:00:00.000Z;msgid=p1 :bob!b@h PRIVMSG alice :are you there?"
+			);
+			expect(first.client.findChannel("bob")!.shared.unread).to.equal(1);
+			clock.tick(SAVE_DELAY_MS);
+			first.client.queryLog.dispose();
+
+			const second = page(caps);
+			const restored = second.client.findChannel("bob")!;
+			expect(restored.shared.unread, "p1 was never read").to.equal(1);
+
+			// So the server is still asked whether another device read it.
+			clock.tick(CATCHUP_INTERVAL_MS * 3);
+			expect(second.transport.sent).to.include("MARKREAD bob");
+		});
+
+		it("keeps a private message read as it arrived read across a reload", function () {
+			const caps = "message-tags server-time echo-message draft/read-marker";
+			const first = page(caps);
+			first.client.open(first.client.announceChannel("bob", ChanType.QUERY).id);
+			first.transport.line(
+				"@time=2026-09-26T11:00:00.000Z;msgid=p1 :bob!b@h PRIVMSG alice :are you there?"
+			);
+			clock.tick(SAVE_DELAY_MS);
+			first.client.queryLog.dispose();
+
+			const second = page(caps);
+			expect(second.client.findChannel("bob")!.shared.unread).to.equal(0);
+		});
+
 		it("follows an edit and a reaction in a query, and forgets a closed one", function () {
 			const first = page();
 			first.transport.line(

@@ -2578,7 +2578,7 @@ export class IrcClient {
 			const ids = this.historyIds(messages.length);
 			let lastRef: MsgRef | undefined;
 			// Lines this device had not read when the page went away count
-			// again; with no read point kept, nothing does (as before).
+			// again; in a log from before the read point was kept, nothing does.
 			const read = this.queryLog.readUpTo(chan.name);
 			let lastRead = 0;
 			let unread = 0;
@@ -2621,7 +2621,7 @@ export class IrcClient {
 				moreAvailable: false,
 			});
 
-			if (read) {
+			if (read && read.getTime() > 0) {
 				chan.readMarker = read;
 			}
 
@@ -2729,6 +2729,12 @@ export class IrcClient {
 		const ref = chan.remember(msg);
 		chan.newestRef = ref;
 		this.noteCursor(msg);
+
+		if (chan.type === ChanType.QUERY) {
+			// Before the counting below, which may move the read point it keeps.
+			this.queryLog.append(chan.name, msg);
+		}
+
 		const shared = chan.shared;
 		shared.totalMessages++;
 		// Already read on another session (draft/read-marker), e.g. a catch-up.
@@ -2784,10 +2790,6 @@ export class IrcClient {
 			highlight: shared.highlight,
 			...(replay ? {replay: true} : {}),
 		});
-
-		if (chan.type === ChanType.QUERY) {
-			this.queryLog.append(chan.name, msg);
-		}
 
 		return msg;
 	}

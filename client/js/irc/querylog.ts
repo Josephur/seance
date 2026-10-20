@@ -79,7 +79,11 @@ interface LoggedQuery {
 	name: string;
 	/** Epoch ms of the newest line. */
 	touched: number;
-	/** Epoch ms this device last knew the query read up to (its read marker). */
+	/**
+	 * Epoch ms this device last knew the query read up to (its read marker);
+	 * 0 for a query never read here. Absent in a log written before it was
+	 * kept, where nothing is known to be unread.
+	 */
 	read?: number;
 	messages: LoggedMsg[];
 }
@@ -487,7 +491,7 @@ export class QueryLog {
 		let query = this.find(name);
 
 		if (!query) {
-			query = {name, touched: 0, messages: []};
+			query = {name, touched: 0, read: 0, messages: []};
 			this.load().push(query);
 		}
 
