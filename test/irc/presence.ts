@@ -254,7 +254,13 @@ describe("attention and AWAY * (presence.ts)", function () {
 
 		socket.emit("open", chanId);
 		const told = h.dispatch.getCalls().filter((c) => c.args[0] === "markread");
-		expect(told.pop()?.args[1]).to.include({chan: chanId, unread: 0, highlight: 0});
+		// Counters only: the page keeps its new-messages line where it is.
+		expect(told.pop()?.args[1]).to.deep.equal({
+			chan: chanId,
+			firstUnread: 0,
+			unread: 0,
+			highlight: 0,
+		});
 		clock.tick(MARKREAD_DEBOUNCE_MS);
 		expect(h.sent()).to.include("MARKREAD #seance timestamp=2026-08-25T12:01:00.000Z");
 	});

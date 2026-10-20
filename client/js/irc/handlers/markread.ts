@@ -196,12 +196,10 @@ export function countPageUnread(
 export function readNow(client: IrcClient, chan: Channel): void {
 	chan.shared.unread = 0;
 	chan.shared.highlight = 0;
-	client.dispatch("markread", {
-		chan: chan.id,
-		firstUnread: chan.shared.firstUnread,
-		unread: 0,
-		highlight: 0,
-	});
+	// The counters only (`firstUnread: 0`): the page may not have made the
+	// conversation its active one yet (Chat mounts before RoutedChat), and
+	// the new-messages line it shows is its own to keep.
+	client.dispatch("markread", {chan: chan.id, firstUnread: 0, unread: 0, highlight: 0});
 	scheduleMarkRead(client, chan);
 }
 
