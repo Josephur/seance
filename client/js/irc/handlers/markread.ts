@@ -23,7 +23,8 @@
  */
 
 import {ChanType} from "../../../../shared/types/chan";
-import type {Channel, MsgRef} from "../channel";
+import type {SharedMsg} from "../../../../shared/types/msg";
+import {countsAsUnread, type Channel, type MsgRef} from "../channel";
 import type {IrcClient} from "../client";
 import {formatLine} from "../message";
 import type {Handler} from "../types";
@@ -115,6 +116,52 @@ export function applyReadMarker(client: IrcClient, chan: Channel, time: Date): v
 
 	shared.unread = Math.min(shared.unread, unread);
 	shared.highlight = Math.min(shared.highlight, highlight);
+	client.dispatch("markread", {
+		chan: chan.id,
+		firstUnread: shared.firstUnread,
+		unread: shared.unread,
+		highlight: shared.highlight,
+	});
+}
+
+/**
+ * A page of older lines was handed to the UI (`more`, which carries no
+ * counters): what in it is past `marker` and would have counted live is
+ * unread. Flag those refs, add them to the counters and tell the UI with
+ * `markread`, moving `firstUnread` to `lastRead` when there is one.
+ */
+export function countPageUnread(
+	client: IrcClient,
+	chan: Channel,
+	page: Array<[SharedMsg, MsgRef]>,
+	marker: Date,
+	lastRead = 0
+): void {
+	let unread = 0;
+	let highlight = 0;
+
+	for (const [msg, ref] of page) {
+		if (ref.time.getTime() <= marker.getTime() || !countsAsUnread(msg)) {
+			continue;
+		}
+
+		ref.unread = true;
+		unread++;
+
+		if (msg.highlight) {
+			ref.highlight = true;
+			highlight++;
+		}
+	}
+
+	if (unread === 0) {
+		return;
+	}
+
+	const shared = chan.shared;
+	shared.unread += unread;
+	shared.highlight += highlight;
+	shared.firstUnread = lastRead || shared.firstUnread;
 	client.dispatch("markread", {
 		chan: chan.id,
 		firstUnread: shared.firstUnread,

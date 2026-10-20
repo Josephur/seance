@@ -41,10 +41,10 @@
 
 import {ChanType} from "../../../shared/types/chan";
 import type {SharedMsg} from "../../../shared/types/msg";
-import {countsAsUnread, type Channel, type MsgRef} from "./channel";
+import type {Channel, MsgRef} from "./channel";
 import type {IrcClient, ReplayCollection} from "./client";
 import type {BatchHandler} from "./handlers/batch";
-import {scheduleMarkRead} from "./handlers/markread";
+import {countPageUnread, scheduleMarkRead} from "./handlers/markread";
 import {formatLine, IrcMessage} from "./message";
 import {settlePendingLabel} from "./pending";
 import {inBouncerReplay, inServerCatchup} from "./persistence";
@@ -441,27 +441,12 @@ function deliverPrepend(
 	// JOIN) is known by then: what someone else said past it is unread.
 	const marker = chan.readMarker;
 	const looking = chan.id === client.activeChannelId && client.presence.attended;
-	let unread = 0;
-	let highlight = 0;
+	const page: Array<[SharedMsg, MsgRef]> = [];
 
 	messages.forEach((msg, i) => {
 		msg.id = ids[i];
 		lastRef = chan.remember(msg);
-
-		if (
-			marker &&
-			!looking &&
-			countsAsUnread(msg) &&
-			lastRef.time.getTime() > marker.getTime()
-		) {
-			lastRef.unread = true;
-			unread++;
-
-			if (msg.highlight) {
-				lastRef.highlight = true;
-				highlight++;
-			}
-		}
+		page.push([msg, lastRef]);
 
 		// Older by definition, but a LATEST fill can still hold the newest
 		// line we have seen; noteCursor only ever moves forward.
@@ -492,16 +477,8 @@ function deliverPrepend(
 	const totalMessages = chan.shared.totalMessages + (moreAvailable ? 1 : 0);
 	client.dispatch("more", {chan: chan.id, messages, totalMessages, moreAvailable});
 
-	if (unread > 0) {
-		// `more` carries no counters; `markread` is the event that sets them.
-		chan.shared.unread += unread;
-		chan.shared.highlight += highlight;
-		client.dispatch("markread", {
-			chan: chan.id,
-			firstUnread: chan.shared.firstUnread,
-			unread: chan.shared.unread,
-			highlight: chan.shared.highlight,
-		});
+	if (marker && !looking) {
+		countPageUnread(client, chan, page, marker);
 	}
 }
 

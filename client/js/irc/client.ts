@@ -49,6 +49,7 @@ import {
 import {
 	applyReadMarker,
 	cancelMarkRead,
+	countPageUnread,
 	flushDeferredMarkRead,
 	markReadAt,
 	scheduleMarkRead,
@@ -2576,29 +2577,17 @@ export class IrcClient {
 			// Lines this device had not read when the page went away count
 			// again; in a log from before the read point was kept, nothing does.
 			const read = this.queryLog.readUpTo(chan.name);
+			const page: Array<[SharedMsg, MsgRef]> = [];
 			let lastRead = 0;
-			let unread = 0;
-			let highlight = 0;
 
 			messages.forEach((msg, i) => {
 				msg.id = ids[i];
 				const ref = chan.remember(msg);
 				lastRef = ref;
+				page.push([msg, ref]);
 
-				if (!read) {
-					return;
-				}
-
-				if (ref.time.getTime() <= read.getTime()) {
+				if (read && ref.time.getTime() <= read.getTime()) {
 					lastRead = msg.id;
-				} else if (countsAsUnread(msg)) {
-					ref.unread = true;
-					unread++;
-
-					if (msg.highlight) {
-						ref.highlight = true;
-						highlight++;
-					}
 				}
 			});
 
@@ -2621,17 +2610,8 @@ export class IrcClient {
 				chan.readMarker = read;
 			}
 
-			if (unread > 0) {
-				// `more` carries no counters; `markread` is the event that sets them.
-				chan.shared.unread += unread;
-				chan.shared.highlight += highlight;
-				chan.shared.firstUnread = lastRead || chan.shared.firstUnread;
-				this.bus.dispatch("markread", {
-					chan: chan.id,
-					firstUnread: chan.shared.firstUnread,
-					unread: chan.shared.unread,
-					highlight: chan.shared.highlight,
-				});
+			if (read) {
+				countPageUnread(this, chan, page, read, lastRead);
 			}
 		}
 	}
@@ -2737,8 +2717,6 @@ export class IrcClient {
 		const read =
 			chan.readMarker !== undefined && ref.time.getTime() <= chan.readMarker.getTime();
 		const said = SAID_TYPES.has(msg.type ?? MessageType.MESSAGE);
-		// A catch-up line counts as privmsg.ts counts a live one.
-		const counts = replay ? said && !msg.editOf : increasesUnread;
 
 		if (msg.self) {
 			// Something we said is read by definition; our own JOIN/MODE
@@ -2768,7 +2746,8 @@ export class IrcClient {
 				shared.firstUnread = msg.id;
 			}
 
-			if (counts || msg.highlight) {
+			// A catch-up line counts as privmsg.ts counts a live one.
+			if (replay ? countsAsUnread(msg) : increasesUnread || msg.highlight) {
 				shared.unread++;
 				ref.unread = true;
 			}
