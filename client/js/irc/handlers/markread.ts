@@ -172,12 +172,15 @@ export function countPageUnread(
 
 /**
  * The user read `chan` up to its newest message: send a `MARKREAD` after
- * {@link MARKREAD_DEBOUNCE_MS}, carrying whatever is newest by then.
+ * {@link MARKREAD_DEBOUNCE_MS}, carrying whatever is newest by then. The
+ * read point moves whether or not the server keeps markers (or has said
+ * yet that it does): a query's is kept with its log, and a send that comes
+ * due before registration waits for it.
  */
 export function scheduleMarkRead(client: IrcClient, chan: Channel): void {
 	const newest = chan.newestRef;
 
-	if (!newest || !markable(chan) || !markReadEnabled(client)) {
+	if (!newest || !markable(chan)) {
 		return;
 	}
 
