@@ -245,6 +245,20 @@ describe("attention and AWAY * (presence.ts)", function () {
 		]);
 	});
 
+	it("opening a channel someone is looking at tells the page it is read", function () {
+		const h = connect();
+		const chanId = joined(h);
+		clock.tick(MARKREAD_DEBOUNCE_MS);
+		live(h, 1);
+		h.sent();
+
+		socket.emit("open", chanId);
+		const told = h.dispatch.getCalls().filter((c) => c.args[0] === "markread");
+		expect(told.pop()?.args[1]).to.include({chan: chanId, unread: 0, highlight: 0});
+		clock.tick(MARKREAD_DEBOUNCE_MS);
+		expect(h.sent()).to.include("MARKREAD #seance timestamp=2026-08-25T12:01:00.000Z");
+	});
+
 	it("opening a channel nobody is looking at reads nothing until attention returns", function () {
 		const h = connect();
 		const chanId = joined(h);
@@ -255,10 +269,14 @@ describe("attention and AWAY * (presence.ts)", function () {
 		h.client.setAttended(false);
 		h.sent();
 
-		// A hidden page lands on it (a cold start, a deep link): not read yet.
+		// A hidden page lands on it (a cold start, a deep link): not read yet,
+		// and the page is not told otherwise (it shows the IRC layer's count).
+		const told = () => h.dispatch.getCalls().filter((c) => c.args[0] === "markread");
+		const before = told().length;
 		socket.emit("open", chanId);
 		clock.tick(MARKREAD_DEBOUNCE_MS);
 		expect(chan.shared.unread).to.equal(2);
+		expect(told()).to.have.length(before);
 		expect(h.sent().filter((l) => l.startsWith("MARKREAD"))).to.deep.equal([]);
 
 		h.client.setAttended(true);

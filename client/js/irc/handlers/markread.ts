@@ -171,6 +171,22 @@ export function countPageUnread(
 }
 
 /**
+ * Someone is looking at `chan` (opened, or attention returned to it): it is
+ * read. Zero its counters, tell the UI, and mark it on the server.
+ */
+export function readNow(client: IrcClient, chan: Channel): void {
+	chan.shared.unread = 0;
+	chan.shared.highlight = 0;
+	client.dispatch("markread", {
+		chan: chan.id,
+		firstUnread: chan.shared.firstUnread,
+		unread: 0,
+		highlight: 0,
+	});
+	scheduleMarkRead(client, chan);
+}
+
+/**
  * The user read `chan` up to its newest message: send a `MARKREAD` after
  * {@link MARKREAD_DEBOUNCE_MS}, carrying whatever is newest by then. The
  * read point moves whether or not the server keeps markers (or has said

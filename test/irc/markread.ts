@@ -337,12 +337,17 @@ describe("Read markers (handlers/markread.ts)", function () {
 		clock.tick(1);
 		expect(h.sent()).to.deep.equal(["MARKREAD #seance timestamp=2026-08-25T12:02:00.000Z"]);
 
-		// Nothing newer: opening again sends nothing, even after the server echo.
+		// Nothing newer: the server's echo moves nothing, and opening again
+		// sends nothing (each open only tells the page it is read).
+		const told = payloads("markread").length;
 		h.transport.line(":irc.test MARKREAD #seance timestamp=2026-08-25T12:02:00.000Z");
+		expect(payloads("markread")).to.have.length(told);
 		socket.emit("open", chanId);
 		clock.tick(MARKREAD_DEBOUNCE_MS);
 		expect(h.sent()).to.deep.equal([]);
-		expect(payloads("markread")).to.have.length(0);
+		expect(payloads<{unread: number}>("markread").map((p) => p.unread)).to.deep.equal(
+			Array(told + 1).fill(0)
+		);
 	});
 
 	it("marks messages read as they arrive in the open channel, one send per second", function () {

@@ -44,7 +44,7 @@ import type {IrcClient} from "./client";
 import {formatLine} from "./message";
 import {trailingLine} from "./wire";
 import {forgetUserAway, setUserAway} from "./userAwayStore";
-import {scheduleMarkRead} from "./handlers/markread";
+import {readNow} from "./handlers/markread";
 import {MUTE_KEY, MUTE_READ_DELAY_MS, syncPushMute} from "./pushMute";
 import {PERSISTENCE_CAP} from "./persistence";
 import type {SharedNetworkPresence} from "../../../shared/types/network";
@@ -272,15 +272,7 @@ export function setAttended(client: IrcClient, attended: boolean): void {
 			// Looking at it reads it, as opening it does (IrcClient.open):
 			// what counted while nobody looked must not resurface as a badge
 			// once the user moves to another channel.
-			chan.shared.unread = 0;
-			chan.shared.highlight = 0;
-			client.dispatch("markread", {
-				chan: chan.id,
-				firstUnread: chan.shared.firstUnread,
-				unread: 0,
-				highlight: 0,
-			});
-			scheduleMarkRead(client, chan);
+			readNow(client, chan);
 		}
 	}
 }

@@ -52,6 +52,7 @@ import {
 	countPageUnread,
 	flushDeferredMarkRead,
 	markReadAt,
+	readNow,
 	scheduleMarkRead,
 } from "./handlers/markread";
 import {
@@ -2220,9 +2221,7 @@ export class IrcClient {
 			// (a cold start, a deep link) leaves that to attention returning
 			// (presence.ts).
 			if (this.presence.attended) {
-				chan.shared.unread = 0;
-				chan.shared.highlight = 0;
-				scheduleMarkRead(this, chan);
+				readNow(this, chan);
 			}
 
 			prioritiseCatchup(this, chan);
