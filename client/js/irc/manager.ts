@@ -130,6 +130,13 @@ export function createNetwork(options: CreateNetworkOptions): IrcClient {
 		client.setGlobalMode(globalMode);
 		client.setGlobalDnd(globalDnd.active, globalDnd.until);
 
+		// A client starts attended and foreground.ts only reports changes:
+		// a page that boots hidden (a shell relaunched in the background,
+		// a background tab) would otherwise read whatever it opens.
+		if (document.visibilityState === "hidden") {
+			client.setAttended(false);
+		}
+
 		if (entry.name) {
 			client.setNetworkName(entry.name);
 		}
