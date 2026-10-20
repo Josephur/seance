@@ -510,6 +510,110 @@ describe("Query log (irc/querylog.ts)", function () {
 			expect(second.transport.sent).to.include("MARKREAD carol");
 		});
 
+		it("queues no marker fetch for a server without read markers, and spends no slot", function () {
+			const caps =
+				"message-tags server-time echo-message batch labeled-response draft/chathistory=100";
+			const first = page(caps);
+			first.transport.line(
+				"@time=2026-09-26T11:00:00.000Z;msgid=p1 :bob!b@h PRIVMSG alice :are you there?"
+			);
+			clock.tick(SAVE_DELAY_MS);
+			first.client.queryLog.dispose();
+
+			const second = page(caps);
+			expect(second.client.findChannel("bob")!.shared.unread).to.equal(1);
+			clock.tick(CATCHUP_INTERVAL_MS + 200);
+			expect(second.transport.sent.filter((l) => l.startsWith("MARKREAD"))).to.deep.equal([]);
+
+			// The JOIN echoes after the slot a marker would have taken: the
+			// channel's catch-up goes out on it, held behind nothing.
+			const n = second.transport.sent.length;
+			second.transport.line(":alice!a@h JOIN #seance");
+			expect(second.transport.sent.slice(n).some((l) => l.includes("CHATHISTORY"))).to.equal(
+				true
+			);
+		});
+
+		it("asks for a query's marker once per connection, however often autojoin runs", function () {
+			const caps = "message-tags server-time echo-message draft/read-marker";
+			const first = page(caps);
+			first.transport.line(
+				"@time=2026-09-26T11:00:00.000Z;msgid=p1 :bob!b@h PRIVMSG alice :are you there?"
+			);
+			clock.tick(SAVE_DELAY_MS);
+			first.client.queryLog.dispose();
+
+			const second = page(caps);
+			clock.tick(CATCHUP_INTERVAL_MS);
+			const asked = () => second.transport.sent.filter((l) => l === "MARKREAD bob").length;
+			expect(asked()).to.equal(1);
+
+			// A held session's restoration runs autojoin() again, seconds later.
+			second.client.autojoin();
+			clock.tick(CATCHUP_INTERVAL_MS * 3);
+			expect(asked()).to.equal(1);
+		});
+
+		it("charges a marker fetch half a slot: a JOIN echoing after it waits 2 s, not 4", function () {
+			const caps =
+				"message-tags server-time echo-message batch labeled-response draft/chathistory=100 draft/read-marker";
+			const first = page(caps);
+			first.transport.line(
+				"@time=2026-09-26T11:00:00.000Z;msgid=p1 :bob!b@h PRIVMSG alice :are you there?"
+			);
+			clock.tick(SAVE_DELAY_MS);
+			first.client.queryLog.dispose();
+
+			const second = page(caps);
+			clock.tick(CATCHUP_INTERVAL_MS);
+			expect(second.transport.sent).to.include("MARKREAD bob");
+			clock.tick(500);
+			const n = second.transport.sent.length;
+			second.transport.line(":alice!a@h JOIN #seance");
+			const history = () =>
+				second.transport.sent.slice(n).some((l) => l.includes("CHATHISTORY"));
+			expect(history(), "not on the echo: the marker's half slot is running").to.equal(false);
+			clock.tick(CATCHUP_INTERVAL_MS / 2 - 500 - 1);
+			expect(history()).to.equal(false);
+			clock.tick(1);
+			expect(history(), "2 s after the marker").to.equal(true);
+		});
+
+		it("asks at once for the marker of a query a late replay leaves unread", function () {
+			const caps =
+				"message-tags server-time echo-message batch labeled-response draft/chathistory=100 draft/read-marker draft/persistence";
+			const h = page(caps);
+			h.transport.line(":alice!a@h JOIN #seance");
+			clock.tick(10 * 60 * 1000); // the queue drained long ago
+			const n = h.transport.sent.length;
+			h.transport.line(":irc.test BATCH +r evilnet.github.io/bouncer-replay");
+			h.transport.line("@batch=r :irc.test BATCH +c chathistory bob");
+			h.transport.line(
+				"@batch=c;time=2026-09-26T11:02:00.000Z;msgid=p2 :bob!b@h PRIVMSG alice :hello?"
+			);
+			h.transport.line(":irc.test BATCH -c");
+			h.transport.line(":irc.test BATCH -r");
+			expect(h.client.findChannel("bob")!.shared.unread).to.equal(1);
+			expect(h.transport.sent.slice(n), "no slot to wait for").to.include("MARKREAD bob");
+		});
+
+		it("a query opened with someone looking keeps its fetch, which then has nothing to lower", function () {
+			const caps = "message-tags server-time echo-message draft/read-marker";
+			const first = page(caps);
+			first.transport.line(
+				"@time=2026-09-26T11:00:00.000Z;msgid=p1 :bob!b@h PRIVMSG alice :are you there?"
+			);
+			clock.tick(SAVE_DELAY_MS);
+			first.client.queryLog.dispose();
+
+			const second = page(caps);
+			const bob = second.client.findChannel("bob")!;
+			second.client.open(bob.id);
+			expect(bob.shared.unread).to.equal(0);
+			clock.tick(CATCHUP_INTERVAL_MS * 3);
+			expect(second.transport.sent.filter((l) => l === "MARKREAD bob")).to.deep.equal([]);
+		});
+
 		it("asks for a query's read marker behind the channels, never in the registration burst", function () {
 			const caps = "message-tags server-time echo-message draft/read-marker";
 			const first = page(caps);

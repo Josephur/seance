@@ -22,7 +22,7 @@
 import {ChanState} from "../../../shared/types/chan";
 import type {Channel, MsgRef} from "./channel";
 import type {IrcClient} from "./client";
-import {fetchReadMarker} from "./handlers/markread";
+import {fetchReadMarker, markReadEnabled} from "./handlers/markread";
 import {requestChannelHistory, retryLostHistory} from "./history";
 import {formatLine} from "./message";
 
@@ -43,6 +43,8 @@ interface CatchupState {
 	queue: PendingCatchup[];
 	timer: ReturnType<typeof setTimeout> | null;
 	lastStepAt: number;
+	/** Queries whose marker went out on this connection: asked once, like a channel's history. */
+	asked: Set<Channel>;
 }
 
 const states = new WeakMap<IrcClient, CatchupState>();
@@ -51,7 +53,7 @@ function stateOf(client: IrcClient): CatchupState {
 	let state = states.get(client);
 
 	if (!state) {
-		state = {queue: [], timer: null, lastStepAt: 0};
+		state = {queue: [], timer: null, lastStepAt: 0, asked: new Set()};
 		states.set(client, state);
 	}
 
@@ -117,21 +119,36 @@ export function enqueueCatchup(client: IrcClient, chan: Channel, before: MsgRef 
  * Queries are never JOINed, so nothing else asks, and the server volunteers
  * markers only for channels. Behind every channel, and skipped without
  * spending a slot while the query has nothing unread to lower. Never
- * stepped at once: at registration the JOINs' echoes are still in flight
- * and nothing is queued ahead of it, so it waits a slot, by which time
- * they have queued their channels, which {@link step} serves first.
+ * queued for a server without the cap (the send would be refused and the
+ * slot spent), and once per connection: `autojoin()` runs again after a
+ * held session's restoration, by when a replay may have asked already.
+ * Never stepped at once at registration (`lastStepAt` 0): the JOINs'
+ * echoes are still in flight and nothing is queued ahead of it, so it
+ * waits a slot, by which time they have queued their channels, which
+ * {@link step} serves first. Later, when the queue has long drained, it
+ * goes out as soon as the last step allows.
  */
 export function enqueueMarkerFetch(client: IrcClient, chan: Channel): void {
 	const state = stateOf(client);
 
-	if (state.queue.some((p) => p.chan === chan)) {
+	if (
+		!markReadEnabled(client) ||
+		state.asked.has(chan) ||
+		state.queue.some((p) => p.chan === chan)
+	) {
 		return;
 	}
 
 	state.queue.push({chan, before: undefined, prefetched: false, markerOnly: true});
 
-	if (state.timer === null) {
+	if (state.timer !== null) {
+		return;
+	}
+
+	if (state.lastStepAt === 0) {
 		arm(client, state, CATCHUP_INTERVAL_MS);
+	} else {
+		pump(client, state);
 	}
 }
 
@@ -145,13 +162,11 @@ export function prioritiseCatchup(client: IrcClient, chan: Channel): void {
 	}
 
 	if (state.queue[index].markerOnly) {
-		// Opened with someone looking, the query is read and its own MARKREAD
-		// follows; with nobody looking the open reads nothing (IrcClient.open),
-		// so the server's marker is still wanted, in its turn.
-		if (client.presence.attended) {
-			state.queue.splice(index, 1);
-		}
-
+		// A query's marker fetch keeps its turn: opened with someone looking,
+		// the query is read (IrcClient.open) and step() skips it on
+		// `unread === 0` without spending a slot; with nobody looking the open
+		// reads nothing, so the server's marker is still wanted. A PM that
+		// lands after the user leaves again is the case the fetch is for.
 		return;
 	}
 
@@ -175,6 +190,7 @@ export function cancelCatchup(client: IrcClient): void {
 	const state = stateOf(client);
 	state.queue = [];
 	state.lastStepAt = 0;
+	state.asked.clear();
 	clearTimer(state);
 }
 
@@ -233,7 +249,9 @@ function step(client: IrcClient, state: CatchupState): void {
 			return;
 		}
 
-		state.lastStepAt = Date.now();
+		// One command, where a channel's step sends two: half a slot.
+		state.lastStepAt = Date.now() - CATCHUP_INTERVAL_MS / 2;
+		state.asked.add(next.chan);
 		fetchReadMarker(client, next.chan);
 		pump(client, state);
 		return;
