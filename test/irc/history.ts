@@ -764,6 +764,26 @@ describe("Chat history (history.ts)", function () {
 			});
 		});
 
+		it("the first page after a JOIN counts only what came after a line of ours", function () {
+			const h = setup();
+			const sent = join(h);
+			const chan = h.client.findChannel("#seance")!;
+			h.transport.line(":irc.test MARKREAD #seance timestamp=2026-08-25T11:00:30.000Z");
+
+			// We said something at 11:03 on another device: bob's 11:01 and
+			// the mention at 11:02 were read by then.
+			batch(
+				h,
+				[hist(1), hist(2, "bob", "alice: you there?"), hist(3, "alice", "back"), hist(4)],
+				{label: labelOf(sent.find((l) => l.includes("CHATHISTORY")))}
+			);
+
+			expect(chan.shared.unread).to.equal(1);
+			expect(chan.shared.highlight).to.equal(0);
+			expect(chan.shared.firstUnread).to.equal(chan.idOf("m3"));
+			expect(chan.readMarker?.toISOString()).to.equal("2026-08-25T11:03:00.000Z");
+		});
+
 		it("history highlights mentions on the line but never notifies or counts", function () {
 			const h = setup();
 			const id = joined(h);

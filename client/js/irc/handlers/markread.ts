@@ -23,8 +23,8 @@
  */
 
 import {ChanType} from "../../../../shared/types/chan";
-import type {SharedMsg} from "../../../../shared/types/msg";
-import {countsAsUnread, type Channel, type MsgRef} from "../channel";
+import {MessageType, type SharedMsg} from "../../../../shared/types/msg";
+import {SAID_TYPES, countsAsUnread, type Channel, type MsgRef} from "../channel";
 import type {IrcClient} from "../client";
 import {formatLine} from "../message";
 import type {Handler} from "../types";
@@ -128,7 +128,9 @@ export function applyReadMarker(client: IrcClient, chan: Channel, time: Date): v
  * A page of older lines was handed to the UI (`more`, which carries no
  * counters): what in it is past `marker` and would have counted live is
  * unread. Flag those refs, add them to the counters and tell the UI with
- * `markread`, moving `firstUnread` to `lastRead` when there is one.
+ * `markread`, moving `firstUnread` to `lastRead` when there is one. A line
+ * of ours past `marker` read everything before it (as in `pushMessage`):
+ * the count starts after it and the read point moves to it.
  */
 export function countPageUnread(
 	client: IrcClient,
@@ -137,11 +139,28 @@ export function countPageUnread(
 	marker: Date,
 	lastRead = 0
 ): void {
+	let readTo = marker.getTime();
+
+	for (const [msg, ref] of page) {
+		if (
+			msg.self &&
+			SAID_TYPES.has(msg.type ?? MessageType.MESSAGE) &&
+			ref.time.getTime() > readTo
+		) {
+			readTo = ref.time.getTime();
+			lastRead = msg.id;
+		}
+	}
+
+	if (readTo > marker.getTime()) {
+		moveReadMarker(client, chan, new Date(readTo));
+	}
+
 	let unread = 0;
 	let highlight = 0;
 
 	for (const [msg, ref] of page) {
-		if (ref.time.getTime() <= marker.getTime() || !countsAsUnread(msg)) {
+		if (ref.time.getTime() <= readTo || !countsAsUnread(msg)) {
 			continue;
 		}
 
