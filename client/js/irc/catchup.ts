@@ -105,6 +105,9 @@ export function enqueueCatchup(client: IrcClient, chan: Channel, before: MsgRef 
 		return;
 	}
 
+	// A timer a query's marker fetch armed (enqueueMarkerFetch) would hold
+	// this channel past its turn: re-arm from the last step.
+	clearTimer(state);
 	pump(client, state);
 }
 
@@ -113,14 +116,22 @@ export function enqueueCatchup(client: IrcClient, chan: Channel, before: MsgRef 
  * read on another device while this one was away stops counting here.
  * Queries are never JOINed, so nothing else asks, and the server volunteers
  * markers only for channels. Behind every channel, and skipped without
- * spending a slot while the query has nothing unread to lower.
+ * spending a slot while the query has nothing unread to lower. Never
+ * stepped at once: at registration the JOINs' echoes are still in flight
+ * and nothing is queued ahead of it, so it waits a slot, by which time
+ * they have queued their channels, which {@link step} serves first.
  */
 export function enqueueMarkerFetch(client: IrcClient, chan: Channel): void {
 	const state = stateOf(client);
 
-	if (!state.queue.some((p) => p.chan === chan)) {
-		state.queue.push({chan, before: undefined, prefetched: false, markerOnly: true});
-		pump(client, state);
+	if (state.queue.some((p) => p.chan === chan)) {
+		return;
+	}
+
+	state.queue.push({chan, before: undefined, prefetched: false, markerOnly: true});
+
+	if (state.timer === null) {
+		arm(client, state, CATCHUP_INTERVAL_MS);
 	}
 }
 
@@ -193,6 +204,11 @@ function pump(client: IrcClient, state: CatchupState): void {
 		return;
 	}
 
+	arm(client, state, wait);
+}
+
+/** Step in `wait` ms. */
+function arm(client: IrcClient, state: CatchupState, wait: number): void {
 	state.timer = setTimeout(() => {
 		state.timer = null;
 		step(client, state);

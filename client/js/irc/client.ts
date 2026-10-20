@@ -1438,26 +1438,26 @@ export class IrcClient {
 	 * on the channel the user is looking at.
 	 */
 	autojoin(): void {
-		for (const chan of this.channels) {
-			if (chan.type === ChanType.QUERY) {
-				enqueueMarkerFetch(this, chan);
-			}
-		}
-
 		const joining = this.channels.filter(
 			(chan) =>
 				chan.type === ChanType.CHANNEL && chan.autoJoin && chan.state === ChanState.PARTED
 		);
 
-		if (joining.length === 0) {
-			return;
+		if (joining.length > 0) {
+			this.joinChannels(joining.map((chan) => ({name: chan.name, key: chan.shared.key})));
+			const active = joining.find((chan) => chan.id === this.activeChanId);
+
+			if (active) {
+				prefetchCatchup(this, active);
+			}
 		}
 
-		this.joinChannels(joining.map((chan) => ({name: chan.name, key: chan.shared.key})));
-		const active = joining.find((chan) => chan.id === this.activeChanId);
-
-		if (active) {
-			prefetchCatchup(this, active);
+		// A logged query with unread lines asks for its read marker behind
+		// the channels, a slot from now (catchup.ts): never in this flush.
+		for (const chan of this.channels) {
+			if (chan.type === ChanType.QUERY) {
+				enqueueMarkerFetch(this, chan);
+			}
 		}
 	}
 

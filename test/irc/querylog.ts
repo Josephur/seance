@@ -495,11 +495,10 @@ describe("Query log (irc/querylog.ts)", function () {
 			clock.tick(SAVE_DELAY_MS);
 			first.client.queryLog.dispose();
 
-			// bob's marker goes out at once, carol's waits for its slot.
+			// Neither marker goes out in the registration burst: each waits for its slot.
 			const second = page(caps);
 			const carol = second.client.findChannel("carol")!;
-			expect(second.transport.sent).to.include("MARKREAD bob");
-			expect(second.transport.sent).not.to.include("MARKREAD carol");
+			expect(second.transport.sent.filter((l) => l.startsWith("MARKREAD"))).to.deep.equal([]);
 
 			// A cold start on a deep link with the page hidden: the open reads nothing.
 			second.client.setAttended(false);
@@ -507,7 +506,36 @@ describe("Query log (irc/querylog.ts)", function () {
 			expect(carol.shared.unread).to.equal(1);
 
 			clock.tick(CATCHUP_INTERVAL_MS * 3);
+			expect(second.transport.sent).to.include("MARKREAD bob");
 			expect(second.transport.sent).to.include("MARKREAD carol");
+		});
+
+		it("asks for a query's read marker behind the channels, never in the registration burst", function () {
+			const caps = "message-tags server-time echo-message draft/read-marker";
+			const first = page(caps);
+			first.transport.line(
+				"@time=2026-09-26T11:00:00.000Z;msgid=p1 :bob!b@h PRIVMSG alice :are you there?"
+			);
+			clock.tick(SAVE_DELAY_MS);
+			first.client.queryLog.dispose();
+
+			// The connect path is the JOIN alone; the query's marker costs a
+			// command of fake lag, so it is not spent ahead of the channels.
+			const second = page(caps);
+			const sent = second.transport.sent;
+			expect(sent).to.include("JOIN #seance");
+			expect(sent.filter((l) => l.startsWith("MARKREAD"))).to.deep.equal([]);
+
+			// The JOIN echoes inside the slot: #seance's catch-up goes first.
+			second.transport.line(":alice!a@h JOIN #seance");
+			expect(sent).to.include("MARKREAD #seance");
+			expect(sent).not.to.include("MARKREAD bob");
+
+			clock.tick(CATCHUP_INTERVAL_MS);
+			expect(sent).to.include("MARKREAD bob");
+			expect(sent.indexOf("MARKREAD bob")).to.be.greaterThan(
+				sent.indexOf("MARKREAD #seance")
+			);
 		});
 
 		it("keeps a query read here read across a reload on a server without read markers", function () {
