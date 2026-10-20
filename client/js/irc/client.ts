@@ -2751,9 +2751,9 @@ export class IrcClient {
 
 			if (said && replay) {
 				// An old line of ours in a catch-up read what came before it,
-				// not a live line that arrived while the catch-up was out.
+				// not a live line that arrived while the catch-up was out. No
+				// MARKREAD: the server has the line, and the marker is now at it.
 				applyReadMarker(this, chan, ref.time);
-				scheduleMarkRead(this, chan);
 			} else if (said) {
 				shared.unread = 0;
 				shared.highlight = 0;
