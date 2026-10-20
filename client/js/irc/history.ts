@@ -45,6 +45,7 @@ import type {Channel, MsgRef} from "./channel";
 import type {IrcClient, ReplayCollection} from "./client";
 import type {BatchHandler} from "./handlers/batch";
 import {countPageUnread, scheduleMarkRead} from "./handlers/markread";
+import {enqueueMarkerFetch} from "./catchup";
 import {formatLine, IrcMessage} from "./message";
 import {settlePendingLabel} from "./pending";
 import {inBouncerReplay, inServerCatchup} from "./persistence";
@@ -488,6 +489,13 @@ function deliverAppend(client: IrcClient, chan: Channel, messages: SharedMsg[]):
 		// pushMessage copies; write the id back so post-replay work
 		// (`afterReplay` closures hold the collected objects) can find it.
 		msg.id = client.pushMessage(chan, msg, false, {replay: true}).id;
+	}
+
+	// Unread against this device's read point only: another device may have
+	// read it. The autojoin's ask for the query's marker may already have
+	// been skipped, with nothing unread then (catchup.ts).
+	if (chan.type === ChanType.QUERY && chan.shared.unread > 0) {
+		enqueueMarkerFetch(client, chan);
 	}
 }
 

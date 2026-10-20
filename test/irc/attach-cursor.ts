@@ -456,6 +456,29 @@ describe("PERSISTENCE ATTACH catch-up cursor (irc/persistence.ts)", function () 
 			expect(h.messages(query.id).map((m) => m.text)).to.deep.equal(["you there?"]);
 		});
 
+		it("asks for a query's read marker once the replay leaves it unread", function () {
+			store({msgid: "m9", time: Date.parse("2026-08-28T11:00:00.000Z")});
+			const h = saslClient();
+			authenticate(h, `${SASL_CAPS} draft/read-marker`);
+			h.transport.line(":irc.test PERSISTENCE ATTACH default");
+			finishRegistration(h, HOLD);
+			restore(h);
+			clock.tick(MARKREAD_DEBOUNCE_MS * 10);
+			h.sent();
+
+			// The private message was read on another device: only the
+			// server's marker can say so.
+			bouncerReplay(h, "bob", [
+				"@time=2026-08-28T11:30:00.000Z;msgid=p1 :bob!bob@host PRIVMSG alice :you there?",
+			]);
+			const query = h.client.findChannel("bob")!;
+			expect(query.shared.unread).to.equal(1);
+			clock.tick(MARKREAD_DEBOUNCE_MS * 10);
+			expect(h.sent()).to.include("MARKREAD bob");
+			h.transport.line(":irc.test MARKREAD bob timestamp=2026-08-28T11:30:00.000Z");
+			expect(query.shared.unread).to.equal(0);
+		});
+
 		it("hides the closing NOTICE while the session is settling, and shows it later", function () {
 			const h = resumed();
 			h.transport.line(
