@@ -7,6 +7,9 @@ import {DAY_CARD_FAINT, DAY_CARD_TEXT, DAY_GLASS_MARK} from "../../../client/js/
 import {AREAS, INK_FAINT_HELD, publishedFor} from "../../../client/js/scenes/ps/grounds";
 import {paletteAt, type Palette} from "../../../client/js/scenes/ps/palette";
 import {
+	ALPHA_GLOW,
+	ALPHA_GLOW_HALO,
+	ALPHA_RIM,
 	bodyGrounds,
 	checkedGrounds,
 	CODE_BOX,
@@ -26,6 +29,7 @@ import {
 	pinnedMoments,
 	sceneGrounds,
 	SHADOW_WORDS_ROOT,
+	shadowGrounds,
 	SMALL_STEPS_ROOT,
 	smallStepSweep,
 	SURFACE,
@@ -33,6 +37,7 @@ import {
 	SURFACE_ROOT,
 	SURFACE_WASH,
 	surfaceGround,
+	whiteHolds,
 	withPinned,
 	type Checked,
 	type CheckedGround,
@@ -145,6 +150,21 @@ const SCRIM_FAR = 0.3;
  * read under the floor by the user's choice (ps-words.md §4.3, §9).
  */
 const SCRIM_FAR_FLOOR = {day: 2.12, night: 1.42};
+
+/**
+ * What the tinted rim and the soft glow reach, pinned from the first run
+ * (floored to two decimals), never held: the user chose a softer look over
+ * the outline's floor (ps-words.md §5). White, the muted ink, faint white
+ * and the nicks at their worst over every ground the light words meet, and
+ * the count of grounds that leave white under 4.5:1 (the white day clouds
+ * first, then the bodies, the roof's snow, the veiled grounds), which may
+ * not grow. The glow's ink through its aura holds the floor itself.
+ */
+const PINNED = {
+	rim: {white: 2.35, muted: 1.88, faint: 2.01, nick: 1.27, under: 28639},
+	glow: {white: 1.37, muted: 1.1, faint: 1.29, nick: 1, under: 67724},
+};
+const PINNED_GLOW_INK = 4.5;
 
 /** --ps-code-bg as each treatment's rule declares it. */
 function codeBoxes(): Partial<Record<Text, string>> {
@@ -1113,5 +1133,54 @@ describe("ps: the words over the plains and on the glass keep their floors: ever
 				).to.be.at.least(4.5);
 			}
 		}
+	});
+
+	for (const words of ["rim", "glow"] as const) {
+		it(`${words}: the light words' figures through the treatment are pinned, not held — white, the muted ink, faint white and the nicks at their worst, and how many grounds leave white under 4.5:1`, function () {
+			const alpha = words === "rim" ? ALPHA_RIM : ALPHA_GLOW;
+			expect(alpha, "measured").to.be.within(0.05, 0.6);
+			const list = shadowGrounds(words, "light", "sparse");
+			expect(list.length).to.be.greaterThan(1000);
+			const held = heldColours().held;
+			const muted = held.find((x) => x.what === `${LIGHT_ROOT} --chat-fg-muted`)!;
+			// The large-step light nicks (the small-step set is the same hues, solved stricter).
+			const nicks = held.filter((x) => x.what.startsWith(`${LIGHT_ROOT} .user.color-`));
+			expect(nicks.length).to.equal(32);
+			const figures = {
+				white: worst("#ffffff", list),
+				muted: worst(muted.value, list),
+				faint: worstFaintWhite(list),
+				nick: nicks
+					.map((n) => worst(n.value, groundsFor(n, list)))
+					.reduce((a, b) => (b.ratio < a.ratio ? b : a)),
+			};
+			const under = list.filter((g) => !whiteHolds(g.hex)).length;
+			// eslint-disable-next-line no-console -- the figures the pins are read from
+			console.log(
+				`      ${words}: ${Object.entries(figures)
+					.map(([k, w]) => `${k} ${w.ratio.toFixed(2)} at ${w.where}`)
+					.join("; ")}; ${under} of ${list.length} grounds leave white under 4.5`
+			);
+
+			for (const [kind, w] of Object.entries(figures)) {
+				expect(Number(w.ratio.toFixed(2)), `${words} ${kind}: ${w.where}`).to.be.at.least(
+					PINNED[words][kind as keyof typeof figures]
+				);
+			}
+
+			expect(under, `${words}: grounds under white's floor`).to.be.at.most(
+				PINNED[words].under
+			);
+		});
+	}
+
+	it("glow: ink through the pale aura inside the ink window, pinned", function () {
+		expect(ALPHA_GLOW_HALO, "measured").to.be.within(0.05, 0.6);
+		const list = shadowGrounds("glow", "ink", "sparse");
+		expect(list.length).to.be.greaterThan(100);
+		const w = worst(INK, list);
+		// eslint-disable-next-line no-console -- the figure the pin is read from
+		console.log(`      glow ink ${w.ratio.toFixed(2)} at ${w.where}`);
+		expect(Number(w.ratio.toFixed(2))).to.be.at.least(PINNED_GLOW_INK);
 	});
 });

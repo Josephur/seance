@@ -30,7 +30,7 @@
  * model holds is held at those samples; nothing here measures between them.
  */
 import {defaultFontSize, fontSizes, type FontSize} from "../../client/js/helpers/fontSize";
-import {luminance, mix} from "../../client/js/scenes/ps/colour";
+import {contrast, luminance, mix} from "../../client/js/scenes/ps/colour";
 import {momentFor, WEATHERS, type Moment, type Weather} from "../../client/js/scenes/ps/engine";
 import {
 	CHROME_SURFACES,
@@ -44,8 +44,9 @@ import {
 	ALPHA_HALO,
 	INK,
 	publishedFor,
-	SCHEDULE_STEP,
+	rimFor,
 	sceneGrounds as paintedGrounds,
+	SCHEDULE_STEP,
 } from "../../client/js/scenes/ps/grounds";
 import {GLASS_NIGHT_AT, paletteAt, stopsAt, type Palette} from "../../client/js/scenes/ps/palette";
 
@@ -122,6 +123,28 @@ export {ALPHA_HALO, INK};
  */
 export const ALPHA_SHADOW = Math.min(0.6, 0.6039);
 export const INK_FAINT = "#4c5a72";
+
+/**
+ * The other two shadow treatments of the Words over the plains setting
+ * (docs/projects/ps-words.md §5), measured by the same twin method on
+ * 2026-10-21 (tools/ps/calibrate.mjs, 9546 checks; the outline's two figures
+ * reproduced as the control, 0.639 → 0.6 capped and 0.1614 exact):
+ * - **the tinted rim** (one 1 px ring at 60 % in the hour's rim colour,
+ *   --ps-rim, under the soft shadow in the same tint): 0.4164 toward the
+ *   rim's colour, Source Sans 3 "it," at DPR 1 over the dusk amber #ffb96f;
+ *   its ink is the outline's halo (ALPHA_HALO);
+ * - **the soft glow** (four blurred black layers, no ring): 0.1372 toward
+ *   black, "it," at DPR 3 over the white cloud; its ink aura (four layers
+ *   of the halo's colour) 0.1503 toward the halo, "it," at DPR 1 over the
+ *   sky #9ccaf5.
+ * Neither re-solves a colour: the message palette is the outline's, and the
+ * floors test holds every light colour wherever white holds 4.5 : 1 through
+ * the treatment and pins the worst figure over the rest (the user's choice
+ * of a softer look over a stricter floor).
+ */
+export const ALPHA_RIM = Math.min(0.6, 0.4164);
+export const ALPHA_GLOW = Math.min(0.6, 0.1372);
+export const ALPHA_GLOW_HALO = Math.min(0.6, 0.1503);
 
 export type Surface = "column" | "glass";
 /** The message column's treatment (data-ps-text). */
@@ -350,6 +373,11 @@ export function glassGround(ground: string, light: Light, alpha: number): string
 	return mix(ground, GLASS[light].tint, alpha);
 }
 
+/** Whether white holds 4.5 : 1 over an effective ground: the line between held and pinned for the rim and the glow. */
+export function whiteHolds(hex: string): boolean {
+	return contrast("#ffffff", hex) >= 4.5;
+}
+
 /**
  * Every ground a surface meets at one moment, composited: through the
  * treatment in force for the column, under the glass at `alpha` (the spec's
@@ -539,6 +567,40 @@ export function checkedGrounds(days: Days): Checked {
 		}
 	}, days);
 	cache[days] = out;
+	return out;
+}
+
+/**
+ * Every ground of a sweep through the tinted rim or the soft glow, in the
+ * words' state asked for: the light words through the rim's layer in the
+ * hour's rim colour (rimFor) at ALPHA_RIM, or the glow's black at
+ * ALPHA_GLOW; the ink words through the glow's aura at ALPHA_GLOW_HALO (the
+ * rim's ink is the outline's halo: not sampled again). The same colour from
+ * the same kind of ground is kept once, at the first moment that meets it.
+ */
+export function shadowGrounds(words: "rim" | "glow", text: Text, days: Days): CheckedGround[] {
+	const out: CheckedGround[] = [];
+	const seen = new Set<string>();
+	eachChecked((m, p, where) => {
+		const published = publishedFor(p, m);
+
+		if (published.text !== text) {
+			return;
+		}
+
+		const layer = text === "ink" ? published.halo : words === "rim" ? rimFor(p) : "#000000";
+		const alpha = text === "ink" ? ALPHA_GLOW_HALO : words === "rim" ? ALPHA_RIM : ALPHA_GLOW;
+
+		for (const g of sceneGrounds(m, p)) {
+			const hex = mix(g.hex, layer, alpha);
+			const key = `${hex} ${g.body} ${g.below}`;
+
+			if (!seen.has(key)) {
+				seen.add(key);
+				out.push({...g, hex, lum: luminance(hex), where});
+			}
+		}
+	}, days);
 	return out;
 }
 
