@@ -1,6 +1,6 @@
 # The words over the plains: six treatments, one setting
 
-**Status: design, 2026-10-21, builder-checked.** A plan 6 of the `ps` theme (`docs/projects/ps-theme.md`); it changes §7 (the words), §10.4 (the theme's settings) and §11 (the floors) there once built.
+**Status: built, 2026-10-21** (plan 6 of the `ps` theme; `docs/projects/ps-theme.md` §2, §7, §10.4, §11 and §13 record it, with the measured figures). What follows is the design as approved, with the builder check's resolutions (§9) and the figures that came out of the build (§10).
 
 ## 1. Intent
 
@@ -124,3 +124,12 @@ A fresh reviewer read the first draft against the tree and found seven places a 
 5. Several column surfaces key on the ink window → re-keyed on the hour under the surface family (§4.4).
 6. A non-default choice flashes once at boot → the font-size precedent, accepted (§2).
 7. `width: fit-content` would move and clip the message toolbar → anchored to the row's start under Bubbles (§4.1).
+
+## 10. What the build measured (2026-10-21)
+
+- The surface palette: day at the declared 0.66, the lightest 4.5-floor colour `.user.color-20 #07423e`, the faint ink `#49566e`; night **0.74** (the mock-up's 0.62 could not hold the glass soft within rule 2 over the full moon; the night chrome's criterion raised it to the cap). The card's tint at a clear June noon 0.44; the mention washes count as grounds of both the palette's solve and the card's.
+- The scrim's far edge: the ink 2.12 : 1 by day, 1.42 : 1 at night, pinned.
+- The rim α 0.4164, the glow α 0.1372, the glow's aura 0.1503 (tools/ps/calibrate.mjs, 9546 checks, the outline reproduced as the control). Pinned per kind over every light ground: the rim white 2.35, muted 1.88, faint 2.01, nick 1.27, 28 639 of 134 108 grounds under white's floor; the glow white 1.37, muted 1.10, faint 1.29, nick 1.00, 67 724 of 149 117 under; the glow's ink aura holds 4.5 (4.68). The "hold wherever white holds" rule of §5 was replaced by these pins: where white barely holds, the lighter muted ink does not, so the rule failed by construction.
+- The glyph samples under the rim and the glow: rendered at a clear summer noon the rim holds the words at 3.86 : 1, the time at 2.43, the nick at 2.18 and faint text at 3.51 (the 10th percentile of the ring, the worst element), the glow 2.01, 1.19, 1.07 and 1.79; both rise through the evening (the rim's words 8.51 at sunset, 11.46 at dusk, 13.17 at midnight; the glow's 4.40, 5.36, 5.99) — `tools/scenarios/theme-ps.mjs` pins these (`GLYPH_PINNED`).
+- Under Bubbles an own row keeps its card above `style.css`'s own-message rules (which clear the background, or paint the band look's faint tint, at a higher specificity): the "Highlighted row" look shows no band under Bubbles.
+- The glass column's cost: measured by `tools/scenarios/ps-words-cost.mjs` (headless, software composited, a clear noon at Scene animation Full, ten seconds each, the frame intervals a requestAnimationFrame loop sees): on the desktop layout the outline's frames came 28.2 ms apart on average (p95 33.4), Bubbles' 26.0 (33.4; fewer shadows per glyph) and the glass column's **50.8 (p95 66.7, the worst 99.9)** — the backdrop blur over the whole message list about doubles the interval where the CPU rasterises it; on the phone layout all three held 16.7 ms (p95 16.7), since the column there carries no blur. No long task in any sample. A GPU-composited browser blurs on the GPU and pays far less; the figures compare the treatments with each other on this host, as §10.1's do.
