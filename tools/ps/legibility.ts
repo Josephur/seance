@@ -156,6 +156,37 @@ export const GLASS = {
 } as const;
 
 /**
+ * The surface family of the Words over the plains setting
+ * (docs/projects/ps-words.md §4, §5: bubbles, glass, scrim): the words are
+ * plain on a tint between them and the plains. The card's and the scrim's
+ * tint is flat (no backdrop filter); the glass column's is the chrome's
+ * float tint through the lift. The surface palette is solved at the
+ * declared tints (the mock-up's 0.66 by day; 0.62 at night, raised toward
+ * the cap only when a spec colour cannot hold within rule 2), over every
+ * ground; the page then solves the day card tint per step at or under the
+ * declared one (client/js/scenes/ps/glass.ts, the card surface).
+ */
+export const SURFACE = {
+	day: {tint: GLASS.day.tint, base: 0.66, cap: 0.78, ink: GLASS.day.ink},
+	night: {tint: GLASS.night.tint, base: 0.62, cap: 0.74, ink: GLASS.night.ink},
+} as const;
+
+/** The surface family's scope on <html>: no attribute (the default), or one of the three. */
+export const WORDS_SURFACE =
+	':is(:not([data-ps-words]), [data-ps-words="bubbles"], [data-ps-words="glass"], [data-ps-words="scrim"])';
+
+/** The surface block's day rule, and every surface nick rule's prefix by day. */
+export const SURFACE_ROOT = `:root${WORDS_SURFACE} #chat .chat`;
+
+/** The surface block's night rule, and every surface nick rule's prefix at night. */
+export const SURFACE_NIGHT_ROOT = `:root[data-ps-light="night"]${WORDS_SURFACE} #chat .chat`;
+
+/** A ground under a surface's flat tint at `alpha`. */
+export function surfaceGround(ground: string, light: Light, alpha: number): string {
+	return mix(ground, SURFACE[light].tint, alpha);
+}
+
+/**
  * What coloured text in the light treatment (every generated colour there:
  * nicks, the semantic colours, the code tokens) is held to over the moon's
  * disc and the sun's core. White and faint white are held over every ground

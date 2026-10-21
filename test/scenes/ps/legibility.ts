@@ -27,6 +27,10 @@ import {
 	sceneGrounds,
 	SMALL_STEPS_ROOT,
 	smallStepSweep,
+	SURFACE,
+	SURFACE_NIGHT_ROOT,
+	SURFACE_ROOT,
+	surfaceGround,
 	withPinned,
 	type Checked,
 	type CheckedGround,
@@ -44,6 +48,7 @@ const blockOf = (name: string) =>
 	css.slice(css.indexOf(`/* ps:${name}:start`), css.indexOf(`/* ps:${name}:end */`));
 const messageBlock = blockOf("message-palette");
 const glassBlock = blockOf("glass-palette");
+const surfaceBlock = blockOf("surface-palette");
 const headerOf = (block: string) => block.slice(0, block.indexOf("*/"));
 const uncommented = (text: string) => text.replace(/\/\*[\s\S]*?\*\//g, "");
 
@@ -64,8 +69,8 @@ function rulesOf(text: string): Rule[] {
 	}));
 }
 
-/** Both block headers: their worst grounds and the Review Focus pins. */
-const headers = headerOf(messageBlock) + headerOf(glassBlock);
+/** The three block headers: their worst grounds and the Review Focus pins. */
+const headers = headerOf(messageBlock) + headerOf(glassBlock) + headerOf(surfaceBlock);
 
 /** The moments the block headers name, as `doy D M min W`. */
 const pinned = () => pinnedMoments(headers);
@@ -296,6 +301,109 @@ function glassDeclared() {
 	};
 }
 
+/** The surface block's declared values (the Words over the plains setting's surface family). */
+function surfaceDeclared() {
+	const rules = rulesOf(surfaceBlock);
+
+	const tokens = (selector: string) => {
+		const rule = rules.find((r) => r.selector === selector);
+		return rule ? Object.fromEntries(rule.decls) : {};
+	};
+
+	const nicks = (root: string) =>
+		rules
+			.filter((r) => r.selector.startsWith(`${root} .user.color-`))
+			.map((r) => ({selector: r.selector, decls: r.decls}));
+	return {
+		rules,
+		day: {tokens: tokens(SURFACE_ROOT), nicks: nicks(SURFACE_ROOT)},
+		night: {tokens: tokens(SURFACE_NIGHT_ROOT), nicks: nicks(SURFACE_NIGHT_ROOT)},
+	};
+}
+
+/** One colour the surface block declares, with its floor; `faintOf` is the ink it is drawn at 80 % of. */
+interface SurfaceHeld {
+	what: string;
+	value: string;
+	floor: number;
+	box?: string;
+	faintOf?: string;
+}
+
+/** Every colour of one light's surface rules, classified as heldColours classifies the message block's. */
+function surfaceHeld(light: Light): SurfaceHeld[] {
+	const s = surfaceDeclared()[light];
+	const box = s.tokens["--ps-code-bg"];
+	const out: SurfaceHeld[] = [];
+	const faint = /^rgb\((\d+) (\d+) (\d+) \/ 80%\)$/.exec(s.tokens["--chat-fg-faint"] ?? "");
+
+	for (const [name, value] of Object.entries(s.tokens)) {
+		const what = `${light} surface ${name}`;
+
+		if (name === "--ps-s-tint" || name === "--ps-code-bg") {
+			continue;
+		}
+
+		if (ON_CODE_BOX.test(name)) {
+			if (!HEX.test(value) || !box) {
+				throw new Error(`${what}: ${value} (code box ${box ?? "missing"})`);
+			}
+
+			out.push({what, value, floor: 4.5, box});
+		} else if (name === "--chat-fg-faint" && faint) {
+			const ink = `#${faint
+				.slice(1, 4)
+				.map((c) => Number(c).toString(16).padStart(2, "0"))
+				.join("")}`;
+			out.push({what, value: ink, floor: 3, faintOf: ink});
+		} else if (!HEX.test(value)) {
+			throw new Error(`${what}: ${value}`);
+		} else {
+			out.push({what, value, floor: name === "--chat-fg-faint" ? 3 : 4.5});
+		}
+	}
+
+	for (const n of s.nicks) {
+		expect(n.decls.length, n.selector).to.equal(1);
+		expect(n.decls[0][0], n.selector).to.equal("color");
+		expect(n.decls[0][1], n.selector).to.match(HEX);
+		out.push({what: n.selector, value: n.decls[0][1], floor: 4.5});
+	}
+
+	return out;
+}
+
+/** The lowest contrast `h` meets over `list`: on its code box, at 80 % over the ground, or plain. */
+function worstSurface(h: SurfaceHeld, list: CheckedGround[]): {ratio: number; where: string} {
+	if (h.box) {
+		return {ratio: contrast(h.value, h.box), where: `the code box ${h.box}`};
+	}
+
+	if (h.faintOf) {
+		let best = {ratio: Infinity, where: ""};
+
+		for (const g of list) {
+			const ratio = contrast(mix(g.hex, h.faintOf, 0.8), g.hex);
+
+			if (ratio < best.ratio) {
+				best = {ratio, where: `${g.where}, ${g.name} (${g.hex})`};
+			}
+		}
+
+		return best;
+	}
+
+	return worst(h.value, list);
+}
+
+/** One light's raw grounds under the surface's flat tint at `alpha`. */
+function underSurface(light: Light, alpha: number, list = grounds().glass[light]): CheckedGround[] {
+	return list.map((g) => {
+		const hex = surfaceGround(g.hex, light, alpha);
+		return {...g, hex, lum: luminance(hex)};
+	});
+}
+
 /** The glass grounds of one light at its declared opacity. */
 function underGlass(light: Light, list = grounds().glass[light]): CheckedGround[] {
 	const alpha = Number(glassDeclared()[light].tokens["--ps-g-tint-a"]);
@@ -311,6 +419,7 @@ describe("ps: the words over the plains and on the glass keep their floors: ever
 	it("finds both generated blocks, and grounds for every surface and state", function () {
 		expect(messageBlock.length).to.be.greaterThan(100);
 		expect(glassBlock.length).to.be.greaterThan(100);
+		expect(surfaceBlock.length, "the surface block").to.be.greaterThan(100);
 		expect(pinned().length).to.be.greaterThan(10);
 		const g = grounds();
 
@@ -810,6 +919,60 @@ describe("ps: the words over the plains and on the glass keep their floors: ever
 		for (const colour of [GLASS.night.ink, glassDeclared().night.tokens["--ps-g-soft"]]) {
 			const w = worst(colour, list);
 			expect(w.ratio, `${colour} at ${w.where}`).to.be.at.least(4.5);
+		}
+	});
+	it("reads the surface block: a token rule and 32 nicks for day and for night, every token the message block's ink rule has, and the two tints", function () {
+		const s = surfaceDeclared();
+		expect(s.rules.length).to.equal(66);
+		const inkNames = rulesOf(messageBlock)
+			.find((r) => r.selector === "#chat .chat")!
+			.decls.map(([name]) => name)
+			.filter((name) => name !== "color");
+		expect(inkNames.length).to.be.greaterThan(20);
+
+		for (const light of ["day", "night"] as const) {
+			expect(Object.keys(s[light].tokens).sort(), light).to.deep.equal(
+				[...inkNames, "--ps-s-tint"].sort()
+			);
+			expect(s[light].nicks.length, light).to.equal(32);
+		}
+
+		expect(Number(s.day.tokens["--ps-s-tint"])).to.equal(SURFACE.day.base);
+		expect(Number(s.night.tokens["--ps-s-tint"])).to.be.within(
+			SURFACE.night.base,
+			SURFACE.night.cap
+		);
+		expect(s.day.tokens["--chat-fg"]).to.equal(SURFACE.day.ink);
+		expect(s.night.tokens["--chat-fg"]).to.equal(SURFACE.night.ink);
+	});
+
+	for (const light of ["day", "night"] as const) {
+		it(`holds the ${light} surface palette at its declared tint over every ground: the ink, every token and every nick at 4.5:1, faint ink at 3`, function () {
+			const s = surfaceDeclared()[light];
+			const list = underSurface(light, Number(s.tokens["--ps-s-tint"]));
+			expect(list.length).to.be.greaterThan(1000);
+			const held = surfaceHeld(light);
+			expect(held.length).to.be.greaterThan(50);
+
+			for (const h of held) {
+				const w = worstSurface(h, list);
+				expect(w.ratio, `${h.what} ${h.value} at ${w.where}`).to.be.at.least(h.floor);
+			}
+		});
+	}
+
+	it("names the day surface's lightest text in its header, and nothing in the day rule is lighter", function () {
+		const s = surfaceDeclared().day;
+		const lightest = /lightest text (\S+) (#[0-9a-f]{6})/.exec(headerOf(surfaceBlock));
+		expect(lightest, "the header's lightest text line").to.not.equal(null);
+		const [, name, hex] = lightest!;
+		const declared = name.startsWith(".user.")
+			? s.nicks.find((n) => n.selector.endsWith(` ${name}`))?.decls[0][1]
+			: s.tokens[name];
+		expect(declared, name).to.equal(hex);
+
+		for (const h of surfaceHeld("day").filter((x) => !x.box && !x.faintOf)) {
+			expect(luminance(h.value), h.what).to.be.at.most(luminance(hex) + 1e-9);
 		}
 	});
 });
