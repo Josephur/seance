@@ -102,8 +102,8 @@ describe("Connect burst: batched JOIN, paced catch-up, lazy MODE (irc/catchup.ts
 		// Active channel: history + marker (+ its modes) now. Nothing for the others yet.
 		const first = h.sent();
 		expect(commandsOf(first)).to.deep.equal([
-			"CHATHISTORY LATEST",
 			"MARKREAD #seance",
+			"CHATHISTORY LATEST",
 			"MODE #seance",
 		]);
 		expect(first[0]).to.include("#seance");
@@ -116,11 +116,11 @@ describe("Connect burst: batched JOIN, paced catch-up, lazy MODE (irc/catchup.ts
 		clock.tick(CATCHUP_INTERVAL_MS - 1);
 		expect(h.sent()).to.deep.equal([]);
 		clock.tick(1);
-		expect(commandsOf(h.sent())).to.deep.equal(["CHATHISTORY LATEST", "MARKREAD #two"]);
+		expect(commandsOf(h.sent())).to.deep.equal(["MARKREAD #two", "CHATHISTORY LATEST"]);
 		clock.tick(CATCHUP_INTERVAL_MS);
-		expect(commandsOf(h.sent())).to.deep.equal(["CHATHISTORY LATEST", "MARKREAD #three"]);
+		expect(commandsOf(h.sent())).to.deep.equal(["MARKREAD #three", "CHATHISTORY LATEST"]);
 		clock.tick(CATCHUP_INTERVAL_MS);
-		expect(commandsOf(h.sent())).to.deep.equal(["CHATHISTORY LATEST", "MARKREAD #four"]);
+		expect(commandsOf(h.sent())).to.deep.equal(["MARKREAD #four", "CHATHISTORY LATEST"]);
 		expect(pendingCatchup(h.client)).to.deep.equal([]);
 		clock.tick(CATCHUP_INTERVAL_MS * 3);
 		expect(h.sent()).to.deep.equal([]);
@@ -174,8 +174,8 @@ describe("Connect burst: batched JOIN, paced catch-up, lazy MODE (irc/catchup.ts
 		expect(h.sent().filter(notMarkerSend)).to.deep.equal([]);
 		clock.tick(1);
 		expect(commandsOf(h.sent().filter(notMarkerSend))).to.deep.equal([
-			"CHATHISTORY LATEST",
 			"MARKREAD #two",
+			"CHATHISTORY LATEST",
 		]);
 	});
 
@@ -207,7 +207,7 @@ describe("Connect burst: batched JOIN, paced catch-up, lazy MODE (irc/catchup.ts
 		// A channel that is merely no longer JOINED is skipped without spending a slot.
 		h.client.findChannel("#three")!.state = ChanState.PARTED;
 		clock.tick(CATCHUP_INTERVAL_MS);
-		expect(commandsOf(h.sent())).to.deep.equal(["CHATHISTORY LATEST", "MARKREAD #four"]);
+		expect(commandsOf(h.sent())).to.deep.equal(["MARKREAD #four", "CHATHISTORY LATEST"]);
 
 		h.transport.closed();
 		expect(pendingCatchup(h.client)).to.deep.equal([]);

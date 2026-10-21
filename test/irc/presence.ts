@@ -76,6 +76,7 @@ const CAPS = "server-time message-tags batch labeled-response draft/read-marker"
 interface Harness {
 	client: IrcClient;
 	transport: FakeTransport;
+	dispatch: sinon.SinonSpy;
 	sent(): string[];
 	dispatch: sinon.SinonSpy;
 }
@@ -127,6 +128,7 @@ function connect(opts: {attended?: boolean; preAway?: boolean} = {}): Harness {
 
 	return {
 		client,
+		dispatch,
 		transport,
 		dispatch,
 		sent() {
@@ -227,13 +229,66 @@ describe("attention and AWAY * (presence.ts)", function () {
 		live(h, 2);
 		clock.tick(MARKREAD_DEBOUNCE_MS * 2);
 		expect(h.sent(), "a hidden page read nothing").to.deep.equal([]);
+		const chan = h.client.channelById(chanId)!;
+		expect(chan.shared.unread, "counted while nobody looked").to.equal(2);
 
 		h.client.setAttended(true);
+		expect(chan.shared.unread, "read by looking, as opening it would").to.equal(0);
+		// …and the page is told: it shows the open conversation's count
+		// (the app badge) while nobody looks.
+		const told = h.dispatch.getCalls().filter((c) => c.args[0] === "markread");
+		expect(told.pop()?.args[1]).to.include({chan: chanId, unread: 0, highlight: 0});
 		clock.tick(MARKREAD_DEBOUNCE_MS);
 		expect(h.sent()).to.deep.equal([
 			"AWAY",
 			"MARKREAD #seance timestamp=2026-08-25T12:02:00.000Z",
 		]);
+	});
+
+	it("opening a channel someone is looking at tells the page it is read", function () {
+		const h = connect();
+		const chanId = joined(h);
+		clock.tick(MARKREAD_DEBOUNCE_MS);
+		live(h, 1);
+		h.sent();
+
+		socket.emit("open", chanId);
+		const told = h.dispatch.getCalls().filter((c) => c.args[0] === "markread");
+		// Counters only: the page keeps its new-messages line where it is.
+		expect(told.pop()?.args[1]).to.deep.equal({
+			chan: chanId,
+			firstUnread: 0,
+			unread: 0,
+			highlight: 0,
+		});
+		clock.tick(MARKREAD_DEBOUNCE_MS);
+		expect(h.sent()).to.include("MARKREAD #seance timestamp=2026-08-25T12:01:00.000Z");
+	});
+
+	it("opening a channel nobody is looking at reads nothing until attention returns", function () {
+		const h = connect();
+		const chanId = joined(h);
+		clock.tick(MARKREAD_DEBOUNCE_MS);
+		live(h, 1);
+		live(h, 2);
+		const chan = h.client.channelById(chanId)!;
+		h.client.setAttended(false);
+		h.sent();
+
+		// A hidden page lands on it (a cold start, a deep link): not read yet,
+		// and the page is not told otherwise (it shows the IRC layer's count).
+		const told = () => h.dispatch.getCalls().filter((c) => c.args[0] === "markread");
+		const before = told().length;
+		socket.emit("open", chanId);
+		clock.tick(MARKREAD_DEBOUNCE_MS);
+		expect(chan.shared.unread).to.equal(2);
+		expect(told()).to.have.length(before);
+		expect(h.sent().filter((l) => l.startsWith("MARKREAD"))).to.deep.equal([]);
+
+		h.client.setAttended(true);
+		clock.tick(MARKREAD_DEBOUNCE_MS);
+		expect(chan.shared.unread).to.equal(0);
+		expect(h.sent()).to.include("MARKREAD #seance timestamp=2026-08-25T12:02:00.000Z");
 	});
 
 	it("prints nothing for the replies to its own AWAY * and AWAY, but still for the user's", function () {

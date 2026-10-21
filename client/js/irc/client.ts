@@ -29,7 +29,7 @@ import type {
 import type {PushSession, ServerToClientEvents} from "../../../shared/types/socket-events";
 import {CapNegotiator, SEANCE_CAPS, webpushVapidOf, WEBPUSH_CAP} from "./caps";
 import {casefold, namesEqual} from "./casemap";
-import {Channel, MsgRef} from "./channel";
+import {Channel, MsgRef, SAID_TYPES, countsAsUnread} from "./channel";
 import {QueryLog} from "./querylog";
 import {commandNames, dispatchInput} from "./commands";
 import {describeClose} from "./disconnect";
@@ -47,9 +47,12 @@ import {
 	sendMultiline,
 } from "./multiline";
 import {
+	applyReadMarker,
 	cancelMarkRead,
+	countPageUnread,
 	flushDeferredMarkRead,
 	markReadAt,
+	readNow,
 	scheduleMarkRead,
 } from "./handlers/markread";
 import {
@@ -78,6 +81,7 @@ import {
 	cancelCatchup,
 	dropFromCatchup,
 	enqueueCatchup,
+	enqueueMarkerFetch,
 	prefetchCatchup,
 	prioritiseCatchup,
 } from "./catchup";
@@ -244,13 +248,6 @@ export const SASL_REQUIRED_HINT =
 
 /** Prefix characters a channel name may start with when the user omits one. */
 const CHANNEL_PREFIXES = "#&!+";
-
-/** Own messages of these types mean the user read the channel (draft/read-marker). */
-const SELF_READ_TYPES: ReadonlySet<MessageType> = new Set([
-	MessageType.MESSAGE,
-	MessageType.ACTION,
-	MessageType.NOTICE,
-]);
 
 export class IrcClient {
 	readonly uuid: string;
@@ -1446,15 +1443,21 @@ export class IrcClient {
 				chan.type === ChanType.CHANNEL && chan.autoJoin && chan.state === ChanState.PARTED
 		);
 
-		if (joining.length === 0) {
-			return;
+		if (joining.length > 0) {
+			this.joinChannels(joining.map((chan) => ({name: chan.name, key: chan.shared.key})));
+			const active = joining.find((chan) => chan.id === this.activeChanId);
+
+			if (active) {
+				prefetchCatchup(this, active);
+			}
 		}
 
-		this.joinChannels(joining.map((chan) => ({name: chan.name, key: chan.shared.key})));
-		const active = joining.find((chan) => chan.id === this.activeChanId);
-
-		if (active) {
-			prefetchCatchup(this, active);
+		// A logged query with unread lines asks for its read marker behind
+		// the channels, a slot from now (catchup.ts): never in this flush.
+		for (const chan of this.channels) {
+			if (chan.type === ChanType.QUERY) {
+				enqueueMarkerFetch(this, chan);
+			}
 		}
 	}
 
@@ -2214,9 +2217,13 @@ export class IrcClient {
 		const chan = this.channelById(chanId);
 
 		if (chan) {
-			chan.shared.unread = 0;
-			chan.shared.highlight = 0;
-			scheduleMarkRead(this, chan);
+			// Only a person looking reads it: a page that lands here hidden
+			// (a cold start, a deep link) leaves that to attention returning
+			// (presence.ts).
+			if (this.presence.attended) {
+				readNow(this, chan);
+			}
+
 			prioritiseCatchup(this, chan);
 
 			if (
@@ -2566,10 +2573,21 @@ export class IrcClient {
 
 			const ids = this.historyIds(messages.length);
 			let lastRef: MsgRef | undefined;
+			// Lines this device had not read when the page went away count
+			// again; in a log from before the read point was kept, nothing does.
+			const read = this.queryLog.readUpTo(chan.name);
+			const page: Array<[SharedMsg, MsgRef]> = [];
+			let lastRead = 0;
 
 			messages.forEach((msg, i) => {
 				msg.id = ids[i];
-				lastRef = chan.remember(msg);
+				const ref = chan.remember(msg);
+				lastRef = ref;
+				page.push([msg, ref]);
+
+				if (read && ref.time.getTime() <= read.getTime()) {
+					lastRead = msg.id;
+				}
 			});
 
 			for (const [msgid, index] of this.queryLog.aliases(chan.name)) {
@@ -2586,6 +2604,14 @@ export class IrcClient {
 				totalMessages: chan.shared.totalMessages,
 				moreAvailable: false,
 			});
+
+			if (read && read.getTime() > 0) {
+				chan.readMarker = read;
+			}
+
+			if (read) {
+				countPageUnread(this, chan, page, read, lastRead);
+			}
 		}
 	}
 
@@ -2650,10 +2676,10 @@ export class IrcClient {
 	/**
 	 * Allocate an id, keep the unread counters and dispatch `msg`. Mirrors
 	 * `Chan.pushMessage` in the old server. With `replay` (history catch-up
-	 * appends) the message is delivered — highlight included, so a replayed
-	 * mention renders as one — but stays silent: no unread / highlight
-	 * counting here, and the flag travels on the `msg` event so the
-	 * consumer skips notifications and the mentions list.
+	 * appends) the message counts as unread as it would have live — what
+	 * someone else said, not an edit, newer than the read marker — and
+	 * `increasesUnread` is ignored; the flag travels on the `msg` event so
+	 * the consumer skips notifications and the mentions list.
 	 */
 	pushMessage(
 		chan: Channel,
@@ -2678,20 +2704,36 @@ export class IrcClient {
 		const ref = chan.remember(msg);
 		chan.newestRef = ref;
 		this.noteCursor(msg);
+
+		if (chan.type === ChanType.QUERY) {
+			// Before the counting below, which may move the read point it keeps.
+			this.queryLog.append(chan.name, msg);
+		}
+
 		const shared = chan.shared;
 		shared.totalMessages++;
 		// Already read on another session (draft/read-marker), e.g. a catch-up.
 		const read =
 			chan.readMarker !== undefined && ref.time.getTime() <= chan.readMarker.getTime();
+		const said = SAID_TYPES.has(msg.type ?? MessageType.MESSAGE);
 
 		if (msg.self) {
-			shared.unread = 0;
-			shared.highlight = 0;
-			shared.firstUnread = msg.id;
-
 			// Something we said is read by definition; our own JOIN/MODE
-			// echoes are not (a reconnect must not advance the marker).
-			if (SELF_READ_TYPES.has(msg.type ?? MessageType.MESSAGE)) {
+			// are not (a reconnect must not advance the read marker), and
+			// replayed by a catch-up they leave the counters and the
+			// new-messages line where the lines before them put them.
+			if (said || !replay) {
+				shared.firstUnread = msg.id;
+			}
+
+			if (said && replay) {
+				// An old line of ours in a catch-up read what came before it,
+				// not a live line that arrived while the catch-up was out. No
+				// MARKREAD: the server has the line, and the marker is now at it.
+				applyReadMarker(this, chan, ref.time);
+			} else if (said) {
+				shared.unread = 0;
+				shared.highlight = 0;
 				scheduleMarkRead(this, chan);
 			}
 		} else if (chan.id === this.activeChanId && this.presence.attended) {
@@ -2703,12 +2745,13 @@ export class IrcClient {
 				shared.firstUnread = msg.id;
 			}
 
-			if ((increasesUnread || msg.highlight) && !replay) {
+			// A catch-up line counts as privmsg.ts counts a live one.
+			if (replay ? countsAsUnread(msg) : increasesUnread || msg.highlight) {
 				shared.unread++;
 				ref.unread = true;
 			}
 
-			if (msg.highlight && !replay) {
+			if (msg.highlight) {
 				shared.highlight++;
 				ref.highlight = true;
 			}
@@ -2721,10 +2764,6 @@ export class IrcClient {
 			highlight: shared.highlight,
 			...(replay ? {replay: true} : {}),
 		});
-
-		if (chan.type === ChanType.QUERY) {
-			this.queryLog.append(chan.name, msg);
-		}
 
 		return msg;
 	}

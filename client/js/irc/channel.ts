@@ -12,6 +12,28 @@ import type {HistorySpec} from "./history";
 
 export type Casefold = (s: string) => string;
 
+/**
+ * Lines someone says. Our own mean we read the channel (draft/read-marker);
+ * someone else's count as unread, live or caught up.
+ */
+export const SAID_TYPES: ReadonlySet<MessageType> = new Set([
+	MessageType.MESSAGE,
+	MessageType.ACTION,
+	MessageType.NOTICE,
+]);
+
+/**
+ * A line delivered without a live `pushMessage` (a history page, a restored
+ * query log) counts as unread past the read marker when a live one would
+ * have: something someone else said, not an edit, or a highlight.
+ */
+export function countsAsUnread(msg: SharedMsg): boolean {
+	return (
+		!msg.self &&
+		((SAID_TYPES.has(msg.type ?? MessageType.MESSAGE) && !msg.editOf) || !!msg.highlight)
+	);
+}
+
 /** What a CHATHISTORY request can point at: a message's msgid and/or time. */
 export interface MsgRef {
 	msgid?: string;
