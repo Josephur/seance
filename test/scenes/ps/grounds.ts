@@ -1,5 +1,5 @@
 import {expect} from "chai";
-import {contrast, luminance, mix} from "../../../client/js/scenes/ps/colour";
+import {contrast, hexToOklch, luminance, mix} from "../../../client/js/scenes/ps/colour";
 import {
 	momentFor,
 	SOLAR_NOON,
@@ -17,6 +17,7 @@ import {
 	inkHolds,
 	inkWindow,
 	publishedFor,
+	rimFor,
 	SCHEDULE_STEP,
 	sceneGrounds,
 	treatmentFor,
@@ -314,5 +315,33 @@ describe("ps grounds: what the chrome reads (publishedFor)", function () {
 		expect(publishedFor({...p, dark: GLASS_NIGHT_AT}, m).light).to.equal("day");
 		expect(publishedFor({...p, dark: GLASS_NIGHT_AT + 0.01}, m).light).to.equal("night");
 		expect(publishedFor({...p, dark: TEXT_LIGHT_AT + 0.01}, m).text).to.equal("light");
+	});
+});
+
+describe("ps grounds: the rim's colour (docs/projects/ps-words.md §5, the tinted rim)", function () {
+	const noon = momentFor({
+		minute: 750,
+		doy: 172,
+		dayNumber: 172,
+		epochDays: 20000,
+		weather: "clear",
+	});
+
+	it("is the sky-top at 0.45 of its OKLCH lightness, hue kept, in gamut", function () {
+		const rim = rimFor({skyTop: "#4090e6"});
+		expect(rim).to.match(/^#[0-9a-f]{6}$/);
+		const [L, , h] = hexToOklch(rim);
+		const [L0, , h0] = hexToOklch("#4090e6");
+		expect(L).to.be.closeTo(L0 * 0.45, 0.02);
+		expect(Math.abs(h - h0)).to.be.below(0.05);
+	});
+
+	it("is near black over a night sky", function () {
+		expect(hexToOklch(rimFor({skyTop: "#070c1f"}))[0]).to.be.below(0.1);
+	});
+
+	it("is published beside the halo: publishedFor's rim is rimFor of the palette's sky-top", function () {
+		const p = paletteAt(noon);
+		expect(publishedFor(p, noon).rim).to.equal(rimFor({skyTop: p.skyTop}));
 	});
 });

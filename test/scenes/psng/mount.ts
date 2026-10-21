@@ -238,6 +238,7 @@ describe("ps NG scene: mount (psng/scene.ts, on a stand-in page)", function () {
 				},
 				htmlStyle: {
 					"--ps-halo": "#ebf6fd",
+					"--ps-rim": "#042c53",
 					"--canvas-bg-color": "#4291e6",
 					"--ps-g-tint-header": "0.44",
 					"--ps-g-tint-composer": "0.40",
