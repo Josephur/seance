@@ -134,6 +134,16 @@ const ON_CODE_BOX = /^--tok-[a-z]+$|^--md-code-color$/;
 /** The sweep the light nicks take below the default font-size step, if the light sweep needs one. */
 const SMALL = smallStepSweep(SWEEP);
 
+/** The scrim's far edge: this fraction of the card tint (ps.css's scrim gradient, docs/projects/ps-words.md §4.3). */
+const SCRIM_FAR = 0.3;
+
+/**
+ * What the ink reaches at the scrim's far edge, pinned from the first run
+ * (floored to two decimals) rather than held: words that reach the far side
+ * read under the floor by the user's choice (ps-words.md §4.3, §9).
+ */
+const SCRIM_FAR_FLOOR = {day: 2.12, night: 1.42};
+
 /** --ps-code-bg as each treatment's rule declares it. */
 function codeBoxes(): Partial<Record<Text, string>> {
 	const out: Partial<Record<Text, string>> = {};
@@ -984,5 +994,45 @@ describe("ps: the words over the plains and on the glass keep their floors: ever
 		const header = headerOf(surfaceBlock);
 		expect(DAY_CARD_TEXT).to.equal(/lightest text \S+ (#[0-9a-f]{6})/.exec(header)![1]);
 		expect(DAY_CARD_FAINT).to.equal(/faint ink (#[0-9a-f]{6})/.exec(header)![1]);
+	});
+	it("holds the day surface palette at the card tints the scene computes (flat, every ground) and on the glass column at the float tint through the lift", function () {
+		const list = dayGlassGrounds("sparse", headers, ["card", "float"]);
+		expect(list.filter((x) => x.surface === "card").length).to.be.greaterThan(1000);
+		expect(list.filter((x) => x.surface === "float").length).to.be.greaterThan(1000);
+		expect(
+			Math.max(...list.filter((x) => x.surface === "card").map((x) => x.tint))
+		).to.be.at.most(SURFACE.day.base);
+
+		for (const h of surfaceHeld("day")) {
+			const w = worstSurface(h, list);
+			expect(w.ratio, `${h.what} ${h.value} at ${w.where}`).to.be.at.least(h.floor);
+		}
+	});
+
+	it("the scrim's far edge (0.3 of the card tint) is pinned, not held: the ink's worst figure by day and by night, two decimals", function () {
+		const s = surfaceDeclared();
+		const dayFar = dayGlassGrounds("sparse", headers, ["card"]).map((x) => {
+			const hex = surfaceGround(x.raw, "day", SCRIM_FAR * x.tint);
+			return {...x, hex, lum: luminance(hex)};
+		});
+		const nightFar = underSurface("night", SCRIM_FAR * Number(s.night.tokens["--ps-s-tint"]));
+		const day = worst(s.day.tokens["--chat-fg"], dayFar);
+		const night = worst(s.night.tokens["--chat-fg"], nightFar);
+		const dayMuted = worst(s.day.tokens["--chat-fg-muted"], dayFar);
+		const nightMuted = worst(s.night.tokens["--chat-fg-muted"], nightFar);
+		// eslint-disable-next-line no-console -- the figures the pins are read from
+		console.log(
+			`      scrim far edge: day ink ${day.ratio.toFixed(2)} at ${
+				day.where
+			}; muted ${dayMuted.ratio.toFixed(2)}; night ink ${night.ratio.toFixed(2)} at ${
+				night.where
+			}; muted ${nightMuted.ratio.toFixed(2)}`
+		);
+		expect(Number(day.ratio.toFixed(2)), `day: ${day.where}`).to.be.at.least(
+			SCRIM_FAR_FLOOR.day
+		);
+		expect(Number(night.ratio.toFixed(2)), `night: ${night.where}`).to.be.at.least(
+			SCRIM_FAR_FLOOR.night
+		);
 	});
 });
