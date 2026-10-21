@@ -3,7 +3,7 @@ import fs from "fs";
 import path from "path";
 import {contrast, luminance, mix} from "../../../client/js/scenes/ps/colour";
 import {type Moment} from "../../../client/js/scenes/ps/engine";
-import {DAY_GLASS_MARK} from "../../../client/js/scenes/ps/glass";
+import {DAY_CARD_FAINT, DAY_CARD_TEXT, DAY_GLASS_MARK} from "../../../client/js/scenes/ps/glass";
 import {AREAS, INK_FAINT_HELD, publishedFor} from "../../../client/js/scenes/ps/grounds";
 import {paletteAt, type Palette} from "../../../client/js/scenes/ps/palette";
 import {
@@ -971,8 +971,18 @@ describe("ps: the words over the plains and on the glass keep their floors: ever
 			: s.tokens[name];
 		expect(declared, name).to.equal(hex);
 
-		for (const h of surfaceHeld("day").filter((x) => !x.box && !x.faintOf)) {
+		for (const h of surfaceHeld("day").filter((x) => !x.box && !x.faintOf && x.floor === 4.5)) {
 			expect(luminance(h.value), h.what).to.be.at.most(luminance(hex) + 1e-9);
 		}
+
+		const faint = /faint ink (#[0-9a-f]{6}) \(held at 3\)/.exec(headerOf(surfaceBlock));
+		expect(faint, "the header's faint ink").to.not.equal(null);
+		expect(s.tokens["--chat-fg-faint"]).to.equal(faint![1]);
+	});
+
+	it("the page's card tint is solved for the same two colours: glass.ts's DAY_CARD_TEXT and DAY_CARD_FAINT are the header's", function () {
+		const header = headerOf(surfaceBlock);
+		expect(DAY_CARD_TEXT).to.equal(/lightest text \S+ (#[0-9a-f]{6})/.exec(header)![1]);
+		expect(DAY_CARD_FAINT).to.equal(/faint ink (#[0-9a-f]{6})/.exec(header)![1]);
 	});
 });

@@ -367,7 +367,7 @@ export interface SurfaceSolved {
 	alpha: number;
 	tokens: Record<string, string>;
 	nicks: string[];
-	/** The lightest colour of the day rule (the one the page's card tint is solved for) — null at night. */
+	/** The lightest colour held at 4.5 in the day rule (the one the page's card tint is solved for, with the faint ink at 3) — null at night. */
 	lightest: {name: string; hex: string} | null;
 	/** The worst five grounds under the surface at `alpha`, worst first. */
 	worst: CheckedGround[];
@@ -598,6 +598,7 @@ function solveSurface(light: Light, raw: CheckedGround[], lifted: CheckedGround[
 				([name, hex]) =>
 					/^#[0-9a-f]{6}$/.test(hex) &&
 					name !== "--ps-code-bg" &&
+					name !== "--chat-fg-faint" &&
 					!/^--tok-|^--md-code-color$/.test(name)
 			),
 			...nicks.map((hex, i) => [`.user.color-${i + 1}`, hex] as [string, string]),
@@ -982,7 +983,7 @@ export function surfaceBlock(s: Solved): string {
 		" * pinned rather than held (ps-theme.md §11).",
 		` *   day: opacity ${day.alpha} (declared, the mock-up's), lightest text ${
 			day.lightest!.name
-		} ${day.lightest!.hex}`,
+		} ${day.lightest!.hex}, faint ink ${day.tokens["--chat-fg-faint"]} (held at 3)`,
 		` *   night: opacity ${night.alpha} (spec ${SURFACE.night.base}, cap ${SURFACE.night.cap})`,
 		" * The worst grounds under the day surface, darkest first, at its opacity:",
 		...day.worst.map(groundLine),

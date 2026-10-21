@@ -33,8 +33,9 @@ import {defaultFontSize, fontSizes, type FontSize} from "../../client/js/helpers
 import {luminance, mix} from "../../client/js/scenes/ps/colour";
 import {momentFor, WEATHERS, type Moment, type Weather} from "../../client/js/scenes/ps/engine";
 import {
-	GLASS_SURFACES,
+	CHROME_SURFACES,
 	isBehind,
+	throughCard,
 	throughDayGlass,
 	tintsOver,
 	type GlassSurface,
@@ -528,6 +529,8 @@ export interface DayGlassGround extends CheckedGround {
 	/** The glass surface it was seen through, and that surface's tint at the moment. */
 	surface: GlassSurface;
 	tint: number;
+	/** The scene's ground before the tint (the card's and the scrim's far edge are re-tinted from it). */
+	raw: string;
 }
 
 const dayGlassCache = new Map<string, DayGlassGround[]>();
@@ -542,8 +545,12 @@ const dayGlassCache = new Map<string, DayGlassGround[]>();
  * colour, at the first moment that meets it. The sparse sweep's day half is
  * about 27,000 moments.
  */
-export function dayGlassGrounds(days: Days, pinned = ""): DayGlassGround[] {
-	const key = `${days}\n${pinned}`;
+export function dayGlassGrounds(
+	days: Days,
+	pinned = "",
+	surfaces: readonly GlassSurface[] = CHROME_SURFACES
+): DayGlassGround[] {
+	const key = `${days}\n${pinned}\n${surfaces.join(" ")}`;
 	const hit = dayGlassCache.get(key);
 
 	if (hit) {
@@ -562,7 +569,7 @@ export function dayGlassGrounds(days: Days, pinned = ""): DayGlassGround[] {
 		const grounds = paintedGrounds(m, paletteAt(m));
 		const tints = tintsOver(grounds);
 
-		for (const surface of GLASS_SURFACES) {
+		for (const surface of surfaces) {
 			const tint = tints[surface];
 
 			for (const g of grounds) {
@@ -570,10 +577,13 @@ export function dayGlassGrounds(days: Days, pinned = ""): DayGlassGround[] {
 					continue;
 				}
 
-				const hex = throughDayGlass(g.hex, tint);
+				// The card is flat (no backdrop filter): the tint straight over the ground.
+				const hex =
+					surface === "card" ? throughCard(g.hex, tint) : throughDayGlass(g.hex, tint);
+				const seenKey = `${surface === "card" ? "card " : ""}${hex}`;
 
-				if (!seen.has(hex)) {
-					seen.add(hex);
+				if (!seen.has(seenKey)) {
+					seen.add(seenKey);
 					out.push({
 						hex,
 						name: g.name,
@@ -583,6 +593,7 @@ export function dayGlassGrounds(days: Days, pinned = ""): DayGlassGround[] {
 						where: `${where}, the ${surface} at ${tint.toFixed(2)}`,
 						surface,
 						tint,
+						raw: g.hex,
 					});
 				}
 			}

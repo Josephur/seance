@@ -2309,7 +2309,7 @@ html[data-shell="native"] #viewport {
  * under the declared one (client/js/scenes/ps/glass.ts: the card holds the
  * lightest text named here at 4.6), and the scrim's far edge, 0.3 of it, is
  * pinned rather than held (ps-theme.md §11).
- *   day: opacity 0.66 (declared, the mock-up's), lightest text --chat-fg-faint #4c5a72
+ *   day: opacity 0.66 (declared, the mock-up's), lightest text .user.color-14 #4e4809, faint ink #4c5a72 (held at 3)
  *   night: opacity 0.7 (spec 0.62, cap 0.74)
  * The worst grounds under the day surface, darkest first, at its opacity:
  *   #cab0b3  doy 295 1070 min clear  blade #641f36

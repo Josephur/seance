@@ -667,7 +667,9 @@ describe("the ps theme's chrome: glass over the plains (docs/projects/ps-theme.m
 	}
 
 	it("gives each glass surface its day tint: the scene's for that surface (glass.ts), the generated one without the scene", function () {
-		expect(Object.keys(TINT_OF)).to.have.members(GLASS_SURFACES);
+		// The card is not chrome: the Bubbles row reads it with the surface
+		// palette's declared tint as the fallback (the words describe holds it).
+		expect(Object.keys(TINT_OF)).to.have.members(GLASS_SURFACES.filter((s) => s !== "card"));
 
 		for (const [selector, surface] of Object.entries(TINT_OF)) {
 			expect(valueOf(selector, "--ps-g-tint"), selector).to.equal(readsTint(surface));

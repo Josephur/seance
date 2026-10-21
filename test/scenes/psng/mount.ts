@@ -244,6 +244,7 @@ describe("ps NG scene: mount (psng/scene.ts, on a stand-in page)", function () {
 					"--ps-g-tint-composer": "0.40",
 					"--ps-g-tint-side": "0.51",
 					"--ps-g-tint-float": "0.60",
+					"--ps-g-tint-card": "0.49",
 				},
 				htmlClasses: [],
 				rootWeather: "clear",
