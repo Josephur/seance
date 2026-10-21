@@ -37,6 +37,7 @@ import {
 	checkedGrounds,
 	dayGlassGrounds,
 	glassGround,
+	SURFACE,
 	SURFACE_NIGHT_ROOT,
 	SURFACE_ROOT,
 	type Light,
@@ -3178,6 +3179,43 @@ describe("the ps theme's words: the surface family (docs/projects/ps-words.md §
 			expect(valueOf(s, "background-image", REDUCED_TRANSPARENCY), s).to.equal("none");
 			expect(valueOf(s, "backdrop-filter", REDUCED_TRANSPARENCY), s).to.equal("none");
 		}
+	});
+
+	it("without the scene (no data-ps-light, no data-ps-words) the column is the day surface: paper cards at the declared 0.66, the chrome's day ink, plain words; the outline keeps its halo in the fallback colour", function () {
+		// resolve() takes one var() at a time; a nested fallback needs another pass.
+		const resolveAll = (palette: Map<string, string>, value: string) => {
+			let out = value;
+
+			for (let prev = ""; prev !== out; ) {
+				prev = out;
+				out = resolve(palette, out);
+			}
+
+			return out;
+		};
+
+		const day = new Map([...paletteOf("day"), ...declsOf(SURFACE_ROOT)]);
+		expect(
+			resolveAll(day, valueOf(`${BUBBLES} #chat .chat .msg`, "background-color")!)
+		).to.equal("rgb(255 251 244 / 0.66)");
+		expect(
+			resolveAll(day, `${valueOf(`${GLASS_COLUMN} ${COLUMN}`, "background-color")}`)
+		).to.equal("rgb(255 251 244 / 0.66)");
+		expect(resolveAll(day, "var(--chat-fg)")).to.equal(SURFACE.day.ink);
+		expect(resolveAll(day, "var(--window-bg-color)")).to.equal("#fbf8f2");
+		expect(
+			valueOf(
+				`${SURFACE_ROOT} :is(.msg, .show-more, .search-status, .search-scope-note)`,
+				"text-shadow"
+			)
+		).to.equal("none");
+		expect(
+			resolveAll(
+				paletteOf("day"),
+				valueOf(':root[data-ps-words="outline"] #chat .chat .msg', "text-shadow")!
+			)
+		).to.equal("0 0 0.375rem #ebf5fd, 0 0 0.125rem #ebf5fd, 0 0 0.0625rem #ebf5fd");
+		expect(resolveAll(paletteOf("day"), "var(--ps-rim)")).to.equal("#123a6e");
 	});
 
 	it("no other stylesheet reads data-ps-words", function () {
