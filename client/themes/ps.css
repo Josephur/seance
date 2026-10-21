@@ -2744,6 +2744,19 @@ html[data-contrast="more"]:root[data-ps-text="light"] #chat .chat {
 	background-color: rgb(12 17 32 / var(--ps-s-tint));
 }
 
+/* style.css clears an own message's background (`html:not([data-own-messages="band"])
+ * #chat .msg.self[data-type="message"]`, and the band look paints its own faint
+ * tint) above the card rule's specificity: the card is restated above both,
+ * day and night. Under Bubbles an own row is told apart by its muted text
+ * (the default look) and not by a band: the card is the row's surface. */
+:root:is(:not([data-ps-words]), [data-ps-words="bubbles"]) #chat .chat .msg.self:is([data-type="message"], [data-type="action"]) {
+	background-color: rgb(255 251 244 / var(--ps-g-tint-card, var(--ps-s-tint)));
+}
+
+:root[data-ps-light="night"]:is(:not([data-ps-words]), [data-ps-words="bubbles"]) #chat .chat .msg.self:is([data-type="message"], [data-type="action"]) {
+	background-color: rgb(12 17 32 / var(--ps-s-tint));
+}
+
 /* The marker labels sit on their line in style.css's px padding; the card's
  * is the row's, in rem, and the labels keep their line's centre. */
 :root:is(:not([data-ps-words]), [data-ps-words="bubbles"]) #chat .chat .date-marker-text::before,

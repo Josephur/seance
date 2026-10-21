@@ -3040,6 +3040,17 @@ describe("the ps theme's words: the surface family (docs/projects/ps-words.md §
 		).to.equal("none");
 	});
 
+	it("bubbles keeps the card on your own rows: style.css clears an own message's background at a higher specificity than the card rule, and ps.css restates it above that", function () {
+		const own = `${BUBBLES} #chat .chat .msg.self:is([data-type="message"], [data-type="action"])`;
+		expect(valueOf(own, "background-color")).to.equal(CARD_DAY);
+		expect(
+			valueOf(
+				`${BUBBLES_NIGHT} #chat .chat .msg.self:is([data-type="message"], [data-type="action"])`,
+				"background-color"
+			)
+		).to.equal(CARD_NIGHT);
+	});
+
 	it("bubbles anchors the message toolbar to the row's start, so a short card never carries it off the column", function () {
 		const bar = `${BUBBLES} #chat .chat .msg .msg-actions`;
 		expect(valueOf(bar, "right")).to.equal("auto");
