@@ -399,17 +399,20 @@
 .irc-fg5 { color: #85144b; }
 .irc-fg12 { color: #0074d9; }
 
-/* Those three are dark-on-light; on the night glass, and in the message column
- * while it carries data-ps-text="light", restate coffee's own (brighter)
- * values. */
+/* Those three are dark-on-light; on the night glass (the surface family's
+ * column included: its words are keyed on the hour), and in the message
+ * column while the shadow family's words are light, restate coffee's own
+ * (brighter) values. */
+/* stylelint-disable max-line-length -- the shadow family's scope is long */
 :root[data-ps-light="night"] .irc-fg2,
-:root[data-ps-text="light"] #chat .chat .irc-fg2 { color: #0074d9; }
+:root:is([data-ps-words="outline"], [data-ps-words="rim"], [data-ps-words="glow"])[data-ps-text="light"] #chat .chat .irc-fg2 { color: #0074d9; }
 
 :root[data-ps-light="night"] .irc-fg5,
-:root[data-ps-text="light"] #chat .chat .irc-fg5 { color: #e969a7; }
+:root:is([data-ps-words="outline"], [data-ps-words="rim"], [data-ps-words="glow"])[data-ps-text="light"] #chat .chat .irc-fg5 { color: #e969a7; }
 
 :root[data-ps-light="night"] .irc-fg12,
-:root[data-ps-text="light"] #chat .chat .irc-fg12 { color: #50a8ff; }
+:root:is([data-ps-words="outline"], [data-ps-words="rim"], [data-ps-words="glow"])[data-ps-text="light"] #chat .chat .irc-fg12 { color: #50a8ff; }
+/* stylelint-enable max-line-length */
 
 /* ---- type ---- */
 
@@ -2757,6 +2760,15 @@ html[data-contrast="more"]:root[data-ps-text="light"] #chat .chat {
 	background-color: rgb(12 17 32 / var(--ps-s-tint));
 }
 
+/* The "Highlighted row" look (style.css's data-own-messages="band": its tint
+ * on the row, the text no longer muted) keeps its band on the card: the
+ * band's tint as an image over the card's fill, in both lights, and over the
+ * solid card under reduced transparency (the solid rule names the card rows
+ * at a lower specificity and takes only the scrim's image away). */
+html[data-own-messages="band"]:is(:not([data-ps-words]), [data-ps-words="bubbles"]) #chat .chat .msg.self:is([data-type="message"], [data-type="action"]) {
+	background-image: linear-gradient(var(--own-bg, color-mix(in srgb, currentcolor 7%, transparent)) 0 0);
+}
+
 /* The marker labels sit on their line in style.css's px padding; the card's
  * is the row's, in rem, and the labels keep their line's centre. */
 :root:is(:not([data-ps-words]), [data-ps-words="bubbles"]) #chat .chat .date-marker-text::before,
@@ -3548,7 +3560,8 @@ html[data-reduce-motion]:root {
 
 /* A system that asks for less transparency gets the chrome solid: no blur, the
  * solid colour, by day and at night — and the words' surfaces with it (the
- * card and the pills, the glass column, the scrim without its gradient). The phone's overlays are named by their
+ * card and the pills, an own row's card and a mention's, the glass column,
+ * the scrim without its gradient). The phone's overlays are named by their
  * state selectors too, which a bare #sidebar would lose to on specificity. */
 @media (prefers-reduced-transparency: reduce) {
 	/* stylelint-disable max-line-length -- the words' surfaces' scopes */
@@ -3567,6 +3580,12 @@ html[data-reduce-motion]:root {
 	:root[data-ps-light="night"] #chat .msg-reaction:not(.self, .msg-reaction-add),
 	:root:is(:not([data-ps-words]), [data-ps-words="bubbles"]) #chat .chat .msg,
 	:root[data-ps-light="night"]:is(:not([data-ps-words]), [data-ps-words="bubbles"]) #chat .chat .msg,
+	:root:is(:not([data-ps-words]), [data-ps-words="bubbles"]) #chat .chat .msg.self:is([data-type="message"], [data-type="action"]),
+	:root[data-ps-light="night"]:is(:not([data-ps-words]), [data-ps-words="bubbles"]) #chat .chat .msg.self:is([data-type="message"], [data-type="action"]),
+	:root:is(:not([data-ps-words]), [data-ps-words="bubbles"], [data-ps-words="glass"], [data-ps-words="scrim"]) #chat .chat-view[data-type="channel"] .msg.highlight,
+	:root:is(:not([data-ps-words]), [data-ps-words="bubbles"], [data-ps-words="glass"], [data-ps-words="scrim"]) #chat .chat-view[data-type="query"] .msg.highlight,
+	:root[data-ps-light="night"]:is(:not([data-ps-words]), [data-ps-words="bubbles"], [data-ps-words="glass"], [data-ps-words="scrim"]) #chat .chat-view[data-type="channel"] .msg.highlight,
+	:root[data-ps-light="night"]:is(:not([data-ps-words]), [data-ps-words="bubbles"], [data-ps-words="glass"], [data-ps-words="scrim"]) #chat .chat-view[data-type="query"] .msg.highlight,
 	:root:is(:not([data-ps-words]), [data-ps-words="bubbles"]) #chat .chat .show-more .btn,
 	:root[data-ps-light="night"]:is(:not([data-ps-words]), [data-ps-words="bubbles"]) #chat .chat .show-more .btn,
 	:root:is(:not([data-ps-words]), [data-ps-words="bubbles"]) #chat .chat .date-marker-text::before,

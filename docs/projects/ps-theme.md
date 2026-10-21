@@ -910,7 +910,8 @@ One spec, five plans, each shippable on its own:
   - The scrim's far side, the rim over the brightest grounds and the glow over most bright grounds read under the theme's usual floor, by the user's choice; the figures are pinned (§11).
   - The glass column's cost: measured by `tools/scenarios/ps-words-cost.mjs` (headless, software composited, a clear noon at Scene animation Full, ten seconds each, the frame intervals a requestAnimationFrame loop sees): on the desktop layout the outline's frames came 28.2 ms apart on average (p95 33.4), Bubbles' 26.0 (33.4; fewer shadows per glyph) and the glass column's **50.8 (p95 66.7, the worst 99.9)** — the backdrop blur over the whole message list about doubles the interval where the CPU rasterises it; on the phone layout all three held 16.7 ms (p95 16.7), since the column there carries no blur. No long task in any sample. A GPU-composited browser blurs on the GPU and pays far less; the figures compare the treatments with each other on this host, as §10.1's do.
   - `tools/scenarios/ps-scene-settings.mjs`'s calm list had been stale since plan 5 (calm is the clouds alone); corrected while the words setting was added.
-  - Under Bubbles an own row keeps its card above `style.css`'s own-message rules, so the "Highlighted row" look (`data-own-messages="band"`) shows no band there: the card is the row's surface, and own rows are told apart by their muted text or not at all.
+  - Under Bubbles an own row keeps its card above `style.css`'s own-message rules; the "Highlighted row" look (`data-own-messages="band"`) lays its tint over the card as an image, so the band still shows (the review's finding; it had been lost at first).
+  - The three mIRC colours that are dark-on-light (`.irc-fg2`, `-fg5`, `-fg12`) take coffee's brighter values at night and under the shadow family's light words; on a day card they stay dark (the review's finding).
 
 **Handed to plan 5:** right-to-left (§5.8).
 

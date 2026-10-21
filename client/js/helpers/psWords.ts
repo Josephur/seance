@@ -34,8 +34,8 @@ export const psWordsHints: Record<PsWords, string> = {
 	glass: "the whole column on frosted glass, the plains a wash behind it",
 	scrim: "a soft wash across the column, stronger near the edge, no blur",
 	outline: "white words in a dark outline; ink on snowy days",
-	rim: "a thinner rim in the sky's own colour",
-	glow: "a soft dark glow and nothing else; over the moon and a bright cloud it reads under the usual floor",
+	rim: "a thinner rim in the sky's own colour; by day it reads under the usual floor",
+	glow: "a soft dark glow and nothing else; by day it reads well under the usual floor",
 };
 
 /** A stored setting can be anything (a stale key, hand-edited localStorage); anything that is not one of the six means the default. */

@@ -34,5 +34,9 @@ describe("helpers/psWords (the ps theme's Words over the plains setting)", funct
 			expect(psWordsHints[w], w).to.be.a("string").and.not.empty;
 			expect(psWordsHints[w], w).to.not.include("\n");
 		}
+
+		// The two that read under the theme's usual floor by day say so (the build's own figures, docs/projects/ps-words.md §10).
+		expect(psWordsHints.glow).to.include("by day");
+		expect(psWordsHints.rim).to.include("by day");
 	});
 });

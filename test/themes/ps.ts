@@ -3051,6 +3051,15 @@ describe("the ps theme's words: the surface family (docs/projects/ps-words.md §
 		).to.equal(CARD_NIGHT);
 	});
 
+	it("bubbles keeps the Highlighted row look: under data-own-messages=band an own row's card carries the band's tint as an image over the card, in both lights and under reduced transparency", function () {
+		const own = `html[data-own-messages="band"]:is(:not([data-ps-words]), [data-ps-words="bubbles"]) #chat .chat .msg.self:is([data-type="message"], [data-type="action"])`;
+		const band =
+			"linear-gradient(var(--own-bg, color-mix(in srgb, currentcolor 7%, transparent)) 0 0)";
+		expect(valueOf(own, "background-image")).to.equal(band);
+		// The solid rule names the card rows at a lower specificity, so the band's image stays over the solid card.
+		expect(rules.filter((r) => r.at === REDUCED_TRANSPARENCY)[0].selectors).to.not.include(own);
+	});
+
 	it("bubbles anchors the message toolbar to the row's start, so a short card never carries it off the column", function () {
 		const bar = `${BUBBLES} #chat .chat .msg .msg-actions`;
 		expect(valueOf(bar, "right")).to.equal("auto");
@@ -3120,6 +3129,27 @@ describe("the ps theme's words: the surface family (docs/projects/ps-words.md §
 		expect(valueOf(':root[data-ps-text="light"] #chat .chat a', "text-decoration")).to.equal(
 			undefined
 		);
+
+		// The three mIRC colours that are dark-on-light: brighter under the
+		// shadow family's light words and at night, never on a day card.
+		for (const [code, bright] of [
+			["irc-fg2", "#0074d9"],
+			["irc-fg5", "#e969a7"],
+			["irc-fg12", "#50a8ff"],
+		]) {
+			expect(
+				valueOf(`:root[data-ps-text="light"] #chat .chat .${code}`, "color"),
+				code
+			).to.equal(undefined);
+			expect(
+				valueOf(`${SHADOW_WORDS_ROOT}[data-ps-text="light"] #chat .chat .${code}`, "color"),
+				code
+			).to.equal(bright);
+			expect(valueOf(`:root[data-ps-light="night"] .${code}`, "color"), code).to.equal(
+				bright
+			);
+		}
+
 		expect(
 			valueOf(`${SHADOW_WORDS_ROOT}[data-ps-text="light"] #chat .chat`, "--window-bg-color")
 		).to.equal("#121827");
@@ -3164,9 +3194,19 @@ describe("the ps theme's words: the surface family (docs/projects/ps-words.md §
 	});
 
 	it("turns every surface solid under reduced transparency: the card, the pills, the glass column and the scrim, by day and at night, in the file's last rule", function () {
+		const own = (root: string) =>
+			`${root} #chat .chat .msg.self:is([data-type="message"], [data-type="action"])`;
+		const wash = (root: string, type: string) =>
+			`${root} #chat .chat-view[data-type="${type}"] .msg.highlight`;
 		const surfaces = [
 			`${BUBBLES} #chat .chat .msg`,
 			`${BUBBLES_NIGHT} #chat .chat .msg`,
+			own(BUBBLES),
+			own(BUBBLES_NIGHT),
+			wash(`:root${WORDS_SURFACE}`, "channel"),
+			wash(`:root${WORDS_SURFACE}`, "query"),
+			wash(`:root[data-ps-light="night"]${WORDS_SURFACE}`, "channel"),
+			wash(`:root[data-ps-light="night"]${WORDS_SURFACE}`, "query"),
 			...PILLS.flatMap((p) => [
 				`${BUBBLES} #chat .chat ${p}`,
 				`${BUBBLES_NIGHT} #chat .chat ${p}`,
