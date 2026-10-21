@@ -1,7 +1,8 @@
 // The ps theme's own settings (Settings → Appearance, shown under the theme
 // select while ps is the theme): Scene animation (auto, full, calm,
-// still), Pause the scene when
-// the window isn't in use, and Combine messages from the same person.
+// still), Pause the scene when the window isn't in use, Words over the
+// plains (bubbles, glass, scrim, outline, rim, glow; docs/projects/ps-words.md)
+// and Combine messages from the same person.
 //
 //   NODE_ENV=production corepack yarn build && python3 -m http.server -d public 8006 &
 //   node tools/browser-drive.mjs tools/scenarios/ps-scene-settings.mjs
@@ -11,7 +12,10 @@
 // level is read off the motion classes on `#theme-scene.psng` (psng/groups.ts):
 // Full is every group's `psng-m-<group>`, Calm is `psng-calm` with only
 // calm's groups (clouds, smoke, weather, skeins, sun), Still is no `psng-m-`
-// class at all.
+// class at all. Each words treatment is chosen through its radio and read off
+// the page: the attribute on <html>, a card's fit-to-content width and fill on
+// a row, the column's backdrop blur, the scrim's gradient, each shadow's
+// shape; a screenshot of each.
 
 const IRCD = process.env.SEANCE_IRC_URL ?? "ws://127.0.0.1:8067/";
 const PORT = process.env.SEANCE_PORT ?? "8006";
@@ -58,7 +62,9 @@ const ALL = [
 	"daybirds",
 	"sun",
 ];
-const CALM = ["clouds", "smoke", "weather", "skeins", "sun"];
+/** Calm is the clouds alone (psng/groups.ts CALM; plan 5, spec §11). */
+const CALM = ["clouds"];
+const WORDS = ["bubbles", "glass", "scrim", "outline", "rim", "glow"];
 
 /** The scene root's motion classes: its groups (sorted), `psng-calm` and `psng-frozen`. */
 const motion = (page) =>
@@ -93,6 +99,39 @@ async function setLevel(page, level) {
 	await page.sleep(1500);
 }
 
+async function setWords(page, words) {
+	await openAppearance(page);
+	await page.click(`#settings input[name="psWords"][value="${words}"]`);
+	await closeSettings(page);
+	await page.sleep(400);
+}
+
+/** What the page shows under a words treatment: the attribute and the probe its CSS proves it by. */
+const WORDS_PROBE = `(() => {
+	const html = document.documentElement;
+	const column = document.querySelector("#chat .chat-content > .chat");
+	// A plain message row of someone else's (not a pending copy, not a condensed group): the card is on every row, this one is the probe.
+	const row =
+		[...document.querySelectorAll('#chat .chat .msg[data-type="message"]:not(.pending)')].at(-1) ??
+		[...document.querySelectorAll("#chat .chat .msg")].at(-1);
+	const cs = getComputedStyle(row);
+	const shadow = cs.textShadow;
+	return {
+		words: html.dataset.psWords ?? null,
+		row: row.dataset.type + " " + row.className,
+		rowWidth: row.getBoundingClientRect().width,
+		columnWidth: column.getBoundingClientRect().width,
+		rowFill: cs.backgroundColor,
+		columnBlur: getComputedStyle(column).backdropFilter,
+		columnImage: getComputedStyle(column).backgroundImage,
+		shadow,
+		rings78: shadow.split("0.78)").length - 1,
+		rings60: shadow.split("0.6)").length - 1,
+		rings28: shadow.split("0.28)").length - 1,
+		layers: shadow === "none" ? 0 : shadow.split(/,\\s*(?![^()]*\\))/).length,
+	};
+})()`;
+
 export default async function run(page) {
 	await page.send("Emulation.setTimezoneOverride", {timezoneId: "Etc/GMT"});
 	await page.send("Emulation.setFocusEmulationEnabled", {enabled: true});
@@ -113,21 +152,83 @@ export default async function run(page) {
 		pause: ${SETTING("psPauseWhenAway")}?.checked,
 		group: ${SETTING("psGroupMessages")}?.checked,
 		levels: [...document.querySelectorAll('#settings [name="psAnimation"]')].map((i) => i.value),
+		words: document.querySelector('#settings [name="psWords"]:checked')?.value,
+		wordsList: [...document.querySelectorAll('#settings [name="psWords"]')].map((i) => i.value),
 	})`);
 	const d = JSON.parse(defaults);
 	page.check(
 		`under ps, Appearance has the theme's settings: Scene animation ${d.levels.join("/")} at ${
 			d.level
-		}, pause when away ${d.pause}, combine ${d.group}`,
+		}, pause when away ${d.pause}, words ${d.wordsList.join("/")} at ${d.words}, combine ${
+			d.group
+		}`,
 		d.levels.join() === "auto,full,calm,still" &&
 			d.level === "auto" &&
 			d.pause === true &&
+			d.wordsList.join() === WORDS.join() &&
+			d.words === "bubbles" &&
 			d.group === true
 	);
 	await page.evaluate(`document.querySelector("#theme-select").scrollIntoView({block: "start"})`);
 	await page.sleep(200);
 	await page.screenshot("ps-settings-section");
 	await closeSettings(page);
+
+	// Each words treatment, through its radio: the attribute and the CSS that proves it.
+	const words = {};
+	for (const w of WORDS) {
+		await setWords(page, w);
+		words[w] = await page.evaluate(WORDS_PROBE);
+		await page.screenshot(`ps-words-${w}`);
+	}
+	const transparent = (fill) => /^rgba\(\d+, \d+, \d+, 0\)$|^transparent$/.test(fill);
+	page.check(
+		`bubbles: a row is a card narrower than the column with a fill (${words.bubbles.rowWidth} of ${words.bubbles.columnWidth}px, ${words.bubbles.rowFill}), no shadow on the words`,
+		words.bubbles.words === "bubbles" &&
+			words.bubbles.rowWidth < words.bubbles.columnWidth - 40 &&
+			!transparent(words.bubbles.rowFill) &&
+			words.bubbles.shadow === "none"
+	);
+	page.check(
+		`glass: the column carries the backdrop blur (${words.glass.columnBlur}), the rows are plain`,
+		words.glass.words === "glass" &&
+			words.glass.columnBlur.includes("blur") &&
+			transparent(words.glass.rowFill) &&
+			words.glass.shadow === "none"
+	);
+	page.check(
+		`scrim: the column carries the gradient and no blur (${words.scrim.columnImage.slice(
+			0,
+			40
+		)}…, ${words.scrim.columnBlur})`,
+		words.scrim.words === "scrim" &&
+			words.scrim.columnImage.startsWith("linear-gradient") &&
+			words.scrim.columnBlur === "none" &&
+			words.glass.columnImage === "none"
+	);
+	page.check(
+		`outline: eight 1px offsets at 78 % and the 28 % ring (${words.outline.rings78}/${words.outline.rings28}), no card`,
+		words.outline.words === "outline" &&
+			words.outline.rings78 === 8 &&
+			words.outline.rings28 === 8 &&
+			transparent(words.outline.rowFill)
+	);
+	page.check(
+		`rim: eight offsets at 60 % in the rim's colour and no 28 % ring (${words.rim.rings60}/${words.rim.rings28}), no 78 % ring`,
+		words.rim.words === "rim" &&
+			words.rim.rings60 === 8 &&
+			words.rim.rings28 === 0 &&
+			words.rim.rings78 === 0 &&
+			!words.rim.shadow.includes("rgba(0, 0, 0")
+	);
+	page.check(
+		`glow: four layers and no ring (${words.glow.layers} layers, ${words.glow.rings78}/${words.glow.rings60} ring offsets)`,
+		words.glow.words === "glow" &&
+			words.glow.layers === 4 &&
+			words.glow.rings78 === 0 &&
+			words.glow.rings60 === 0
+	);
+	await setWords(page, "bubbles");
 
 	// Each level, by the scene's motion classes.
 	const at = {};
@@ -196,6 +297,10 @@ export default async function run(page) {
 	await page.sleep(500);
 	page.check(
 		"under coffee, Appearance has no ps settings",
-		!(await page.evaluate(`!!${SETTING("psAnimation")} || !!${SETTING("psGroupMessages")}`))
+		!(await page.evaluate(
+			`!!${SETTING("psAnimation")} || !!${SETTING("psGroupMessages")} || !!${SETTING(
+				"psWords"
+			)}`
+		))
 	);
 }

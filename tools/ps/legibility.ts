@@ -30,11 +30,12 @@
  * model holds is held at those samples; nothing here measures between them.
  */
 import {defaultFontSize, fontSizes, type FontSize} from "../../client/js/helpers/fontSize";
-import {luminance, mix} from "../../client/js/scenes/ps/colour";
+import {contrast, luminance, mix} from "../../client/js/scenes/ps/colour";
 import {momentFor, WEATHERS, type Moment, type Weather} from "../../client/js/scenes/ps/engine";
 import {
-	GLASS_SURFACES,
+	CHROME_SURFACES,
 	isBehind,
+	throughCard,
 	throughDayGlass,
 	tintsOver,
 	type GlassSurface,
@@ -43,8 +44,9 @@ import {
 	ALPHA_HALO,
 	INK,
 	publishedFor,
-	SCHEDULE_STEP,
+	rimFor,
 	sceneGrounds as paintedGrounds,
+	SCHEDULE_STEP,
 } from "../../client/js/scenes/ps/grounds";
 import {GLASS_NIGHT_AT, paletteAt, stopsAt, type Palette} from "../../client/js/scenes/ps/palette";
 
@@ -122,6 +124,28 @@ export {ALPHA_HALO, INK};
 export const ALPHA_SHADOW = Math.min(0.6, 0.6039);
 export const INK_FAINT = "#4c5a72";
 
+/**
+ * The other two shadow treatments of the Words over the plains setting
+ * (docs/projects/ps-words.md §5), measured by the same twin method on
+ * 2026-10-21 (tools/ps/calibrate.mjs, 9546 checks; the outline's two figures
+ * reproduced as the control, 0.639 → 0.6 capped and 0.1614 exact):
+ * - **the tinted rim** (one 1 px ring at 60 % in the hour's rim colour,
+ *   --ps-rim, under the soft shadow in the same tint): 0.4164 toward the
+ *   rim's colour, Source Sans 3 "it," at DPR 1 over the dusk amber #ffb96f;
+ *   its ink is the outline's halo (ALPHA_HALO);
+ * - **the soft glow** (four blurred black layers, no ring): 0.1372 toward
+ *   black, "it," at DPR 3 over the white cloud; its ink aura (four layers
+ *   of the halo's colour) 0.1503 toward the halo, "it," at DPR 1 over the
+ *   sky #9ccaf5.
+ * Neither re-solves a colour: the message palette is the outline's, and the
+ * floors test holds every light colour wherever white holds 4.5 : 1 through
+ * the treatment and pins the worst figure over the rest (the user's choice
+ * of a softer look over a stricter floor).
+ */
+export const ALPHA_RIM = Math.min(0.6, 0.4164);
+export const ALPHA_GLOW = Math.min(0.6, 0.1372);
+export const ALPHA_GLOW_HALO = Math.min(0.6, 0.1503);
+
 export type Surface = "column" | "glass";
 /** The message column's treatment (data-ps-text). */
 export type Text = "ink" | "light";
@@ -154,6 +178,54 @@ export const GLASS = {
 		solid: "#121827",
 	},
 } as const;
+
+/**
+ * The surface family of the Words over the plains setting
+ * (docs/projects/ps-words.md §4, §5: bubbles, glass, scrim): the words are
+ * plain on a tint between them and the plains. The card's and the scrim's
+ * tint is flat (no backdrop filter); the glass column's is the chrome's
+ * float tint through the lift. The surface palette is solved at the
+ * declared tints (the mock-up's 0.66 by day; 0.62 at night, raised toward
+ * the cap only when a spec colour cannot hold within rule 2), over every
+ * ground; the page then solves the day card tint per step at or under the
+ * declared one (client/js/scenes/ps/glass.ts, the card surface).
+ */
+export const SURFACE = {
+	day: {tint: GLASS.day.tint, base: 0.66, cap: 0.78, ink: GLASS.day.ink},
+	night: {tint: GLASS.night.tint, base: 0.62, cap: 0.74, ink: GLASS.night.ink},
+} as const;
+
+/** The surface family's scope on <html>: no attribute (the default), or one of the three. */
+export const WORDS_SURFACE =
+	':is(:not([data-ps-words]), [data-ps-words="bubbles"], [data-ps-words="glass"], [data-ps-words="scrim"])';
+
+/** The shadow family's scope on <html>: outline, rim and glow, the words carrying a text-shadow and keyed on the ink window. */
+export const SHADOW_WORDS_ROOT =
+	':root:is([data-ps-words="outline"], [data-ps-words="rim"], [data-ps-words="glow"])';
+
+/** The surface block's day rule, and every surface nick rule's prefix by day. */
+export const SURFACE_ROOT = `:root${WORDS_SURFACE} #chat .chat`;
+
+/** The surface block's night rule, and every surface nick rule's prefix at night. */
+export const SURFACE_NIGHT_ROOT = `:root[data-ps-light="night"]${WORDS_SURFACE} #chat .chat`;
+
+/** A ground under a surface's flat tint at `alpha`. */
+export function surfaceGround(ground: string, light: Light, alpha: number): string {
+	return mix(ground, SURFACE[light].tint, alpha);
+}
+
+/**
+ * A mention row's wash under the surface family (ps.css: `rgb(255 214 230 / …)`
+ * by day, `rgb(40 20 48 / …)` at night, at the card's tint): the card's
+ * second tint, darker than the paper by day, which the palette is solved
+ * under and the page's card solve holds as well (glass.ts DAY_WASH).
+ */
+export const SURFACE_WASH: Record<Light, string> = {day: "#ffd6e6", night: "#281430"};
+
+/** A ground under a mention's wash at `alpha`. */
+export function surfaceWash(ground: string, light: Light, alpha: number): string {
+	return mix(ground, SURFACE_WASH[light], alpha);
+}
 
 /**
  * What coloured text in the light treatment (every generated colour there:
@@ -299,6 +371,11 @@ export function effectiveGround(ground: string, text: Text, halo: string): strin
 
 export function glassGround(ground: string, light: Light, alpha: number): string {
 	return mix(ground, GLASS[light].tint, alpha);
+}
+
+/** Whether white holds 4.5 : 1 over an effective ground: the line between held and pinned for the rim and the glow. */
+export function whiteHolds(hex: string): boolean {
+	return contrast("#ffffff", hex) >= 4.5;
 }
 
 /**
@@ -493,10 +570,46 @@ export function checkedGrounds(days: Days): Checked {
 	return out;
 }
 
+/**
+ * Every ground of a sweep through the tinted rim or the soft glow, in the
+ * words' state asked for: the light words through the rim's layer in the
+ * hour's rim colour (rimFor) at ALPHA_RIM, or the glow's black at
+ * ALPHA_GLOW; the ink words through the glow's aura at ALPHA_GLOW_HALO (the
+ * rim's ink is the outline's halo: not sampled again). The same colour from
+ * the same kind of ground is kept once, at the first moment that meets it.
+ */
+export function shadowGrounds(words: "rim" | "glow", text: Text, days: Days): CheckedGround[] {
+	const out: CheckedGround[] = [];
+	const seen = new Set<string>();
+	eachChecked((m, p, where) => {
+		const published = publishedFor(p, m);
+
+		if (published.text !== text) {
+			return;
+		}
+
+		const layer = text === "ink" ? published.halo : words === "rim" ? rimFor(p) : "#000000";
+		const alpha = text === "ink" ? ALPHA_GLOW_HALO : words === "rim" ? ALPHA_RIM : ALPHA_GLOW;
+
+		for (const g of sceneGrounds(m, p)) {
+			const hex = mix(g.hex, layer, alpha);
+			const key = `${hex} ${g.body} ${g.below}`;
+
+			if (!seen.has(key)) {
+				seen.add(key);
+				out.push({...g, hex, lum: luminance(hex), where});
+			}
+		}
+	}, days);
+	return out;
+}
+
 export interface DayGlassGround extends CheckedGround {
 	/** The glass surface it was seen through, and that surface's tint at the moment. */
 	surface: GlassSurface;
 	tint: number;
+	/** The scene's ground before the tint (the card's and the scrim's far edge are re-tinted from it). */
+	raw: string;
 }
 
 const dayGlassCache = new Map<string, DayGlassGround[]>();
@@ -511,8 +624,12 @@ const dayGlassCache = new Map<string, DayGlassGround[]>();
  * colour, at the first moment that meets it. The sparse sweep's day half is
  * about 27,000 moments.
  */
-export function dayGlassGrounds(days: Days, pinned = ""): DayGlassGround[] {
-	const key = `${days}\n${pinned}`;
+export function dayGlassGrounds(
+	days: Days,
+	pinned = "",
+	surfaces: readonly GlassSurface[] = CHROME_SURFACES
+): DayGlassGround[] {
+	const key = `${days}\n${pinned}\n${surfaces.join(" ")}`;
 	const hit = dayGlassCache.get(key);
 
 	if (hit) {
@@ -531,7 +648,7 @@ export function dayGlassGrounds(days: Days, pinned = ""): DayGlassGround[] {
 		const grounds = paintedGrounds(m, paletteAt(m));
 		const tints = tintsOver(grounds);
 
-		for (const surface of GLASS_SURFACES) {
+		for (const surface of surfaces) {
 			const tint = tints[surface];
 
 			for (const g of grounds) {
@@ -539,20 +656,36 @@ export function dayGlassGrounds(days: Days, pinned = ""): DayGlassGround[] {
 					continue;
 				}
 
-				const hex = throughDayGlass(g.hex, tint);
+				// The card is flat (no backdrop filter): the tint straight over the
+				// ground, and a mention's wash over it as well (the card's second tint).
+				const seenAt: Array<[string, string]> =
+					surface === "card"
+						? [
+								[throughCard(g.hex, tint), g.name],
+								[
+									throughCard(g.hex, tint, SURFACE_WASH.day),
+									`${g.name} under a mention`,
+								],
+						  ]
+						: [[throughDayGlass(g.hex, tint), g.name]];
 
-				if (!seen.has(hex)) {
-					seen.add(hex);
-					out.push({
-						hex,
-						name: g.name,
-						body: g.body,
-						below: g.below,
-						lum: luminance(hex),
-						where: `${where}, the ${surface} at ${tint.toFixed(2)}`,
-						surface,
-						tint,
-					});
+				for (const [hex, name] of seenAt) {
+					const seenKey = `${surface === "card" ? "card " : ""}${hex}`;
+
+					if (!seen.has(seenKey)) {
+						seen.add(seenKey);
+						out.push({
+							hex,
+							name,
+							body: g.body,
+							below: g.below,
+							lum: luminance(hex),
+							where: `${where}, the ${surface} at ${tint.toFixed(2)}`,
+							surface,
+							tint,
+							raw: g.hex,
+						});
+					}
 				}
 			}
 		}

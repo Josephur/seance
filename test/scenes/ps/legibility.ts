@@ -3,10 +3,13 @@ import fs from "fs";
 import path from "path";
 import {contrast, luminance, mix} from "../../../client/js/scenes/ps/colour";
 import {type Moment} from "../../../client/js/scenes/ps/engine";
-import {DAY_GLASS_MARK} from "../../../client/js/scenes/ps/glass";
+import {DAY_CARD_FAINT, DAY_CARD_TEXT, DAY_GLASS_MARK} from "../../../client/js/scenes/ps/glass";
 import {AREAS, INK_FAINT_HELD, publishedFor} from "../../../client/js/scenes/ps/grounds";
 import {paletteAt, type Palette} from "../../../client/js/scenes/ps/palette";
 import {
+	ALPHA_GLOW,
+	ALPHA_GLOW_HALO,
+	ALPHA_RIM,
 	bodyGrounds,
 	checkedGrounds,
 	CODE_BOX,
@@ -25,8 +28,16 @@ import {
 	momentAt,
 	pinnedMoments,
 	sceneGrounds,
+	SHADOW_WORDS_ROOT,
+	shadowGrounds,
 	SMALL_STEPS_ROOT,
 	smallStepSweep,
+	SURFACE,
+	SURFACE_NIGHT_ROOT,
+	SURFACE_ROOT,
+	SURFACE_WASH,
+	surfaceGround,
+	whiteHolds,
 	withPinned,
 	type Checked,
 	type CheckedGround,
@@ -44,6 +55,7 @@ const blockOf = (name: string) =>
 	css.slice(css.indexOf(`/* ps:${name}:start`), css.indexOf(`/* ps:${name}:end */`));
 const messageBlock = blockOf("message-palette");
 const glassBlock = blockOf("glass-palette");
+const surfaceBlock = blockOf("surface-palette");
 const headerOf = (block: string) => block.slice(0, block.indexOf("*/"));
 const uncommented = (text: string) => text.replace(/\/\*[\s\S]*?\*\//g, "");
 
@@ -64,8 +76,8 @@ function rulesOf(text: string): Rule[] {
 	}));
 }
 
-/** Both block headers: their worst grounds and the Review Focus pins. */
-const headers = headerOf(messageBlock) + headerOf(glassBlock);
+/** The three block headers: their worst grounds and the Review Focus pins. */
+const headers = headerOf(messageBlock) + headerOf(glassBlock) + headerOf(surfaceBlock);
 
 /** The moments the block headers name, as `doy D M min W`. */
 const pinned = () => pinnedMoments(headers);
@@ -128,6 +140,31 @@ const ON_CODE_BOX = /^--tok-[a-z]+$|^--md-code-color$/;
 
 /** The sweep the light nicks take below the default font-size step, if the light sweep needs one. */
 const SMALL = smallStepSweep(SWEEP);
+
+/** The scrim's far edge: this fraction of the card tint (ps.css's scrim gradient, docs/projects/ps-words.md §4.3). */
+const SCRIM_FAR = 0.3;
+
+/**
+ * What the ink reaches at the scrim's far edge, pinned from the first run
+ * (floored to two decimals) rather than held: words that reach the far side
+ * read under the floor by the user's choice (ps-words.md §4.3, §9).
+ */
+const SCRIM_FAR_FLOOR = {day: 2.12, night: 1.42};
+
+/**
+ * What the tinted rim and the soft glow reach, pinned from the first run
+ * (floored to two decimals), never held: the user chose a softer look over
+ * the outline's floor (ps-words.md §5). White, the muted ink, faint white
+ * and the nicks at their worst over every ground the light words meet, and
+ * the count of grounds that leave white under 4.5:1 (the white day clouds
+ * first, then the bodies, the roof's snow, the veiled grounds), which may
+ * not grow. The glow's ink through its aura holds the floor itself.
+ */
+const PINNED = {
+	rim: {white: 2.35, muted: 1.88, faint: 2.01, nick: 1.27, under: 28639},
+	glow: {white: 1.37, muted: 1.1, faint: 1.29, nick: 1, under: 67724},
+};
+const PINNED_GLOW_INK = 4.5;
 
 /** --ps-code-bg as each treatment's rule declares it. */
 function codeBoxes(): Partial<Record<Text, string>> {
@@ -247,10 +284,14 @@ function rgbPercent(value: string): {hex: string; strength: number} | null {
 	return {hex, strength: Number(m[4]) / 100};
 }
 
-/** The washes ps.css paints on a mentioned row, by treatment. */
+/** The washes ps.css paints on a mentioned row under the shadow family, by treatment (the surface family's: surfaceWashes). */
 function mentionWashes(): Array<{text: Text; hex: string; strength: number}> {
 	return rulesOf(css)
-		.filter((r) => r.selector.includes(".msg.highlight"))
+		.filter(
+			(r) =>
+				r.selector.includes(".msg.highlight") &&
+				!r.selector.includes(":not([data-ps-words])")
+		)
 		.flatMap((r) =>
 			r.decls
 				.filter(([name]) => name === "background")
@@ -265,6 +306,45 @@ function mentionWashes(): Array<{text: Text; hex: string; strength: number}> {
 						? "light"
 						: "ink";
 					return {text, ...wash};
+				})
+		);
+}
+
+/**
+ * The washes ps.css paints on a mentioned row under the surface family
+ * (docs/projects/ps-words.md §4.1): `rgb(r g b / var(--ps-g-tint-card,
+ * var(--ps-s-tint)))` by day and `rgb(r g b / var(--ps-s-tint))` at night,
+ * read at the surface palette's declared tint of that light.
+ */
+function surfaceWashes(): Array<{light: Light; hex: string; strength: number}> {
+	const declared = surfaceDeclared();
+	return rulesOf(css)
+		.filter(
+			(r) =>
+				r.selector.includes(".msg.highlight") &&
+				r.selector.includes(":not([data-ps-words])")
+		)
+		.flatMap((r) =>
+			r.decls
+				.filter(([name]) => name === "background")
+				.map(([, value]) => {
+					const m =
+						/^rgb\((\d+) (\d+) (\d+) \/ var\(--ps-(?:g-tint-card, var\(--ps-s-tint\)|s-tint)\)\)$/.exec(
+							value
+						);
+
+					if (!m) {
+						throw new Error(`a surface wash this test cannot read: ${value}`);
+					}
+
+					const light: Light = r.selector.includes('[data-ps-light="night"]')
+						? "night"
+						: "day";
+					const hex = `#${m
+						.slice(1, 4)
+						.map((c) => Number(c).toString(16).padStart(2, "0"))
+						.join("")}`;
+					return {light, hex, strength: Number(declared[light].tokens["--ps-s-tint"])};
 				})
 		);
 }
@@ -296,6 +376,109 @@ function glassDeclared() {
 	};
 }
 
+/** The surface block's declared values (the Words over the plains setting's surface family). */
+function surfaceDeclared() {
+	const rules = rulesOf(surfaceBlock);
+
+	const tokens = (selector: string) => {
+		const rule = rules.find((r) => r.selector === selector);
+		return rule ? Object.fromEntries(rule.decls) : {};
+	};
+
+	const nicks = (root: string) =>
+		rules
+			.filter((r) => r.selector.startsWith(`${root} .user.color-`))
+			.map((r) => ({selector: r.selector, decls: r.decls}));
+	return {
+		rules,
+		day: {tokens: tokens(SURFACE_ROOT), nicks: nicks(SURFACE_ROOT)},
+		night: {tokens: tokens(SURFACE_NIGHT_ROOT), nicks: nicks(SURFACE_NIGHT_ROOT)},
+	};
+}
+
+/** One colour the surface block declares, with its floor; `faintOf` is the ink it is drawn at 80 % of. */
+interface SurfaceHeld {
+	what: string;
+	value: string;
+	floor: number;
+	box?: string;
+	faintOf?: string;
+}
+
+/** Every colour of one light's surface rules, classified as heldColours classifies the message block's. */
+function surfaceHeld(light: Light): SurfaceHeld[] {
+	const s = surfaceDeclared()[light];
+	const box = s.tokens["--ps-code-bg"];
+	const out: SurfaceHeld[] = [];
+	const faint = /^rgb\((\d+) (\d+) (\d+) \/ 80%\)$/.exec(s.tokens["--chat-fg-faint"] ?? "");
+
+	for (const [name, value] of Object.entries(s.tokens)) {
+		const what = `${light} surface ${name}`;
+
+		if (name === "--ps-s-tint" || name === "--ps-code-bg") {
+			continue;
+		}
+
+		if (ON_CODE_BOX.test(name)) {
+			if (!HEX.test(value) || !box) {
+				throw new Error(`${what}: ${value} (code box ${box ?? "missing"})`);
+			}
+
+			out.push({what, value, floor: 4.5, box});
+		} else if (name === "--chat-fg-faint" && faint) {
+			const ink = `#${faint
+				.slice(1, 4)
+				.map((c) => Number(c).toString(16).padStart(2, "0"))
+				.join("")}`;
+			out.push({what, value: ink, floor: 3, faintOf: ink});
+		} else if (!HEX.test(value)) {
+			throw new Error(`${what}: ${value}`);
+		} else {
+			out.push({what, value, floor: name === "--chat-fg-faint" ? 3 : 4.5});
+		}
+	}
+
+	for (const n of s.nicks) {
+		expect(n.decls.length, n.selector).to.equal(1);
+		expect(n.decls[0][0], n.selector).to.equal("color");
+		expect(n.decls[0][1], n.selector).to.match(HEX);
+		out.push({what: n.selector, value: n.decls[0][1], floor: 4.5});
+	}
+
+	return out;
+}
+
+/** The lowest contrast `h` meets over `list`: on its code box, at 80 % over the ground, or plain. */
+function worstSurface(h: SurfaceHeld, list: CheckedGround[]): {ratio: number; where: string} {
+	if (h.box) {
+		return {ratio: contrast(h.value, h.box), where: `the code box ${h.box}`};
+	}
+
+	if (h.faintOf) {
+		let best = {ratio: Infinity, where: ""};
+
+		for (const g of list) {
+			const ratio = contrast(mix(g.hex, h.faintOf, 0.8), g.hex);
+
+			if (ratio < best.ratio) {
+				best = {ratio, where: `${g.where}, ${g.name} (${g.hex})`};
+			}
+		}
+
+		return best;
+	}
+
+	return worst(h.value, list);
+}
+
+/** One light's raw grounds under the surface's flat tint at `alpha`. */
+function underSurface(light: Light, alpha: number, list = grounds().glass[light]): CheckedGround[] {
+	return list.map((g) => {
+		const hex = surfaceGround(g.hex, light, alpha);
+		return {...g, hex, lum: luminance(hex)};
+	});
+}
+
 /** The glass grounds of one light at its declared opacity. */
 function underGlass(light: Light, list = grounds().glass[light]): CheckedGround[] {
 	const alpha = Number(glassDeclared()[light].tokens["--ps-g-tint-a"]);
@@ -311,6 +494,7 @@ describe("ps: the words over the plains and on the glass keep their floors: ever
 	it("finds both generated blocks, and grounds for every surface and state", function () {
 		expect(messageBlock.length).to.be.greaterThan(100);
 		expect(glassBlock.length).to.be.greaterThan(100);
+		expect(surfaceBlock.length, "the surface block").to.be.greaterThan(100);
 		expect(pinned().length).to.be.greaterThan(10);
 		const g = grounds();
 
@@ -459,10 +643,19 @@ describe("ps: the words over the plains and on the glass keep their floors: ever
 		expect(rule!.decls).to.deep.equal([["background", "var(--ps-code-bg)"]]);
 	});
 
-	it("underlines links in the column under the light treatment (all day but on snowy days, and all night), when their colour no longer marks them", function () {
-		const rule = rulesOf(css).find((r) => r.selector === `${LIGHT_ROOT} a`);
-		expect(rule, "the light treatment's link rule").to.not.equal(undefined);
-		expect(Object.fromEntries(rule!.decls)).to.include({"text-decoration": "underline"});
+	it("underlines links in the column where their colour no longer marks them: the shadow family's light treatment (all day but on snowy days, and all night), the surface family at night", function () {
+		for (const selector of [
+			`${SHADOW_WORDS_ROOT}[data-ps-text="light"] #chat .chat a`,
+			`${SURFACE_NIGHT_ROOT} a`,
+		]) {
+			const rule = rulesOf(css).find((r) => r.selector === selector);
+			expect(rule, selector).to.not.equal(undefined);
+			expect(Object.fromEntries(rule!.decls), selector).to.include({
+				"text-decoration": "underline",
+			});
+		}
+
+		expect(rulesOf(css).find((r) => r.selector === `${LIGHT_ROOT} a`)).to.equal(undefined);
 	});
 
 	it("rules the words' treatment on the faint ink the column draws: grounds.ts's INK_FAINT_HELD is the generated --chat-fg-faint", function () {
@@ -811,5 +1004,183 @@ describe("ps: the words over the plains and on the glass keep their floors: ever
 			const w = worst(colour, list);
 			expect(w.ratio, `${colour} at ${w.where}`).to.be.at.least(4.5);
 		}
+	});
+	it("reads the surface block: a token rule and 32 nicks for day and for night, every token the message block's ink rule has, and the two tints", function () {
+		const s = surfaceDeclared();
+		expect(s.rules.length).to.equal(66);
+		const inkNames = rulesOf(messageBlock)
+			.find((r) => r.selector === "#chat .chat")!
+			.decls.map(([name]) => name)
+			.filter((name) => name !== "color");
+		expect(inkNames.length).to.be.greaterThan(20);
+
+		for (const light of ["day", "night"] as const) {
+			expect(Object.keys(s[light].tokens).sort(), light).to.deep.equal(
+				[...inkNames, "--ps-s-tint"].sort()
+			);
+			expect(s[light].nicks.length, light).to.equal(32);
+		}
+
+		expect(Number(s.day.tokens["--ps-s-tint"])).to.equal(SURFACE.day.base);
+		expect(Number(s.night.tokens["--ps-s-tint"])).to.be.within(
+			SURFACE.night.base,
+			SURFACE.night.cap
+		);
+		expect(s.day.tokens["--chat-fg"]).to.equal(SURFACE.day.ink);
+		expect(s.night.tokens["--chat-fg"]).to.equal(SURFACE.night.ink);
+	});
+
+	for (const light of ["day", "night"] as const) {
+		it(`holds the ${light} surface palette at its declared tint over every ground: the ink, every token and every nick at 4.5:1, faint ink at 3`, function () {
+			const s = surfaceDeclared()[light];
+			const list = underSurface(light, Number(s.tokens["--ps-s-tint"]));
+			expect(list.length).to.be.greaterThan(1000);
+			const held = surfaceHeld(light);
+			expect(held.length).to.be.greaterThan(50);
+
+			for (const h of held) {
+				const w = worstSurface(h, list);
+				expect(w.ratio, `${h.what} ${h.value} at ${w.where}`).to.be.at.least(h.floor);
+			}
+		});
+	}
+
+	it("names the day surface's lightest text in its header, and nothing in the day rule is lighter", function () {
+		const s = surfaceDeclared().day;
+		const lightest = /lightest text (\S+) (#[0-9a-f]{6})/.exec(headerOf(surfaceBlock));
+		expect(lightest, "the header's lightest text line").to.not.equal(null);
+		const [, name, hex] = lightest!;
+		const declared = name.startsWith(".user.")
+			? s.nicks.find((n) => n.selector.endsWith(` ${name}`))?.decls[0][1]
+			: s.tokens[name];
+		expect(declared, name).to.equal(hex);
+
+		for (const h of surfaceHeld("day").filter((x) => !x.box && !x.faintOf && x.floor === 4.5)) {
+			expect(luminance(h.value), h.what).to.be.at.most(luminance(hex) + 1e-9);
+		}
+
+		const faint = /faint ink (#[0-9a-f]{6}) \(held at 3\)/.exec(headerOf(surfaceBlock));
+		expect(faint, "the header's faint ink").to.not.equal(null);
+		expect(s.tokens["--chat-fg-faint"]).to.equal(faint![1]);
+	});
+
+	it("the page's card tint is solved for the same two colours: glass.ts's DAY_CARD_TEXT and DAY_CARD_FAINT are the header's", function () {
+		const header = headerOf(surfaceBlock);
+		expect(DAY_CARD_TEXT).to.equal(/lightest text \S+ (#[0-9a-f]{6})/.exec(header)![1]);
+		expect(DAY_CARD_FAINT).to.equal(/faint ink (#[0-9a-f]{6})/.exec(header)![1]);
+	});
+	it("holds the day surface palette at the card tints the scene computes (flat, every ground) and on the glass column at the float tint through the lift", function () {
+		const list = dayGlassGrounds("sparse", headers, ["card", "float"]);
+		expect(list.filter((x) => x.surface === "card").length).to.be.greaterThan(1000);
+		expect(list.filter((x) => x.surface === "float").length).to.be.greaterThan(1000);
+		expect(
+			Math.max(...list.filter((x) => x.surface === "card").map((x) => x.tint))
+		).to.be.at.most(SURFACE.day.base);
+
+		for (const h of surfaceHeld("day")) {
+			const w = worstSurface(h, list);
+			expect(w.ratio, `${h.what} ${h.value} at ${w.where}`).to.be.at.least(h.floor);
+		}
+	});
+
+	it("the scrim's far edge (0.3 of the card tint) is pinned, not held: the ink's worst figure by day and by night, two decimals", function () {
+		const s = surfaceDeclared();
+		const dayFar = dayGlassGrounds("sparse", headers, ["card"]).map((x) => {
+			const hex = surfaceGround(x.raw, "day", SCRIM_FAR * x.tint);
+			return {...x, hex, lum: luminance(hex)};
+		});
+		const nightFar = underSurface("night", SCRIM_FAR * Number(s.night.tokens["--ps-s-tint"]));
+		const day = worst(s.day.tokens["--chat-fg"], dayFar);
+		const night = worst(s.night.tokens["--chat-fg"], nightFar);
+		const dayMuted = worst(s.day.tokens["--chat-fg-muted"], dayFar);
+		const nightMuted = worst(s.night.tokens["--chat-fg-muted"], nightFar);
+		// eslint-disable-next-line no-console -- the figures the pins are read from
+		console.log(
+			`      scrim far edge: day ink ${day.ratio.toFixed(2)} at ${
+				day.where
+			}; muted ${dayMuted.ratio.toFixed(2)}; night ink ${night.ratio.toFixed(2)} at ${
+				night.where
+			}; muted ${nightMuted.ratio.toFixed(2)}`
+		);
+		expect(Number(day.ratio.toFixed(2)), `day: ${day.where}`).to.be.at.least(
+			SCRIM_FAR_FLOOR.day
+		);
+		expect(Number(night.ratio.toFixed(2)), `night: ${night.where}`).to.be.at.least(
+			SCRIM_FAR_FLOOR.night
+		);
+	});
+	it("holds the surface palette's ink and muted ink on a mentioned row under the surface family's washes, by day and at night", function () {
+		const washes = surfaceWashes();
+		expect(washes.map((w) => w.light).sort()).to.deep.equal(["day", "night"]);
+
+		// The washes ps.css paints are the ones the generator and the card's solve count (legibility.ts SURFACE_WASH).
+		for (const w of washes) {
+			expect(w.hex, w.light).to.equal(SURFACE_WASH[w.light]);
+		}
+
+		for (const wash of washes) {
+			const s = surfaceDeclared()[wash.light];
+			const washed = grounds().glass[wash.light].map((g) => {
+				const hex = mix(g.hex, wash.hex, wash.strength);
+				return {...g, hex, lum: luminance(hex)};
+			});
+
+			for (const name of ["--chat-fg", "--chat-fg-muted"]) {
+				const w = worst(s.tokens[name], washed);
+				expect(
+					w.ratio,
+					`${wash.light} surface ${name} ${s.tokens[name]} on a mention at ${w.where}`
+				).to.be.at.least(4.5);
+			}
+		}
+	});
+
+	for (const words of ["rim", "glow"] as const) {
+		it(`${words}: the light words' figures through the treatment are pinned, not held — white, the muted ink, faint white and the nicks at their worst, and how many grounds leave white under 4.5:1`, function () {
+			const alpha = words === "rim" ? ALPHA_RIM : ALPHA_GLOW;
+			expect(alpha, "measured").to.be.within(0.05, 0.6);
+			const list = shadowGrounds(words, "light", "sparse");
+			expect(list.length).to.be.greaterThan(1000);
+			const held = heldColours().held;
+			const muted = held.find((x) => x.what === `${LIGHT_ROOT} --chat-fg-muted`)!;
+			// The large-step light nicks (the small-step set is the same hues, solved stricter).
+			const nicks = held.filter((x) => x.what.startsWith(`${LIGHT_ROOT} .user.color-`));
+			expect(nicks.length).to.equal(32);
+			const figures = {
+				white: worst("#ffffff", list),
+				muted: worst(muted.value, list),
+				faint: worstFaintWhite(list),
+				nick: nicks
+					.map((n) => worst(n.value, groundsFor(n, list)))
+					.reduce((a, b) => (b.ratio < a.ratio ? b : a)),
+			};
+			const under = list.filter((g) => !whiteHolds(g.hex)).length;
+			// eslint-disable-next-line no-console -- the figures the pins are read from
+			console.log(
+				`      ${words}: ${Object.entries(figures)
+					.map(([k, w]) => `${k} ${w.ratio.toFixed(2)} at ${w.where}`)
+					.join("; ")}; ${under} of ${list.length} grounds leave white under 4.5`
+			);
+
+			for (const [kind, w] of Object.entries(figures)) {
+				expect(Number(w.ratio.toFixed(2)), `${words} ${kind}: ${w.where}`).to.be.at.least(
+					PINNED[words][kind as keyof typeof figures]
+				);
+			}
+
+			expect(under, `${words}: grounds under white's floor`).to.be.at.most(
+				PINNED[words].under
+			);
+		});
+	}
+
+	it("glow: ink through the pale aura inside the ink window, pinned", function () {
+		expect(ALPHA_GLOW_HALO, "measured").to.be.within(0.05, 0.6);
+		const list = shadowGrounds("glow", "ink", "sparse");
+		expect(list.length).to.be.greaterThan(100);
+		const w = worst(INK, list);
+		// eslint-disable-next-line no-console -- the figure the pin is read from
+		console.log(`      glow ink ${w.ratio.toFixed(2)} at ${w.where}`);
+		expect(Number(w.ratio.toFixed(2))).to.be.at.least(PINNED_GLOW_INK);
 	});
 });

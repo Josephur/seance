@@ -1,11 +1,16 @@
 import {expect} from "chai";
-import {contrast, luminance} from "../../../client/js/scenes/ps/colour";
+import {contrast, luminance, mix} from "../../../client/js/scenes/ps/colour";
 import {momentFor, type Moment, type Weather} from "../../../client/js/scenes/ps/engine";
 import {
 	backdropFiltered,
+	CHROME_SURFACES,
 	composerAboveGrass,
 	DAY_BRIGHTNESS,
+	DAY_CARD_FAINT,
+	DAY_CARD_TEXT,
 	DAY_GLASS_MARK,
+	DAY_WASH,
+	FAINT_SOLVE,
 	DAY_GLASS_TEXT,
 	DAY_TINT,
 	dayTints,
@@ -17,6 +22,7 @@ import {
 	SATURATE,
 	surfaceTints,
 	TEXT_SOLVE,
+	throughCard,
 	throughDayGlass,
 	tintsOver,
 	TINT_CAP,
@@ -53,28 +59,28 @@ const PAGE: Array<{
 		minute: 750,
 		doy: JUNE,
 		weather: "clear",
-		tints: {header: 0.46, composer: 0.4, side: 0.51, float: 0.6},
+		tints: {header: 0.46, composer: 0.4, side: 0.51, float: 0.6, card: 0.44},
 	},
 	{
 		what: "clear late afternoon, 19:24",
 		minute: 1164,
 		doy: JUNE,
 		weather: "clear",
-		tints: {header: 0.65, composer: 0.64, side: 0.65, float: 0.65},
+		tints: {header: 0.65, composer: 0.64, side: 0.65, float: 0.65, card: 0.53},
 	},
 	{
 		what: "the last minute of day glass, 20:23",
 		minute: 1223,
 		doy: JUNE,
 		weather: "clear",
-		tints: {header: 0.76, composer: 0.76, side: 0.76, float: 0.76},
+		tints: {header: 0.76, composer: 0.76, side: 0.76, float: 0.76, card: 0.65},
 	},
 	{
 		what: "rainy noon, 2 May 12:30",
 		minute: 750,
 		doy: MAY,
 		weather: "rain",
-		tints: {header: 0.54, composer: 0.48, side: 0.57, float: 0.62},
+		tints: {header: 0.54, composer: 0.48, side: 0.57, float: 0.62, card: 0.49},
 	},
 ];
 
@@ -93,7 +99,7 @@ describe("ps glass: the luminous day glass (plan 3 task 7b, the user's pick)", f
 		expect(TEXT_SOLVE).to.equal(4.6);
 		expect(MARK_SOLVE).to.equal(3.1);
 		expect(DAY_TINT).to.equal("#fffbf4");
-		expect(GLASS_SURFACES).to.deep.equal(["header", "composer", "side", "float"]);
+		expect(GLASS_SURFACES).to.deep.equal(["header", "composer", "side", "float", "card"]);
 	});
 
 	it("models the backdrop filter as Chromium draws it: brightness, then saturate, per channel in sRGB (the probe's pixels)", function () {
@@ -181,7 +187,8 @@ describe("ps glass: the luminous day glass (plan 3 task 7b, the user's pick)", f
 		const all = sceneGrounds(m, paletteAt(m));
 		const tints = surfaceTints([m]);
 
-		for (const s of GLASS_SURFACES) {
+		// The chrome's four, through the filter; the card is flat and holds its own pair (the card test below).
+		for (const s of CHROME_SURFACES) {
 			for (const g of all.filter((x) => isBehind(s, x))) {
 				const under = throughDayGlass(g.hex, tints[s]);
 				expect(contrast(DAY_GLASS_TEXT, under), `${s} over ${g.name}`).to.be.at.least(
@@ -272,6 +279,38 @@ describe("ps glass: the luminous day glass (plan 3 task 7b, the user's pick)", f
 		});
 	});
 
+	it("the card is flat (docs/projects/ps-words.md §4.1): solved over every ground with no brightening and no saturate, for the surface palette's lightest text at 4.6 and its faint ink at 3.1, at or under the declared 0.66", function () {
+		const m = at(750, JUNE);
+		const grounds = sceneGrounds(m, paletteAt(m));
+		const t = tintsOver(grounds);
+		expect(t.card).to.be.within(TINT_FLOOR, 0.66);
+		expect(throughCard("#408fe6", 0.5)).to.equal(mix("#408fe6", DAY_TINT, 0.5));
+		expect(isBehind("card", grounds[0])).to.equal(true);
+		const need = Math.max(
+			TEXT_SOLVE * (luminance(DAY_CARD_TEXT) + 0.05) - 0.05,
+			FAINT_SOLVE * (luminance(DAY_CARD_FAINT) + 0.05) - 0.05
+		);
+		const under = (hex: string, alpha: number) => [
+			luminance(throughCard(hex, alpha)),
+			luminance(throughCard(hex, alpha, DAY_WASH)),
+		];
+
+		// Under the paper and under a mention's wash alike.
+		for (const g of grounds) {
+			for (const lum of under(g.hex, t.card)) {
+				expect(lum, g.name).to.be.at.least(need - 1e-9);
+			}
+		}
+
+		// One step lower, some ground falls short under one of the two (or the floor is already the lowest allowed).
+		if (t.card > TINT_FLOOR) {
+			const lower = t.card - 0.01;
+			expect(grounds.some((g) => under(g.hex, lower).some((lum) => lum < need))).to.equal(
+				true
+			);
+		}
+	});
+
 	it("publishes the four day tints on <html> by day, and takes them off at night so the night glass keeps its own", function () {
 		const day = at(750, JUNE);
 		expect(glassVars(day, "day")).to.deep.equal({
@@ -279,12 +318,14 @@ describe("ps glass: the luminous day glass (plan 3 task 7b, the user's pick)", f
 			"--ps-g-tint-composer": "0.40",
 			"--ps-g-tint-side": "0.51",
 			"--ps-g-tint-float": "0.60",
+			"--ps-g-tint-card": "0.44",
 		});
 		expect(glassVars(at(30, JUNE), "night")).to.deep.equal({
 			"--ps-g-tint-header": null,
 			"--ps-g-tint-composer": null,
 			"--ps-g-tint-side": null,
 			"--ps-g-tint-float": null,
+			"--ps-g-tint-card": null,
 		});
 	});
 });
