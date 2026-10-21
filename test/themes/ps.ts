@@ -2377,10 +2377,13 @@ describe("the ps theme under reduced motion (spec §9): nothing moves, and the h
 			.flatMap((r) => r.selectors);
 
 		for (const selector of eased.flatMap((r) => r.selectors)) {
-			// `#chat .msg` covers every message row, `#chat .chat .msg` included.
+			// `#chat .msg` covers every message row, `#chat .chat .msg` included;
+			// and a stand-down's `!important` outranks any longer prefix on the
+			// same tail (the words' treatments are scoped by data-ps-words on
+			// :root).
 			const covered =
-				stood.includes(selector) ||
-				(stood.includes("#chat .msg") && /^#chat( .+)? \.msg$/.test(selector));
+				stood.some((s) => selector === s || selector.endsWith(` ${s}`)) ||
+				(stood.includes("#chat .msg") && /(^|\s)#chat( .+)? \.msg$/.test(selector));
 			expect(covered, selector).to.equal(true);
 		}
 	});
@@ -2858,9 +2861,9 @@ describe("the ps theme's private view (spec §5.7): the plains frosted and still
 	});
 });
 
-describe("the ps theme's words over the plains (spec §7)", function () {
-	/** The eight-way ring of offsets `o` (rem) at `pct` % black, blurred 0.0625rem. */
-	const ring = (o: string, pct: number) =>
+describe("the ps theme's words over the plains (spec §7, docs/projects/ps-words.md: the shadow family)", function () {
+	/** The eight-way ring of offsets `o` (rem) in `colour`, blurred 0.0625rem. */
+	const ringIn = (o: string, colour: string) =>
 		[
 			[o, "0"],
 			[`-${o}`, "0"],
@@ -2870,12 +2873,17 @@ describe("the ps theme's words over the plains (spec §7)", function () {
 			[`-${o}`, o],
 			[o, `-${o}`],
 			[`-${o}`, `-${o}`],
-		].map(([x, y]) => `${x} ${y} 0.0625rem rgb(0 0 0 / ${pct}%)`);
+		].map(([x, y]) => `${x} ${y} 0.0625rem ${colour}`);
+	/** The eight-way ring at `pct` % black. */
+	const ring = (o: string, pct: number) => ringIn(o, `rgb(0 0 0 / ${pct}%)`);
+	const layers = (value: string | undefined) => value!.split(/,\s*(?![^()]*\))/);
+	const OTHERS = [".show-more", ".search-status", ".search-scope-note"];
 
-	it("draws white words over the soft shadow, the user's B (eight 1px offsets at 78 %) and under it the faint wider ring (eight 2px offsets at 28 %, the user's pick 2026-09-25), in that order: the first shadow paints on top", function () {
-		const shadow = valueOf(':root[data-ps-text="light"] #chat .chat .msg', "text-shadow");
-		expect(shadow, "the light treatment's text-shadow").to.not.equal(undefined);
-		expect(shadow!.split(/,\s*(?![^()]*\))/)).to.deep.equal([
+	it("draws the outline's white words over the soft shadow, the user's B (eight 1px offsets at 78 %) and under it the faint wider ring (eight 2px offsets at 28 %), only under its own setting", function () {
+		const scoped = ':root[data-ps-words="outline"][data-ps-text="light"] #chat .chat .msg';
+		const shadow = valueOf(scoped, "text-shadow");
+		expect(shadow, "the outline's light text-shadow").to.not.equal(undefined);
+		expect(layers(shadow)).to.deep.equal([
 			"0 0.0625rem 0.094rem rgb(0 0 0 / 70%)",
 			"0 0 0.1875rem rgb(0 0 0 / 45%)",
 			"0 0.0625rem 0.625rem rgb(0 0 0 / 35%)",
@@ -2883,12 +2891,80 @@ describe("the ps theme's words over the plains (spec §7)", function () {
 			...ring("0.125rem", 28),
 		]);
 
-		for (const other of [
-			':root[data-ps-text="light"] #chat .chat .show-more',
-			':root[data-ps-text="light"] #chat .chat .search-status',
-			':root[data-ps-text="light"] #chat .chat .search-scope-note',
-		]) {
-			expect(valueOf(other, "text-shadow"), other).to.equal(shadow);
+		for (const other of OTHERS) {
+			const selector = `:root[data-ps-words="outline"][data-ps-text="light"] #chat .chat ${other}`;
+			expect(valueOf(selector, "text-shadow"), selector).to.equal(shadow);
+		}
+
+		// Unscoped, the light treatment draws nothing: Bubbles is the default, and a surface treatment's words carry no shadow.
+		expect(valueOf(':root[data-ps-text="light"] #chat .chat .msg', "text-shadow")).to.equal(
+			undefined
+		);
+	});
+
+	it("draws the ink halo only under the three shadow treatments, each scoped by data-ps-words", function () {
+		const halo =
+			"0 0 0.375rem var(--ps-halo), 0 0 0.125rem var(--ps-halo), 0 0 0.0625rem var(--ps-halo)";
+
+		for (const words of ["outline", "rim"]) {
+			const selector = `:root[data-ps-words="${words}"] #chat .chat .msg`;
+			expect(valueOf(selector, "text-shadow"), selector).to.equal(halo);
+
+			for (const other of OTHERS) {
+				expect(
+					valueOf(`:root[data-ps-words="${words}"] #chat .chat ${other}`, "text-shadow"),
+					`${words} ${other}`
+				).to.equal(halo);
+			}
+		}
+
+		expect(valueOf("#chat .chat .msg", "text-shadow")).to.equal(undefined);
+	});
+
+	it("tinted rim: one 1px ring at 60 % in --ps-rim under the soft shadow in the same tint, no second ring; --ps-rim falls back to a clear noon's", function () {
+		const rim = (pct: number) => `rgb(from var(--ps-rim) r g b / ${pct}%)`;
+		const scoped = ':root[data-ps-words="rim"][data-ps-text="light"] #chat .chat .msg';
+		const shadow = valueOf(scoped, "text-shadow");
+		expect(layers(shadow)).to.deep.equal([
+			`0 0.0625rem 0.094rem ${rim(55)}`,
+			`0 0 0.1875rem ${rim(40)}`,
+			`0 0.0625rem 0.625rem ${rim(30)}`,
+			...ringIn("0.0625rem", rim(60)),
+		]);
+
+		for (const other of OTHERS) {
+			const selector = `:root[data-ps-words="rim"][data-ps-text="light"] #chat .chat ${other}`;
+			expect(valueOf(selector, "text-shadow"), selector).to.equal(shadow);
+		}
+
+		expect(valueOf(":root", "--ps-rim")).to.equal("#123a6e");
+	});
+
+	it("soft glow: four blurred black shadows and no ring under the white words; a four-layer pale aura under the ink", function () {
+		const light = ':root[data-ps-words="glow"][data-ps-text="light"] #chat .chat .msg';
+		expect(layers(valueOf(light, "text-shadow"))).to.deep.equal([
+			"0 0 0.125rem rgb(0 0 0 / 55%)",
+			"0 0.0625rem 0.25rem rgb(0 0 0 / 50%)",
+			"0 0.0625rem 0.6rem rgb(0 0 0 / 45%)",
+			"0 0 1.1rem rgb(0 0 0 / 40%)",
+		]);
+		const ink = ':root[data-ps-words="glow"] #chat .chat .msg';
+		const aura = (pct: number) => `rgb(from var(--ps-halo) r g b / ${pct}%)`;
+		expect(layers(valueOf(ink, "text-shadow"))).to.deep.equal([
+			`0 0 0.125rem ${aura(90)}`,
+			`0 0 0.3rem ${aura(85)}`,
+			`0 0 0.7rem ${aura(70)}`,
+			`0 0 1.1rem ${aura(50)}`,
+		]);
+
+		for (const other of OTHERS) {
+			for (const [scope, want] of [
+				[light, valueOf(light, "text-shadow")],
+				[ink, valueOf(ink, "text-shadow")],
+			]) {
+				const selector = scope.replace(".msg", other);
+				expect(valueOf(selector, "text-shadow"), selector).to.equal(want);
+			}
 		}
 	});
 });
