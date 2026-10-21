@@ -176,6 +176,10 @@ export const SURFACE = {
 export const WORDS_SURFACE =
 	':is(:not([data-ps-words]), [data-ps-words="bubbles"], [data-ps-words="glass"], [data-ps-words="scrim"])';
 
+/** The shadow family's scope on <html>: outline, rim and glow, the words carrying a text-shadow and keyed on the ink window. */
+export const SHADOW_WORDS_ROOT =
+	':root:is([data-ps-words="outline"], [data-ps-words="rim"], [data-ps-words="glow"])';
+
 /** The surface block's day rule, and every surface nick rule's prefix by day. */
 export const SURFACE_ROOT = `:root${WORDS_SURFACE} #chat .chat`;
 
@@ -185,6 +189,19 @@ export const SURFACE_NIGHT_ROOT = `:root[data-ps-light="night"]${WORDS_SURFACE} 
 /** A ground under a surface's flat tint at `alpha`. */
 export function surfaceGround(ground: string, light: Light, alpha: number): string {
 	return mix(ground, SURFACE[light].tint, alpha);
+}
+
+/**
+ * A mention row's wash under the surface family (ps.css: `rgb(255 214 230 / …)`
+ * by day, `rgb(40 20 48 / …)` at night, at the card's tint): the card's
+ * second tint, darker than the paper by day, which the palette is solved
+ * under and the page's card solve holds as well (glass.ts DAY_WASH).
+ */
+export const SURFACE_WASH: Record<Light, string> = {day: "#ffd6e6", night: "#281430"};
+
+/** A ground under a mention's wash at `alpha`. */
+export function surfaceWash(ground: string, light: Light, alpha: number): string {
+	return mix(ground, SURFACE_WASH[light], alpha);
 }
 
 /**
@@ -577,24 +594,36 @@ export function dayGlassGrounds(
 					continue;
 				}
 
-				// The card is flat (no backdrop filter): the tint straight over the ground.
-				const hex =
-					surface === "card" ? throughCard(g.hex, tint) : throughDayGlass(g.hex, tint);
-				const seenKey = `${surface === "card" ? "card " : ""}${hex}`;
+				// The card is flat (no backdrop filter): the tint straight over the
+				// ground, and a mention's wash over it as well (the card's second tint).
+				const seenAt: Array<[string, string]> =
+					surface === "card"
+						? [
+								[throughCard(g.hex, tint), g.name],
+								[
+									throughCard(g.hex, tint, SURFACE_WASH.day),
+									`${g.name} under a mention`,
+								],
+						  ]
+						: [[throughDayGlass(g.hex, tint), g.name]];
 
-				if (!seen.has(seenKey)) {
-					seen.add(seenKey);
-					out.push({
-						hex,
-						name: g.name,
-						body: g.body,
-						below: g.below,
-						lum: luminance(hex),
-						where: `${where}, the ${surface} at ${tint.toFixed(2)}`,
-						surface,
-						tint,
-						raw: g.hex,
-					});
+				for (const [hex, name] of seenAt) {
+					const seenKey = `${surface === "card" ? "card " : ""}${hex}`;
+
+					if (!seen.has(seenKey)) {
+						seen.add(seenKey);
+						out.push({
+							hex,
+							name,
+							body: g.body,
+							below: g.below,
+							lum: luminance(hex),
+							where: `${where}, the ${surface} at ${tint.toFixed(2)}`,
+							surface,
+							tint,
+							raw: g.hex,
+						});
+					}
 				}
 			}
 		}

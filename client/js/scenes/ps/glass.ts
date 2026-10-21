@@ -92,11 +92,23 @@ const NEED = Math.max(
  * these two to it. Every other colour of the day surface is darker than the
  * first, so the two bind.
  */
-export const DAY_CARD_TEXT = "#4e4809";
-export const DAY_CARD_FAINT = "#4c5a72";
+export const DAY_CARD_TEXT = "#07423e";
+export const DAY_CARD_FAINT = "#49566e";
 
-/** What the faint ink is held at on the card: its 3:1 and the generator's margin. */
-export const FAINT_SOLVE = 3.1;
+/**
+ * What the faint ink is held at on the card: its 3:1 floor itself. The
+ * generator moves the faint ink under rule 2 by the smallest step that clears
+ * 3, with no margin, so a margin here would push the card past the declared
+ * 0.66 at the moments the faint ink binds.
+ */
+export const FAINT_SOLVE = 3;
+
+/**
+ * A mention row's wash on the day card (ps.css: rgb(255 214 230 / the card
+ * tint)): darker than the paper, so the card is solved under it as well as
+ * under the paper, for the same two colours.
+ */
+export const DAY_WASH = "#ffd6e6";
 
 /** The lowest luminance a ground may have under the flat card tint for the day surface's text to clear its floors. */
 const NEED_CARD = Math.max(
@@ -139,6 +151,7 @@ const DECODED = Array.from({length: 256}, (_, v) => {
 	return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
 });
 const TINT_RGB = hexRgb(DAY_TINT);
+const WASH_RGB = hexRgb(DAY_WASH);
 /** saturate(SATURATE)'s matrix (Filter Effects §9.5), by rows. */
 const SAT = [
 	[0.213 + 0.787 * SATURATE, 0.715 - 0.715 * SATURATE, 0.072 - 0.072 * SATURATE],
@@ -172,13 +185,14 @@ export function backdropFiltered(hex: string): string {
 	return rgbHex(...filteredRgb(hex));
 }
 
-/** A ground under the day card's flat tint at `alpha`: the tint mixed straight over it, as mix() does. */
-export function throughCard(ground: string, alpha: number): string {
+/** A ground under the day card's flat tint at `alpha` (the paper, or a mention's wash): the tint mixed straight over it, as mix() does. */
+export function throughCard(ground: string, alpha: number, tint = DAY_TINT): string {
 	const f = rawRgb(ground);
+	const t = tint === DAY_TINT ? TINT_RGB : hexRgb(tint);
 	return rgbHex(
-		f[0] + (TINT_RGB[0] - f[0]) * alpha,
-		f[1] + (TINT_RGB[1] - f[1]) * alpha,
-		f[2] + (TINT_RGB[2] - f[2]) * alpha
+		f[0] + (t[0] - f[0]) * alpha,
+		f[1] + (t[1] - f[1]) * alpha,
+		f[2] + (t[2] - f[2]) * alpha
 	);
 }
 
@@ -192,42 +206,56 @@ export function throughDayGlass(ground: string, alpha: number): string {
 	);
 }
 
-/** The luminance of filtered bytes under the tint at `alpha`: luminance(mix(…, DAY_TINT, alpha)). */
-function luminanceUnder(f: readonly number[], alpha: number): number {
+/** The luminance of bytes under `tint` at `alpha`: luminance(mix(…, tint, alpha)). */
+function luminanceUnder(
+	f: readonly number[],
+	alpha: number,
+	tint: readonly number[] = TINT_RGB
+): number {
 	return (
-		0.2126 * DECODED[byte(f[0] + (TINT_RGB[0] - f[0]) * alpha)] +
-		0.7152 * DECODED[byte(f[1] + (TINT_RGB[1] - f[1]) * alpha)] +
-		0.0722 * DECODED[byte(f[2] + (TINT_RGB[2] - f[2]) * alpha)]
+		0.2126 * DECODED[byte(f[0] + (tint[0] - f[0]) * alpha)] +
+		0.7152 * DECODED[byte(f[1] + (tint[1] - f[1]) * alpha)] +
+		0.0722 * DECODED[byte(f[2] + (tint[2] - f[2]) * alpha)]
 	);
 }
 
-/** Whether every ground (filtered, or raw under a card) clears `need` under the tint at `hundredths` / 100. */
+/** Whether every ground (filtered, or raw under a card) clears `need` under each of `tints` at `hundredths` / 100. */
 function clears(
 	grounds: ReadonlyArray<readonly number[]>,
 	hundredths: number,
-	need: number
+	need: number,
+	tints: ReadonlyArray<readonly number[]>
 ): boolean {
 	const alpha = hundredths / 100;
 
 	for (const f of grounds) {
-		if (luminanceUnder(f, alpha) < need) {
-			return false;
+		for (const tint of tints) {
+			if (luminanceUnder(f, alpha, tint) < need) {
+				return false;
+			}
 		}
 	}
 
 	return true;
 }
 
-/** The lowest tint on a 0.01 grid at which every ground clears `need`, kept within [TINT_FLOOR, TINT_CAP]. */
-function solve(grounds: ReadonlyArray<readonly number[]>, need = NEED): number {
+const PAPER = [TINT_RGB];
+const PAPER_AND_WASH = [TINT_RGB, WASH_RGB];
+
+/** The lowest tint on a 0.01 grid at which every ground clears `need` under each tint, kept within [TINT_FLOOR, TINT_CAP]. */
+function solve(
+	grounds: ReadonlyArray<readonly number[]>,
+	need = NEED,
+	tints: ReadonlyArray<readonly number[]> = PAPER
+): number {
 	const lo = Math.round(TINT_FLOOR * 100);
 	const hi = Math.round(TINT_CAP * 100);
 
-	if (clears(grounds, lo, need)) {
+	if (clears(grounds, lo, need, tints)) {
 		return lo / 100;
 	}
 
-	if (!clears(grounds, hi, need)) {
+	if (!clears(grounds, hi, need, tints)) {
 		return hi / 100;
 	}
 
@@ -236,7 +264,7 @@ function solve(grounds: ReadonlyArray<readonly number[]>, need = NEED): number {
 
 	while (b - a > 1) {
 		const mid = (a + b) >> 1;
-		[a, b] = clears(grounds, mid, need) ? [a, mid] : [mid, b];
+		[a, b] = clears(grounds, mid, need, tints) ? [a, mid] : [mid, b];
 	}
 
 	return b / 100;
@@ -267,7 +295,7 @@ export function tintsOver(grounds: readonly SceneGround[]): Record<GlassSurface,
 		const behind = new Set(grounds.filter((g) => isBehind(s, g)).map((g) => g.hex));
 		out[s] =
 			s === "card"
-				? solve([...behind].map(rawRgb), NEED_CARD)
+				? solve([...behind].map(rawRgb), NEED_CARD, PAPER_AND_WASH)
 				: solve([...behind].map((hex) => filtered.get(hex)!));
 	}
 

@@ -89,6 +89,7 @@ import {
 	SURFACE_NIGHT_ROOT,
 	SURFACE_ROOT,
 	surfaceGround,
+	surfaceWash,
 	type Text,
 } from "./legibility";
 import {hexToOklch, oklchToHex} from "./oklch";
@@ -488,6 +489,14 @@ function underSurface(raw: CheckedGround[], light: Light, alpha: number): Checke
 	});
 }
 
+/** The ground under a mention's wash at `alpha` on the surface, with its luminance. */
+function underWash(raw: CheckedGround[], light: Light, alpha: number): CheckedGround[] {
+	return raw.map((g) => {
+		const hex = surfaceWash(g.hex, light, alpha);
+		return {...g, hex, name: `${g.name} under a mention`, lum: luminance(hex)};
+	});
+}
+
 /** Whether rule 2 can carry `colour` to `floor` over `grounds` (a move of at most RULE_TWO_MAX). */
 function fitsRuleTwo(colour: string, text: Text, grounds: CheckedGround[], floor: number): boolean {
 	try {
@@ -519,7 +528,7 @@ function solveSurface(light: Light, raw: CheckedGround[], lifted: CheckedGround[
 		alpha = spec.base;
 	} else {
 		for (let k = Math.round(spec.base * 100); k <= Math.round(spec.cap * 100); k++) {
-			const under = underSurface(raw, light, k / 100);
+			const under = [...underSurface(raw, light, k / 100), ...underWash(raw, light, k / 100)];
 
 			if (
 				lowest(spec.ink, under).ratio >= TEXT &&
@@ -531,7 +540,11 @@ function solveSurface(light: Light, raw: CheckedGround[], lifted: CheckedGround[
 		}
 	}
 
-	const grounds = [...underSurface(raw, light, alpha), ...lifted];
+	const grounds = [
+		...underSurface(raw, light, alpha),
+		...underWash(raw, light, alpha),
+		...lifted,
+	];
 	hold(spec.ink, grounds, TEXT, `${light} surface ink at opacity ${alpha}`);
 	const worst = worstFor(text, grounds);
 	const tokens: Record<string, string> = {

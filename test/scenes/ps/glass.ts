@@ -9,6 +9,8 @@ import {
 	DAY_CARD_FAINT,
 	DAY_CARD_TEXT,
 	DAY_GLASS_MARK,
+	DAY_WASH,
+	FAINT_SOLVE,
 	DAY_GLASS_TEXT,
 	DAY_TINT,
 	dayTints,
@@ -57,14 +59,14 @@ const PAGE: Array<{
 		minute: 750,
 		doy: JUNE,
 		weather: "clear",
-		tints: {header: 0.46, composer: 0.4, side: 0.51, float: 0.6, card: 0.49},
+		tints: {header: 0.46, composer: 0.4, side: 0.51, float: 0.6, card: 0.44},
 	},
 	{
 		what: "clear late afternoon, 19:24",
 		minute: 1164,
 		doy: JUNE,
 		weather: "clear",
-		tints: {header: 0.65, composer: 0.64, side: 0.65, float: 0.65, card: 0.55},
+		tints: {header: 0.65, composer: 0.64, side: 0.65, float: 0.65, card: 0.53},
 	},
 	{
 		what: "the last minute of day glass, 20:23",
@@ -78,7 +80,7 @@ const PAGE: Array<{
 		minute: 750,
 		doy: MAY,
 		weather: "rain",
-		tints: {header: 0.54, composer: 0.48, side: 0.57, float: 0.62, card: 0.52},
+		tints: {header: 0.54, composer: 0.48, side: 0.57, float: 0.62, card: 0.49},
 	},
 ];
 
@@ -286,17 +288,26 @@ describe("ps glass: the luminous day glass (plan 3 task 7b, the user's pick)", f
 		expect(isBehind("card", grounds[0])).to.equal(true);
 		const need = Math.max(
 			TEXT_SOLVE * (luminance(DAY_CARD_TEXT) + 0.05) - 0.05,
-			3.1 * (luminance(DAY_CARD_FAINT) + 0.05) - 0.05
+			FAINT_SOLVE * (luminance(DAY_CARD_FAINT) + 0.05) - 0.05
 		);
+		const under = (hex: string, alpha: number) => [
+			luminance(throughCard(hex, alpha)),
+			luminance(throughCard(hex, alpha, DAY_WASH)),
+		];
 
+		// Under the paper and under a mention's wash alike.
 		for (const g of grounds) {
-			expect(luminance(throughCard(g.hex, t.card)), g.name).to.be.at.least(need - 1e-9);
+			for (const lum of under(g.hex, t.card)) {
+				expect(lum, g.name).to.be.at.least(need - 1e-9);
+			}
 		}
 
-		// One step lower, some ground falls short (or the floor is already the lowest allowed).
+		// One step lower, some ground falls short under one of the two (or the floor is already the lowest allowed).
 		if (t.card > TINT_FLOOR) {
 			const lower = t.card - 0.01;
-			expect(grounds.some((g) => luminance(throughCard(g.hex, lower)) < need)).to.equal(true);
+			expect(grounds.some((g) => under(g.hex, lower).some((lum) => lum < need))).to.equal(
+				true
+			);
 		}
 	});
 
@@ -307,7 +318,7 @@ describe("ps glass: the luminous day glass (plan 3 task 7b, the user's pick)", f
 			"--ps-g-tint-composer": "0.40",
 			"--ps-g-tint-side": "0.51",
 			"--ps-g-tint-float": "0.60",
-			"--ps-g-tint-card": "0.49",
+			"--ps-g-tint-card": "0.44",
 		});
 		expect(glassVars(at(30, JUNE), "night")).to.deep.equal({
 			"--ps-g-tint-header": null,

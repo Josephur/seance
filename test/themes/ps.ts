@@ -37,8 +37,11 @@ import {
 	checkedGrounds,
 	dayGlassGrounds,
 	glassGround,
-	withPinned,
+	SURFACE_NIGHT_ROOT,
+	SURFACE_ROOT,
 	type Light,
+	withPinned,
+	WORDS_SURFACE,
 } from "../../tools/ps/legibility";
 import bird from "../../tools/heart/rigs/bird.mjs";
 import bunny from "../../tools/heart/rigs/bunny.mjs";
@@ -849,7 +852,14 @@ describe("the ps theme's chrome: glass over the plains (docs/projects/ps-theme.m
 				.filter((r) => r.at === PHONE && sceneTints(r).length > 0)
 				.map((r) => ({selectors: r.selectors, tints: sceneTints(r)})),
 			"the scene's tints read on the phone"
-		).to.deep.equal([{selectors: PHONE_OVERLAID, tints: ["float"]}]);
+		).to.deep.equal([
+			{selectors: PHONE_OVERLAID, tints: ["float"]},
+			// The glass column of the Words over the plains setting: no blur on the phone, the card's flat tint (the words describe).
+			{
+				selectors: [':root[data-ps-words="glass"] #chat .chat-content > .chat'],
+				tints: ["card"],
+			},
+		]);
 
 		// Each shown state is a bare overlay under a state class of #viewport, an
 		// id and a class more, so it outranks the bare rule's none; it is
@@ -974,15 +984,22 @@ describe("the ps theme's chrome: glass over the plains (docs/projects/ps-theme.m
 		expect(resolve(paletteOf("night"), "var(--ps-g-solid)")).to.equal("#121827");
 	});
 
-	it("keeps the message toolbar solid with the column: :root's window colour by day, the night solid under the light treatment", function () {
+	it("keeps the message toolbar solid with the column: :root's window colour by day, the night solid under the shadow family's light treatment, the hour's solid under the surface family", function () {
 		// The toolbar's icons are the column's colours (style.css #chat .msg-action:
 		// --body-color-muted), so its box follows the column's treatment, not the
 		// chrome's light: style.css paints it --window-bg-color, which is the solid on
-		// :root and the night glass's solid inside the column under the light treatment.
+		// :root and the night glass's solid inside the column under the light
+		// treatment of outline, rim and glow; bubbles, glass and scrim key it on
+		// the hour instead (docs/projects/ps-words.md §4.4).
 		expect(resolve(paletteOf("day"), "var(--window-bg-color)")).to.equal("#fbf8f2");
-		expect(valueOf(':root[data-ps-text="light"] #chat .chat', "--window-bg-color")).to.equal(
-			"#121827"
-		);
+		expect(
+			valueOf(
+				':root:is([data-ps-words="outline"], [data-ps-words="rim"], [data-ps-words="glow"])[data-ps-text="light"] #chat .chat',
+				"--window-bg-color"
+			)
+		).to.equal("#121827");
+		expect(valueOf(SURFACE_ROOT, "--window-bg-color")).to.equal("var(--ps-g-solid)");
+		expect(valueOf(SURFACE_NIGHT_ROOT, "--window-bg-color")).to.equal("var(--ps-g-solid)");
 	});
 
 	it("gives the dialogs with white text in their .vue files the glass ink, and the drop target", function () {
@@ -2967,6 +2984,207 @@ describe("the ps theme's words over the plains (spec §7, docs/projects/ps-words
 				const selector = scope.replace(".msg", other);
 				expect(valueOf(selector, "text-shadow"), selector).to.equal(want);
 			}
+		}
+	});
+});
+
+describe("the ps theme's words: the surface family (docs/projects/ps-words.md §4)", function () {
+	const BUBBLES = ':root:is(:not([data-ps-words]), [data-ps-words="bubbles"])';
+	const BUBBLES_NIGHT =
+		':root[data-ps-light="night"]:is(:not([data-ps-words]), [data-ps-words="bubbles"])';
+	const GLASS_COLUMN = ':root[data-ps-words="glass"]';
+	const GLASS_COLUMN_NIGHT = ':root[data-ps-light="night"][data-ps-words="glass"]';
+	const SCRIM = ':root[data-ps-words="scrim"]';
+	const SCRIM_NIGHT = ':root[data-ps-light="night"][data-ps-words="scrim"]';
+	const SHADOW_WORDS_ROOT =
+		':root:is([data-ps-words="outline"], [data-ps-words="rim"], [data-ps-words="glow"])';
+	const COLUMN = "#chat .chat-content > .chat";
+	const CARD_DAY = "rgb(255 251 244 / var(--ps-g-tint-card, var(--ps-s-tint)))";
+	const CARD_NIGHT = "rgb(12 17 32 / var(--ps-s-tint))";
+	const PILLS = [
+		".show-more .btn",
+		".date-marker-text::before",
+		".unread-marker-text::before",
+		".search-status",
+		".search-scope-note",
+	];
+
+	it("bubbles is the default: a row is a card with no attribute and with bubbles, fit to its content, the column's gutter outside it, paper by day and dark at night, nothing on the words", function () {
+		const row = `${BUBBLES} #chat .chat .msg`;
+		expect(valueOf(row, "width")).to.equal("fit-content");
+		expect(valueOf(row, "max-width")).to.equal("calc(100% - 1.25rem)");
+		expect(valueOf(row, "border-radius")).to.equal("0.5rem");
+		expect(valueOf(row, "padding-inline")).to.equal("0.6rem");
+		expect(valueOf(row, "margin-inline")).to.equal("0.625rem");
+		expect(valueOf(row, "background-color")).to.equal(CARD_DAY);
+		expect(valueOf(`${BUBBLES_NIGHT} #chat .chat .msg`, "background-color")).to.equal(
+			CARD_NIGHT
+		);
+
+		for (const other of PILLS) {
+			expect(valueOf(`${BUBBLES} #chat .chat ${other}`, "background-color"), other).to.equal(
+				CARD_DAY
+			);
+			expect(
+				valueOf(`${BUBBLES_NIGHT} #chat .chat ${other}`, "background-color"),
+				other
+			).to.equal(CARD_NIGHT);
+		}
+
+		expect(
+			valueOf(
+				`${SURFACE_ROOT} :is(.msg, .show-more, .search-status, .search-scope-note)`,
+				"text-shadow"
+			)
+		).to.equal("none");
+	});
+
+	it("bubbles anchors the message toolbar to the row's start, so a short card never carries it off the column", function () {
+		const bar = `${BUBBLES} #chat .chat .msg .msg-actions`;
+		expect(valueOf(bar, "right")).to.equal("auto");
+		expect(valueOf(bar, "inset-inline-start")).to.equal("0.5rem");
+		expect(valueOf(bar, "inset-inline-end")).to.equal("auto");
+		expect(valueOf(bar, "transform-origin")).to.equal("bottom left");
+		expect(
+			valueOf(
+				`${BUBBLES} #chat .messages > .msg:first-child .msg-actions`,
+				"transform-origin"
+			)
+		).to.equal("top left");
+	});
+
+	it("the glass column is the chrome's glass on the message list: the float tint through the lift by day, the surface tint at night", function () {
+		const col = `${GLASS_COLUMN} ${COLUMN}`;
+		expect(valueOf(col, "background-color")).to.equal(
+			"rgb(255 251 244 / var(--ps-g-tint-float, var(--ps-s-tint)))"
+		);
+
+		for (const p of ["backdrop-filter", "-webkit-backdrop-filter"]) {
+			expect(valueOf(col, p), p).to.equal(GLASS_FILTER);
+		}
+
+		expect(valueOf(`${GLASS_COLUMN_NIGHT} ${COLUMN}`, "background-color")).to.equal(CARD_NIGHT);
+	});
+
+	it("the scrim is three stops from the near edge, no blur, mirrored under rtl, a faint shadow on the night words only", function () {
+		const col = `${SCRIM} ${COLUMN}`;
+		const tint = "var(--ps-g-tint-card, var(--ps-s-tint))";
+		const stops = (c: string) =>
+			`${c} / min(0.85, calc(${tint} + 0.12))) 0%, ${c} / ${tint}) 45%, ${c} / calc(${tint} * 0.3)) 100%)`;
+		expect(valueOf(col, "background-image")).to.equal(
+			`linear-gradient(to right, ${stops("rgb(255 251 244")}`
+		);
+		expect(valueOf(`${SCRIM_NIGHT} ${COLUMN}`, "background-image")).to.equal(
+			`linear-gradient(to right, ${stops("rgb(8 12 24")}`
+		);
+		expect(
+			valueOf(`:root[dir="rtl"][data-ps-words="scrim"] ${COLUMN}`, "background-image")
+		).to.equal(`linear-gradient(to left, ${stops("rgb(255 251 244")}`);
+		expect(
+			valueOf(
+				`:root[dir="rtl"][data-ps-light="night"][data-ps-words="scrim"] ${COLUMN}`,
+				"background-image"
+			)
+		).to.equal(`linear-gradient(to left, ${stops("rgb(8 12 24")}`);
+		expect(valueOf(col, "backdrop-filter")).to.equal(undefined);
+		expect(valueOf(`${SCRIM_NIGHT} #chat .chat .msg`, "text-shadow")).to.equal(
+			"0 0.0625rem 0.125rem rgb(0 0 0 / 30%)"
+		);
+		expect(valueOf(`${SCRIM} #chat .chat .msg`, "text-shadow")).to.equal(undefined);
+	});
+
+	it("re-keys the column's surfaces on the hour under the surface family: the solid, the washes, the links, high contrast; the ink-window rules are the shadow family's alone", function () {
+		for (const root of [SURFACE_ROOT, SURFACE_NIGHT_ROOT]) {
+			expect(valueOf(root, "--window-bg-color"), root).to.equal("var(--ps-g-solid)");
+			expect(valueOf(root, "--composer-bg"), root).to.equal("var(--ps-g-solid)");
+		}
+
+		expect(valueOf(SURFACE_NIGHT_ROOT, "--chat-accent-fg")).to.equal("#1b2638");
+		expect(valueOf(SURFACE_NIGHT_ROOT, "--button-text-color-hover")).to.equal("#1b2638");
+		expect(valueOf(`${SURFACE_NIGHT_ROOT} a`, "text-decoration")).to.equal("underline");
+		expect(valueOf(':root[data-ps-text="light"] #chat .chat', "--window-bg-color")).to.equal(
+			undefined
+		);
+		expect(valueOf(':root[data-ps-text="light"] #chat .chat a', "text-decoration")).to.equal(
+			undefined
+		);
+		expect(
+			valueOf(`${SHADOW_WORDS_ROOT}[data-ps-text="light"] #chat .chat`, "--window-bg-color")
+		).to.equal("#121827");
+		expect(
+			valueOf(`${SHADOW_WORDS_ROOT}[data-ps-text="light"] #chat .chat a`, "text-decoration")
+		).to.equal("underline");
+		const view = (root: string, type: string) =>
+			`${root} #chat .chat-view[data-type="${type}"] .msg.highlight`;
+		expect(valueOf(view(`:root${WORDS_SURFACE}`, "channel"), "background")).to.equal(
+			"rgb(255 214 230 / var(--ps-g-tint-card, var(--ps-s-tint)))"
+		);
+		expect(valueOf(view(`:root${WORDS_SURFACE}`, "query"), "background")).to.equal(
+			"rgb(255 214 230 / var(--ps-g-tint-card, var(--ps-s-tint)))"
+		);
+		expect(
+			valueOf(view(`:root[data-ps-light="night"]${WORDS_SURFACE}`, "channel"), "background")
+		).to.equal("rgb(40 20 48 / var(--ps-s-tint))");
+		expect(
+			valueOf(view(`${SHADOW_WORDS_ROOT}[data-ps-text="light"]`, "channel"), "background")
+		).to.equal("rgb(20 14 30 / 50%)");
+		expect(valueOf(view(':root[data-ps-text="light"]', "channel"), "background")).to.equal(
+			undefined
+		);
+
+		for (const root of [
+			`html[data-contrast="more"]${SURFACE_ROOT}`,
+			`html[data-contrast="more"]${SURFACE_NIGHT_ROOT}`,
+		]) {
+			expect(valueOf(root, "--chat-fg-muted"), root).to.equal("var(--chat-fg)");
+			expect(valueOf(root, "--chat-fg-faint"), root).to.equal("var(--chat-fg)");
+			expect(valueOf(root, "--body-color-muted"), root).to.equal("var(--body-color)");
+		}
+	});
+
+	it("drops the glass column's blur and lift on the phone layout and gives it the card's flat tint, as the surface palette was solved for", function () {
+		const col = `${GLASS_COLUMN} ${COLUMN}`;
+		expect(valueOf(col, "background-color", PHONE)).to.equal(CARD_DAY);
+
+		for (const p of ["backdrop-filter", "-webkit-backdrop-filter"]) {
+			expect(valueOf(col, p, PHONE), p).to.equal("none");
+		}
+	});
+
+	it("turns every surface solid under reduced transparency: the card, the pills, the glass column and the scrim, by day and at night, in the file's last rule", function () {
+		const surfaces = [
+			`${BUBBLES} #chat .chat .msg`,
+			`${BUBBLES_NIGHT} #chat .chat .msg`,
+			...PILLS.flatMap((p) => [
+				`${BUBBLES} #chat .chat ${p}`,
+				`${BUBBLES_NIGHT} #chat .chat ${p}`,
+			]),
+			`${GLASS_COLUMN} ${COLUMN}`,
+			`${GLASS_COLUMN_NIGHT} ${COLUMN}`,
+			`${SCRIM} ${COLUMN}`,
+			`${SCRIM_NIGHT} ${COLUMN}`,
+			`:root[dir="rtl"][data-ps-words="scrim"] ${COLUMN}`,
+			`:root[dir="rtl"][data-ps-light="night"][data-ps-words="scrim"] ${COLUMN}`,
+		];
+		const solid = rules.filter((r) => r.at === REDUCED_TRANSPARENCY);
+		expect(solid.length).to.equal(1);
+		expect(rules.indexOf(solid[0])).to.equal(rules.length - 1);
+
+		for (const s of surfaces) {
+			expect(solid[0].selectors, s).to.include(s);
+			expect(valueOf(s, "background-color", REDUCED_TRANSPARENCY), s).to.equal(
+				"var(--ps-g-solid)"
+			);
+			expect(valueOf(s, "background-image", REDUCED_TRANSPARENCY), s).to.equal("none");
+			expect(valueOf(s, "backdrop-filter", REDUCED_TRANSPARENCY), s).to.equal("none");
+		}
+	});
+
+	it("no other stylesheet reads data-ps-words", function () {
+		for (const file of ["../../client/css/style.css", "../../client/themes/coffee.css"]) {
+			expect(fs.readFileSync(path.resolve(__dirname, file), "utf8"), file).to.not.include(
+				"data-ps-words"
+			);
 		}
 	});
 });

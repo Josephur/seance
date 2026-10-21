@@ -25,11 +25,13 @@ import {
 	momentAt,
 	pinnedMoments,
 	sceneGrounds,
+	SHADOW_WORDS_ROOT,
 	SMALL_STEPS_ROOT,
 	smallStepSweep,
 	SURFACE,
 	SURFACE_NIGHT_ROOT,
 	SURFACE_ROOT,
+	SURFACE_WASH,
 	surfaceGround,
 	withPinned,
 	type Checked,
@@ -262,10 +264,14 @@ function rgbPercent(value: string): {hex: string; strength: number} | null {
 	return {hex, strength: Number(m[4]) / 100};
 }
 
-/** The washes ps.css paints on a mentioned row, by treatment. */
+/** The washes ps.css paints on a mentioned row under the shadow family, by treatment (the surface family's: surfaceWashes). */
 function mentionWashes(): Array<{text: Text; hex: string; strength: number}> {
 	return rulesOf(css)
-		.filter((r) => r.selector.includes(".msg.highlight"))
+		.filter(
+			(r) =>
+				r.selector.includes(".msg.highlight") &&
+				!r.selector.includes(":not([data-ps-words])")
+		)
 		.flatMap((r) =>
 			r.decls
 				.filter(([name]) => name === "background")
@@ -280,6 +286,45 @@ function mentionWashes(): Array<{text: Text; hex: string; strength: number}> {
 						? "light"
 						: "ink";
 					return {text, ...wash};
+				})
+		);
+}
+
+/**
+ * The washes ps.css paints on a mentioned row under the surface family
+ * (docs/projects/ps-words.md §4.1): `rgb(r g b / var(--ps-g-tint-card,
+ * var(--ps-s-tint)))` by day and `rgb(r g b / var(--ps-s-tint))` at night,
+ * read at the surface palette's declared tint of that light.
+ */
+function surfaceWashes(): Array<{light: Light; hex: string; strength: number}> {
+	const declared = surfaceDeclared();
+	return rulesOf(css)
+		.filter(
+			(r) =>
+				r.selector.includes(".msg.highlight") &&
+				r.selector.includes(":not([data-ps-words])")
+		)
+		.flatMap((r) =>
+			r.decls
+				.filter(([name]) => name === "background")
+				.map(([, value]) => {
+					const m =
+						/^rgb\((\d+) (\d+) (\d+) \/ var\(--ps-(?:g-tint-card, var\(--ps-s-tint\)|s-tint)\)\)$/.exec(
+							value
+						);
+
+					if (!m) {
+						throw new Error(`a surface wash this test cannot read: ${value}`);
+					}
+
+					const light: Light = r.selector.includes('[data-ps-light="night"]')
+						? "night"
+						: "day";
+					const hex = `#${m
+						.slice(1, 4)
+						.map((c) => Number(c).toString(16).padStart(2, "0"))
+						.join("")}`;
+					return {light, hex, strength: Number(declared[light].tokens["--ps-s-tint"])};
 				})
 		);
 }
@@ -578,10 +623,19 @@ describe("ps: the words over the plains and on the glass keep their floors: ever
 		expect(rule!.decls).to.deep.equal([["background", "var(--ps-code-bg)"]]);
 	});
 
-	it("underlines links in the column under the light treatment (all day but on snowy days, and all night), when their colour no longer marks them", function () {
-		const rule = rulesOf(css).find((r) => r.selector === `${LIGHT_ROOT} a`);
-		expect(rule, "the light treatment's link rule").to.not.equal(undefined);
-		expect(Object.fromEntries(rule!.decls)).to.include({"text-decoration": "underline"});
+	it("underlines links in the column where their colour no longer marks them: the shadow family's light treatment (all day but on snowy days, and all night), the surface family at night", function () {
+		for (const selector of [
+			`${SHADOW_WORDS_ROOT}[data-ps-text="light"] #chat .chat a`,
+			`${SURFACE_NIGHT_ROOT} a`,
+		]) {
+			const rule = rulesOf(css).find((r) => r.selector === selector);
+			expect(rule, selector).to.not.equal(undefined);
+			expect(Object.fromEntries(rule!.decls), selector).to.include({
+				"text-decoration": "underline",
+			});
+		}
+
+		expect(rulesOf(css).find((r) => r.selector === `${LIGHT_ROOT} a`)).to.equal(undefined);
 	});
 
 	it("rules the words' treatment on the faint ink the column draws: grounds.ts's INK_FAINT_HELD is the generated --chat-fg-faint", function () {
@@ -1034,5 +1088,30 @@ describe("ps: the words over the plains and on the glass keep their floors: ever
 		expect(Number(night.ratio.toFixed(2)), `night: ${night.where}`).to.be.at.least(
 			SCRIM_FAR_FLOOR.night
 		);
+	});
+	it("holds the surface palette's ink and muted ink on a mentioned row under the surface family's washes, by day and at night", function () {
+		const washes = surfaceWashes();
+		expect(washes.map((w) => w.light).sort()).to.deep.equal(["day", "night"]);
+
+		// The washes ps.css paints are the ones the generator and the card's solve count (legibility.ts SURFACE_WASH).
+		for (const w of washes) {
+			expect(w.hex, w.light).to.equal(SURFACE_WASH[w.light]);
+		}
+
+		for (const wash of washes) {
+			const s = surfaceDeclared()[wash.light];
+			const washed = grounds().glass[wash.light].map((g) => {
+				const hex = mix(g.hex, wash.hex, wash.strength);
+				return {...g, hex, lum: luminance(hex)};
+			});
+
+			for (const name of ["--chat-fg", "--chat-fg-muted"]) {
+				const w = worst(s.tokens[name], washed);
+				expect(
+					w.ratio,
+					`${wash.light} surface ${name} ${s.tokens[name]} on a mention at ${w.where}`
+				).to.be.at.least(4.5);
+			}
+		}
 	});
 });
