@@ -6,7 +6,7 @@
 import eventbus from "../eventbus";
 
 /** Open `href` in a new tab the way an anchor would (https and web+irc: alike). */
-export function openExternal(href: string): void {
+function openExternal(href: string): void {
 	const a = document.createElement("a");
 	a.href = href;
 	a.target = "_blank";

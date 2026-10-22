@@ -267,6 +267,22 @@ describe("closed queries (irc/closedQueries.ts)", function () {
 			).to.equal(false);
 		});
 
+		it("reads a stored tombstone from before event times were kept", function () {
+			const data = new Map<string, string>([
+				[
+					"thelounge.state.closedQueries",
+					JSON.stringify({"net-i": [{nick: "bob", at: NOW - 1000}]}),
+				],
+			]);
+			useStorageBackend({
+				get: (k) => data.get(k) ?? null,
+				set: (k, v) => void data.set(k, v),
+				remove: (k) => void data.delete(k),
+			});
+			const closed = new ClosedQueries("net-i", (n) => n);
+			expect(closed.suppresses("bob", new Date(NOW - 1000))).to.equal(true);
+		});
+
 		it("removing the network forgets its tombstones", function () {
 			const closed = new ClosedQueries("net-f", (s) => s);
 			closed.close("bob", NOW - 1000);

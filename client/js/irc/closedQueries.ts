@@ -215,14 +215,15 @@ export class ClosedQueries {
 	/** The events held, newest first (read fresh: another tab may have written). */
 	entries(): ClosedEntry[] {
 		const list = readAll()[this.uuid];
-		return Array.isArray(list)
-			? list.filter(
-					(e) =>
-						typeof e?.nick === "string" &&
-						typeof e?.at === "number" &&
-						typeof e?.when === "number"
-			  )
-			: [];
+
+		if (!Array.isArray(list)) {
+			return [];
+		}
+
+		// A tombstone stored before event times were kept: made at its boundary.
+		return list
+			.filter((e) => typeof e?.nick === "string" && typeof e?.at === "number")
+			.map((e) => (typeof e.when === "number" ? e : {...e, when: e.at}));
 	}
 
 	/** The query with `nick` was closed; the newest line the server sent in it was at `at`. */

@@ -139,7 +139,7 @@ socket.on("network:status", function (data) {
 	}
 
 	// And whether that wait is the server's connection throttle.
-	if (data.retryAt !== undefined && data.retryThrottled) {
+	if (data.retryThrottled) {
 		network.status.retryThrottled = true;
 	} else {
 		delete network.status.retryThrottled;

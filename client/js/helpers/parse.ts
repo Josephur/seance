@@ -158,20 +158,18 @@ function wrapNode(node: WrapNode, children: Rendered[], message?: ClientMessage)
 			// A long press's own "Open in new tab" cannot be intercepted: the
 			// host is the warning there.
 			const verdict = node.verdict;
-			const mismatch = verdict.kind === "mismatch";
-
-			const ask = (ev: MouseEvent) => {
-				ev.preventDefault();
-
-				if (verdict.kind === "mismatch") {
-					confirmMismatch(node.href, verdict.shown);
-				}
-			};
+			const ask =
+				verdict.kind === "mismatch"
+					? (ev: MouseEvent) => {
+							ev.preventDefault();
+							confirmMismatch(node.href, verdict.shown);
+					  }
+					: undefined;
 
 			return createElement(
 				"a",
 				{
-					class: mismatch ? ["md-link", "mismatch"] : ["md-link"],
+					class: ask ? ["md-link", "mismatch"] : ["md-link"],
 					href: node.href,
 					title: node.href,
 					dir: "auto",
@@ -180,7 +178,7 @@ function wrapNode(node: WrapNode, children: Rendered[], message?: ClientMessage)
 					// A Ctrl/Cmd or Shift click arrives as a click, the middle
 					// button as an auxclick. (Enter never reaches a chat link:
 					// keybinds.ts sends it to the composer.)
-					...(mismatch
+					...(ask
 						? {
 								onClick: ask,
 								onAuxclick(ev: MouseEvent) {
