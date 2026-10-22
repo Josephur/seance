@@ -890,3 +890,116 @@ describe("WsTransport.abandon()", function () {
 		expect(t.state).to.equal("reconnect-wait");
 	});
 });
+
+describe("WsTransport: the dial gate (irc/dialLedger.ts)", function () {
+	let clock: sinon.SinonFakeTimers;
+
+	beforeEach(function () {
+		FakeWebSocket.instances = [];
+		FakeWebSocket.throwOnConstruct = false;
+		clock = sinon.useFakeTimers();
+	});
+
+	afterEach(function () {
+		clock.restore();
+	});
+
+	/** A gate closed until `until` (fake-clock ms), recording every dial. */
+	function gate(until: number) {
+		const g = {until, record: sinon.spy(), waitMs: (now: number) => Math.max(0, g.until - now)};
+		return g;
+	}
+
+	it("defers a connect the server would refuse", function () {
+		const g = gate(30_000);
+		const {t, events} = make({reconnect: fastReconnect, gate: g});
+		t.connect();
+		expect(FakeWebSocket.instances).to.have.length(0);
+		expect(t.state).to.equal("reconnect-wait");
+		expect(events[events.length - 1]).to.deep.equal({
+			type: "reconnecting",
+			attempt: 0,
+			delayMs: 30_000,
+			throttled: true,
+		});
+		clock.tick(29_999);
+		expect(FakeWebSocket.instances).to.have.length(0);
+		clock.tick(1);
+		expect(FakeWebSocket.instances).to.have.length(1);
+	});
+
+	it("a connect() during the wait waits too", function () {
+		const g = gate(30_000);
+		const {t} = make({reconnect: fastReconnect, gate: g});
+		t.connect();
+		clock.tick(10_000);
+		t.connect();
+		expect(FakeWebSocket.instances).to.have.length(0);
+		clock.tick(20_000);
+		expect(FakeWebSocket.instances).to.have.length(1);
+	});
+
+	it("never retries earlier than the gate allows after a close", function () {
+		const g = gate(0);
+		const {t, events} = make({reconnect: fastReconnect, gate: g});
+		t.connect();
+		g.until = 20_000;
+		last().closed(1006, "", false);
+		expect(events[events.length - 2]).to.include({type: "close", delayMs: 20_000});
+		expect(events[events.length - 1]).to.deep.equal({
+			type: "reconnecting",
+			attempt: 1,
+			delayMs: 20_000,
+			throttled: true,
+		});
+		clock.tick(19_999);
+		expect(FakeWebSocket.instances).to.have.length(1);
+		clock.tick(1);
+		expect(FakeWebSocket.instances).to.have.length(2);
+	});
+
+	it("keeps the backoff when it is longer than the gate", function () {
+		const g = gate(0);
+		const {t, events} = make({reconnect: fastReconnect, gate: g});
+		t.connect();
+		g.until = 50;
+		last().closed(1006, "", false);
+		expect(events[events.length - 1]).to.deep.equal({
+			type: "reconnecting",
+			attempt: 1,
+			delayMs: 100,
+		});
+	});
+
+	it("records every dial it makes, refused ones included", function () {
+		const g = gate(0);
+		const {t} = make({reconnect: fastReconnect, gate: g});
+		t.connect();
+		last().closed(1006, "", false);
+		clock.tick(100);
+		expect(FakeWebSocket.instances).to.have.length(2);
+		expect(g.record.args).to.deep.equal([[0], [100]]);
+	});
+
+	it("does not record a dial made offline", function () {
+		const nav = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+		Object.defineProperty(globalThis, "navigator", {
+			value: {onLine: false},
+			configurable: true,
+		});
+
+		try {
+			const g = gate(0);
+			const {t} = make({gate: g});
+			t.connect();
+			expect(FakeWebSocket.instances).to.have.length(1);
+			expect(g.record.called).to.equal(false);
+		} finally {
+			if (nav) {
+				Object.defineProperty(globalThis, "navigator", nav);
+			} else {
+				delete (globalThis as {navigator?: unknown}).navigator;
+			}
+		}
+	});
+});
