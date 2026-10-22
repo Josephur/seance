@@ -83,7 +83,7 @@ another. `client/js/helpers/linkSafety.ts` `judgeLink(label, href)` compares
 hosts, never strings: the destination is `new URL(href).hostname`, which sees
 through userinfo (`https://bank.com@evil.example`) and shows an IDN host in
 punycode; the label's addresses are what the linkifier finds in it, and two
-hosts match when equal or one is a subdomain of the other, after one `www.`.
+hosts match when equal or one is a subdomain of the other, after one `www.`. An e-mail address in the label counts by its domain. A schemeless word that is a file name (a segment of the link's own path, or ending in an extension that is also a TLD: `setup.py`, `readme.md`, `backup.zip`) is not an address, so such a link shows its host without the warning.
 `layout()` puts the verdict on the `href` node and `parse.ts` renders it:
 
 - `honest` (the label is the URL, or URLs on the same host): unchanged;

@@ -75,6 +75,47 @@ describe("linkSafety (masked markdown links)", function () {
 			expect(verdict.kind === "mismatch" && verdict.shown).to.equal("paypal.com");
 		});
 
+		it("does not take a file name in the link's own path for an address", function () {
+			expect(
+				judgeLink("setup.py", "https://github.com/org/repo/blob/main/setup.py")
+			).to.deep.equal({kind: "masked", host: "github.com"});
+		});
+
+		it("does not take a bare file name for an address", function () {
+			for (const label of [
+				"readme.md",
+				"backup.zip",
+				"main.rs",
+				"demo.mov",
+				"script.sh",
+				"lib.so",
+			]) {
+				expect(judgeLink(label, "https://github.com/org/repo"), label).to.deep.equal({
+					kind: "masked",
+					host: "github.com",
+				});
+			}
+		});
+
+		it("still flags an extension-like domain written with a scheme or www.", function () {
+			expect(judgeLink("https://paypal.zip", "https://evil.example/").kind).to.equal(
+				"mismatch"
+			);
+			expect(judgeLink("www.paypal.zip", "https://evil.example/").kind).to.equal("mismatch");
+		});
+
+		it("flags an e-mail label whose domain is not where the link goes", function () {
+			expect(judgeLink("support@paypal.com", "https://evil.example/")).to.deep.equal({
+				kind: "mismatch",
+				host: "evil.example",
+				shown: "support@paypal.com",
+			});
+			// `.example` is no TLD, so a real one: the linkifier only finds real domains.
+			expect(judgeLink("help@example.com", "https://example.com/")).to.deep.equal({
+				kind: "honest",
+			});
+		});
+
 		it("treats an href it cannot parse as masked, showing it whole", function () {
 			expect(judgeLink("x", "https://")).to.deep.equal({kind: "masked", host: "https://"});
 		});

@@ -9,8 +9,12 @@
  *    letter shows itself; a `web+irc:` host is opaque to URL and compared as
  *    written, lowercased;
  *  - the label's addresses are what the linkifier finds in it (bare domains
- *    included); two hosts match when they are equal or one is a subdomain of
- *    the other, after one leading `www.` is dropped;
+ *    included; an e-mail address counts by its domain); two hosts match when
+ *    they are equal or one is a subdomain of the other, after one leading
+ *    `www.` is dropped. A schemeless word that is a file name — a segment of
+ *    the link's own path, or ending in an extension that is also a TLD
+ *    (`setup.py`, `readme.md`, `backup.zip`) — is not an address: the link is
+ *    then judged `masked` and still shows its host;
  *  - any label address that does not match → `mismatch` (warn, confirm);
  *    addresses that all match → `honest`; none → `honest` when the label is
  *    the href, else `masked` (show the host).
@@ -48,6 +52,61 @@ function sameSite(a: string, b: string): boolean {
 	return x === y || x.endsWith("." + y) || y.endsWith("." + x);
 }
 
+/** The host an address the linkifier found names; an e-mail address names its domain. */
+function addressHost(link: string): string | undefined {
+	if (/^mailto:/i.test(link)) {
+		const domain = link.slice(link.lastIndexOf("@") + 1).toLowerCase();
+		return domain === "" ? undefined : domain.replace(/\.$/, "");
+	}
+
+	return linkHost(link);
+}
+
+/**
+ * File extensions that are also top-level domains: a schemeless `setup.py` or
+ * `readme.md` in a label is a file name, not a claim about where the link goes.
+ */
+const FILE_TLDS = new Set([
+	"ai",
+	"cc",
+	"md",
+	"mov",
+	"pl",
+	"pm",
+	"ps",
+	"py",
+	"rb",
+	"rs",
+	"sh",
+	"so",
+	"zip",
+]);
+
+/**
+ * `shown` (what the label wrote) is a file name rather than an address: it
+ * has no scheme and no `www.`, and it is a segment of the link's own path or
+ * ends in an extension-like TLD. An address written with a scheme or `www.`
+ * always counts.
+ */
+function isFileName(shown: string, shownHost: string, href: string): boolean {
+	if (/^[a-z][a-z0-9+.-]*:/i.test(shown) || /^www\./i.test(shown) || shown.includes("@")) {
+		return false;
+	}
+
+	let segments: string[] = [];
+
+	try {
+		segments = new URL(href).pathname
+			.split("/")
+			.map((p) => decodeURIComponent(p).toLowerCase());
+	} catch {
+		segments = [];
+	}
+
+	const tld = shownHost.slice(shownHost.lastIndexOf(".") + 1);
+	return segments.includes(shown.toLowerCase()) || FILE_TLDS.has(tld);
+}
+
 export function judgeLink(label: string, href: string): LinkVerdict {
 	const host = linkHost(href);
 
@@ -58,16 +117,17 @@ export function judgeLink(label: string, href: string): LinkVerdict {
 	let named = false;
 
 	for (const part of findLinks(label)) {
-		const shownHost = linkHost(part.link);
+		const shown = label.slice(part.start, part.end);
+		const shownHost = addressHost(part.link);
 
-		if (shownHost === undefined) {
+		if (shownHost === undefined || isFileName(shown, shownHost, href)) {
 			continue;
 		}
 
 		named = true;
 
 		if (!sameSite(shownHost, host)) {
-			return {kind: "mismatch", host, shown: label.slice(part.start, part.end)};
+			return {kind: "mismatch", host, shown};
 		}
 	}
 
