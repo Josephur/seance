@@ -49,6 +49,15 @@ _Live-cycle findings 2026-09-02 (first real trigger attempt, testnet ircd):_
     accounts can still opt down with `METADATA \* SET draft/webpush/payload
     - :route|ping`under`draft/metadata-2`), falling back to the spec's
       raw IRC line.
+  - The client writes the tier itself (`full`, at subscribe) and writes it
+    **private** (`METADATA * SET draft/webpush/payload private :full`,
+    `irc/bus.ts`): nefarious2's WHOIS lists every public metadata key, so the
+    public write it used to make told anyone who looked that the account had
+    push on (2026-10-22). The server reads the tier whatever its visibility.
+    An account whose key is still public from before is rewritten private by
+    the login read (`client.ts` `scheduleMuteRead` asks for the key with the
+    mute and shared keys; `handlers/metadata.ts` answers a public 761 with
+    the private SET). Operators still see private metadata.
   - the spec-shaped raw line (the `full` tier now): parsed by
     `client/js/push/line.ts`, stripped by `push/strip.ts` (IRC formatting
     always, Markdown when the mirrored setting is on), merged and

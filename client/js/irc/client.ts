@@ -36,6 +36,7 @@ import {describeClose} from "./disconnect";
 import {handlers, unhandled} from "./handlers";
 import {FILEHOST_SERVICE, TokenRequests, filehostUrlOf} from "./authtoken";
 import {interceptBatchLine, resetBatches} from "./handlers/batch";
+import {PAYLOAD_KEY} from "./handlers/metadata";
 import {
 	CONCAT_LINE_TAG_BYTES,
 	MULTILINE_CAP,
@@ -2169,7 +2170,10 @@ export class IrcClient {
 					this.send(`METADATA * SUB ${MUTE_KEY} ${PRESENCE_KEY} ${MODE_KEY}`);
 				}
 
-				this.send(`METADATA * GET ${MUTE_KEY} ${PRESENCE_KEY} ${MODE_KEY}`);
+				// The payload tier rides along: an account that wrote it public
+				// before it was written private (WHOIS listed it) is told so in
+				// the answer, and handlers/metadata.ts rewrites it private.
+				this.send(`METADATA * GET ${MUTE_KEY} ${PRESENCE_KEY} ${MODE_KEY} ${PAYLOAD_KEY}`);
 			}
 		}, MUTE_READ_DELAY_MS);
 		// Never what keeps a process (mocha) alive.

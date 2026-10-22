@@ -64,6 +64,16 @@ const keyValue: Handler = (client, msg) => {
 		onMuteValue(client, msg.params[4] ?? "");
 	}
 
+	// Our own payload tier, still public from before it was written private:
+	// a public key is in everyone's WHOIS of us. Same value, private.
+	if (
+		msg.params[2] === PAYLOAD_KEY &&
+		client.isSelf(msg.params[1] ?? "") &&
+		msg.params[3] !== "private"
+	) {
+		client.send(`METADATA * SET ${PAYLOAD_KEY} private :${msg.params[4] ?? ""}`);
+	}
+
 	const onShared = SHARED[msg.params[2] ?? ""];
 
 	if (onShared && ours(client, msg.params[1] ?? "", msg.params[3] ?? "")) {
