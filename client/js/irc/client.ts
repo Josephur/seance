@@ -38,7 +38,7 @@ import {handlers, unhandled} from "./handlers";
 import {FILEHOST_SERVICE, TokenRequests, filehostUrlOf} from "./authtoken";
 import {interceptBatchLine, resetBatches} from "./handlers/batch";
 import {PAYLOAD_KEY} from "./handlers/metadata";
-import {CLOSED_KEY, ClosedQueries, encodeClosed} from "./closedQueries";
+import {CLOSED_KEY, ClosedQueries, closedQueriesKept, encodeClosed} from "./closedQueries";
 import {
 	CONCAT_LINE_TAG_BYTES,
 	MULTILINE_CAP,
@@ -506,7 +506,11 @@ export class IrcClient {
 		);
 
 		this.noticeLog = new NoticeLog(this.uuid, () => getSavedNetwork(this.uuid) !== undefined);
-		this.closed = new ClosedQueries(this.uuid, (s) => this.casefold(s));
+		this.closed = new ClosedQueries(
+			this.uuid,
+			(s) => this.casefold(s),
+			() => this.unshareClosed()
+		);
 
 		for (const name of this.queryLog.names()) {
 			const newest = this.queryLog.newestAt(name);
@@ -2622,6 +2626,12 @@ export class IrcClient {
 	 * of it has answered; until then the write waits for it.
 	 */
 	writeClosed(): void {
+		// Private conversations not kept: nothing is shared (closedQueries.ts).
+		if (!closedQueriesKept()) {
+			this.closedPending = false;
+			return;
+		}
+
 		if (!this.closedKnown) {
 			this.closedPending = true;
 			return;
@@ -2645,13 +2655,31 @@ export class IrcClient {
 		this.send(value ? `${prefix}${value}` : `METADATA * SET ${CLOSED_KEY}`);
 	}
 
-	/** The server's `max-value-bytes` for metadata (draft/metadata-2), 300 when it names none. */
-	metadataMaxValueBytes(): number {
+	/**
+	 * Sharing stopped (closedQueries.ts setClosedQueriesKept): delete the
+	 * account's list of closed conversations, which the network's operators
+	 * can read, if this connection can.
+	 */
+	private unshareClosed(): void {
+		this.closedPending = false;
+
+		if (
+			this.isWelcomed &&
+			this.transport.state === "open" &&
+			this.account &&
+			this.caps.hasCapability("draft/metadata-2")
+		) {
+			this.send(`METADATA * SET ${CLOSED_KEY}`);
+		}
+	}
+
+	/** The server's `max-value-bytes` (draft/metadata-2): a plain number, else nefarious2's 300. */
+	private metadataMaxValueBytes(): number {
 		const token = (this.caps.value("draft/metadata-2") ?? "")
 			.split(",")
 			.find((t) => t.startsWith("max-value-bytes="));
-		const bytes = token ? parseInt(token.slice("max-value-bytes=".length), 10) : NaN;
-		return Number.isFinite(bytes) && bytes > 0 ? bytes : 300;
+		const value = token?.slice("max-value-bytes=".length) ?? "";
+		return /^[1-9]\d*$/.test(value) ? Number(value) : 300;
 	}
 
 	/** Create + announce (`join` event) a channel or query. */

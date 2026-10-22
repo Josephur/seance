@@ -112,6 +112,12 @@ export class Channel {
 	 * may still take it away (irc/closedQueries.ts applyClosed).
 	 */
 	autoOpened = false;
+	/**
+	 * Unix ms of the newest line the server sent here (one with a msgid): a
+	 * close's boundary (irc/closedQueries.ts). Lines this device made carry its
+	 * clock, so they never move it.
+	 */
+	newestServerAt: number | undefined = undefined;
 	/** History has been requested at least once (so `newestRef` is a valid catch-up reference). */
 	historyRequested = false;
 	/** A `more` page the connection died on; asked again once we are back (history.ts). */
@@ -181,6 +187,7 @@ export class Channel {
 		if (msg.msgid) {
 			ref.msgid = msg.msgid;
 			this.idByMsgid.set(msg.msgid, msg.id);
+			this.newestServerAt = Math.max(this.newestServerAt ?? 0, ref.time.getTime());
 		}
 
 		if (msg.type === MessageType.MESSAGE || msg.type === MessageType.ACTION) {

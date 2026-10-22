@@ -34,9 +34,10 @@ const part: Command = {
 
 		// Closing a query is meant: a line from before the close must not
 		// open it again — here after a reconnect, or on another device
-		// (irc/closedQueries.ts). Its newest line's server time marks it.
-		if (target.type === ChanType.QUERY && target.newestRef) {
-			client.closed.close(target.name, target.newestRef.time.getTime());
+		// (irc/closedQueries.ts). Its boundary is the newest line the server
+		// sent in it; one with nothing from the server has nothing to replay.
+		if (target.type === ChanType.QUERY && target.newestServerAt !== undefined) {
+			client.closed.close(target.name, target.newestServerAt);
 			client.writeClosed(); // and on the account's other devices
 		}
 

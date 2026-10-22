@@ -5,6 +5,7 @@ import {normalizeOwnMessageStyle} from "./helpers/ownMessages";
 import {prefersTwelveHourClock} from "./helpers/hourCycle";
 import {normalizeSceneMotion, themeScene} from "./themeScene";
 import {setQueryLogEnabled} from "./irc/querylog";
+import {setClosedQueriesKept} from "./irc/closedQueries";
 import {setKeepAlive} from "./helpers/keepAlive";
 import {effectiveTheme} from "./helpers/themeAppearance";
 import {currentPlatform, PLATFORM_DEFAULTS} from "./helpers/platformDefaults";
@@ -275,6 +276,7 @@ const defaultConfig = {
 		default: true,
 		apply(store: TypedStore, value: boolean) {
 			setQueryLogEnabled(value);
+			setClosedQueriesKept(value); // the closed ones' names too, here and shared
 		},
 	},
 	userStyles: {
