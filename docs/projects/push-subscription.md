@@ -943,3 +943,108 @@ on every connect (confirmed in use on 2026-09-05: two connections, both
 subscribed, the prompt swapping between them). Subscriptions are now per
 network — one service-worker registration per network, each with its own
 subscription and key — see `docs/projects/push-per-network.md`.
+
+## iOS: every push has to show something (2026-10-22)
+
+Reported: push on an iPhone (the Home Screen web app) is flaky or stops
+altogether; nobody on the project owns an Apple device. Investigated from
+the WebKit source rather than a device, with the facts pinned to the files
+they come from:
+
+- **WebKit counts silent pushes per origin and revokes at three.** When
+  webpushd hands a push to the worker it queues it as a potential silent
+  push with a 30 s expiry (`Source/WebKit/webpushd/WebPushDaemon.mm`
+  `m_potentialSilentPushes`, `silentPushTimeoutForProduction`); a
+  `showNotification` on that registration inside the window removes the
+  entry (`didShowNotification`), and expiry calls
+  `PushService::incrementSilentPushCount`. The count starts at 0 when the
+  record is made and is only ever incremented
+  (`Source/WebCore/Modules/push-api/PushDatabase.cpp`: no reset path). At
+  `maxSilentPushCount = 3` (`Source/WebKit/Shared/WebPushDaemonConstants.h`:
+  "If an origin processes more than this many silent pushes, then it will be
+  unsubscribed from push") `PushService.mm` logs "Removing all subscriptions
+  associated with … since it processed N silent pushes" and removes **every
+  subscription of the origin** — every network's registration, since they
+  share the origin — and nothing tells the worker (no
+  `pushsubscriptionchange`). Chrome's rule is different: it counts the
+  notifications visible on the registration when the event ends, which the
+  page-handoff design above satisfies.
+- **The worker ended push events silently in three places.** A push for a
+  message the live page already took (the seen ring); a redelivery whose
+  message the notification already holds (`addMessage` idempotent, nothing
+  new, nothing shown); and every read relay (`MARKREAD`, `t:"read"`), which
+  only closes. All three happen in ordinary use on a phone: the ircd pushes
+  to an account whose connections are held, away, or idle — and a
+  connection that has not spoken this session counts as idle at once
+  (`webpush_attention.c`: `last_msg <= 0` is idle; `WEBPUSH_IDLE` 900 s
+  otherwise), so with the app open and being read every PM and highlight is
+  pushed, reaches the page over the WebSocket first, and was dropped by the
+  worker as seen. And the relay for a conversation that was pushed is sent
+  to every subscription of the account, the reading device's included. Three
+  of any of these and the phone lost push; the next launch found no
+  subscription (`syncStoredWithBrowser`), deleted the entry, and
+  `maybePrompt` subscribed again in silence (permission granted) — push that
+  works for a few notifications after each launch, which reads as flaky.
+- **A notification shown and closed at once is not a way out.** WebKit
+  commit 7ab26d3 (bug 309940, "Don't let ServiceWorkers handling push events
+  call showNotification but then immediately close that notification")
+  refuses a script `close()` of a persistent notification younger than the
+  same 30 s ("Persistent notifications cannot be closed shortly after they
+  are shown"), so a show-and-close stub is a 30 s banner either way.
+- **The POST itself is fine for Apple.** `webpush.c` sends
+  `Authorization: vapid t=…, k=…` (RFC 8292 §3, which Apple requires),
+  `Content-Encoding: aes128gcm`, a `TTL`, and a JWT with the endpoint's
+  origin as `aud`, a 24 h `exp` and a `mailto:` subject — the shape Apple's
+  push service accepts; the encryption was verified against reference
+  crypto earlier in this document.
+
+What ships (`client/service-worker.js`, `client/js/webpush.ts`,
+`test/tests/service-worker.ts` § under WebKit):
+
+- **Under WebKit every push event shows.** `strictUserVisible()` reads the
+  worker's user agent (`AppleWebKit/` without `Chrome/`: WebKit on iOS and
+  macOS, Chromium carries both, Firefox neither). A message push there skips
+  the seen ring and is shown, or re-shown — same tag, same count, so a
+  redelivery or a message the page took first is still one notification
+  (`showMessage`'s `mustShow`). A read relay closes what it would have
+  closed and then replaces the target's notification with a silent "Marked
+  as read" stub under the target's own tag (`showReadStub`; a notification
+  the marker leaves standing keeps its tag and the stub takes `push-read`),
+  which the worker closes itself 31 s later — outside `waitUntil`, since the
+  event must not outlive WebKit's handler lifetime; a worker killed before
+  then leaves the stub to the next push on the target (same tag) or the
+  page's app-opened sweep. The stub carries no count (`updateBadge` skips
+  `kind: "read"`) and a tap opens the conversation. A push event that has
+  shown nothing `STRICT_SHOW_DEADLINE_MS` (20 s) after it arrived — a
+  stalled IndexedDB, a push stuck behind one — shows the generic
+  notification before WebKit's clock runs out; the deadline is timed from
+  the event, ahead of the push queue, because WebKit's clock is. Chrome and
+  Firefox keep the old paths exactly.
+- **A subscription the browser dropped is unregistered from the server.**
+  `syncStoredWithBrowser` queues the lost entry's endpoint
+  (`queueUnregister`, as the Android shell's reconciliation does) and the
+  next connect sends `WEBPUSH UNREGISTER` for it (`unregisterLegacy`). Before,
+  each revoke-and-resubscribe cycle left a dead endpoint on the account:
+  `WEBPUSH_MAX_REGISTRATIONS` (30) would eventually refuse the phone for
+  good, and Apple's answer for a revoked endpoint is not documented as the
+  410 the ircd reaps on.
+
+What this costs on an iPhone, and the server-side options (not taken, by
+the rule that push problems are fixed in the client): a message the page
+already shows gets its banner anyway (the page's own copy, re-presented, or
+a banner for the conversation on screen), and reading a pushed
+conversation anywhere — the phone itself included — shows the 30 s "Marked
+as read" stub. Both come from the server pushing to a device whose page is
+alive, and from relaying reads to Apple endpoints; a server that stopped
+pushing to attending connections, or sent Apple endpoints no read relays,
+or spoke Declarative Web Push to them (iOS 18.4+: a JSON notification
+payload webpushd shows itself, outside the silent-push accounting —
+`WebPushDaemon.mm` `supportsBuiltinNotifications`), would remove them.
+
+Verification: the harness drives the real worker under an iPhone user
+agent (a seen push shown, a redelivery re-shown at the same count, the
+relay's stub and its close, the stub beside a kept notification, a stub
+with nothing to close, the next push replacing the stub, the stalled
+handler's generic notification, and a Chromium user agent keeping the
+drops). The iPhone itself remains unverified: nobody here has one, and
+`getSubscription()` on the device after three pushes is the check.

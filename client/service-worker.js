@@ -376,6 +376,56 @@ function showPageNotification(event, payload) {
 //     survives the page and its session-local channel ids,
 //   - `pushsubscriptionchange` re-subscribes with the stashed VAPID key and
 //     re-registers, so expiry self-heals.
+//
+// WebKit (an iPhone's Home Screen web app, Safari) enforces `userVisibleOnly`
+// its own way, and it is the way push used to die there: when a push is
+// handed to the worker, webpushd starts a 30 s clock and waits for a
+// `showNotification` on that registration (WebPushDaemon.mm
+// `m_potentialSilentPushes`, `silentPushTimeoutForProduction`); none in
+// time is one silent push, the count only ever goes up (PushDatabase
+// `incrementSilentPushCount`, no reset), and at the third (`maxSilentPushCount`
+// in WebPushDaemonConstants.h) it removes EVERY subscription of the origin —
+// every network's — without telling the worker (no `pushsubscriptionchange`).
+// Chrome instead counts the notifications visible on the registration when
+// the event ends, which the page's hand-off above satisfies. So the paths
+// below that end a push event without showing — a push the live page already
+// took, a redelivery, a read relay that only closes — are exactly what
+// revoked the subscription on iOS, three at a time, and the next app launch
+// quietly subscribed again (webpush.ts `syncStoredWithBrowser`): push that
+// works for a few notifications after each launch. On WebKit
+// (`strictUserVisible`) every push event therefore shows something: a
+// message push shows (or re-shows, same tag and count) its notification
+// rather than being dropped, a read relay replaces the target's notification
+// with a silent "Marked as read" stub — WebKit also refuses a `close()`
+// within 30 s of a show (bug 309940), so a stub closed at once would stay
+// anyway — that the worker closes once that lifetime is over, and a handler
+// that has shown nothing after STRICT_SHOW_DEADLINE_MS (a stalled
+// IndexedDB) shows the generic notification before WebKit's clock runs out.
+
+/** WebKit's `silentPushTimeoutForProduction`: how long webpushd waits for a
+ * `showNotification` after handing a push over, and the age below which it
+ * refuses to close a persistent notification. */
+const WEBKIT_SILENT_PUSH_TIMEOUT_MS = 30000;
+/** A strict push event that has shown nothing by then shows the generic
+ * notification: inside WebKit's clock, with room for the show itself. */
+const STRICT_SHOW_DEADLINE_MS = 20000;
+/** How long the read stub stays before the worker closes it: just past the
+ * minimum lifetime, since an earlier close is refused. */
+const READ_STUB_LIFETIME_MS = WEBKIT_SILENT_PUSH_TIMEOUT_MS + 1000;
+
+/** Whether this worker runs under WebKit, where a push event that shows no
+ * notification counts toward unsubscribing the whole origin. Every WebKit
+ * browser carries `AppleWebKit/` (Chromium does too, with `Chrome/` after it;
+ * Firefox carries neither). */
+function strictUserVisible() {
+	const ua = (self.navigator && self.navigator.userAgent) || "";
+
+	return /AppleWebKit\//.test(ua) && !/Chrome\//.test(ua);
+}
+
+/** Notifications shown by this worker so far (showSafely): what a push's
+ * deadline compares against. */
+let shownCount = 0;
 
 const IDB_NAME = "seance-push";
 const IDB_STORE = "kv";
@@ -1022,7 +1072,11 @@ async function getStash() {
  * the app opens. */
 async function updateBadge() {
 	const all = await self.registration.getNotifications();
-	const mine = all.reduce((sum, n) => sum + ((n.data && n.data.count) || 1), 0);
+	// A read stub (showReadStub) says nothing is unread.
+	const mine = all.reduce(
+		(sum, n) => sum + (n.data && n.data.kind === "read" ? 0 : (n.data && n.data.count) || 1),
+		0
+	);
 	let total = mine;
 
 	try {
@@ -1048,6 +1102,17 @@ self.addEventListener("push", function (event) {
 	event.waitUntil(handlePush(raw));
 });
 
+/** The generic notification: what a push shows when nothing better can be
+ * made of it, and what a strict push event shows when its handler has not
+ * shown anything in time. */
+function showGeneric() {
+	return showSafely("Seance", {
+		tag: "push-activity",
+		icon: "img/icon-192.png",
+		body: "New activity while you were away.",
+	});
+}
+
 // The lines of a multiline message reach the worker together (FCM hands
 // them over at once) and a service worker runs push handlers concurrently.
 // Each handler reads the notification's stored message list, awaits a few
@@ -1057,7 +1122,21 @@ self.addEventListener("push", function (event) {
 let pushChain = Promise.resolve();
 
 function handlePush(raw) {
-	return enqueuePush(() => handlePushNow(raw));
+	if (!strictUserVisible()) {
+		return enqueuePush(() => handlePushNow(raw));
+	}
+
+	// WebKit's clock runs from the moment the push was handed over, so the
+	// deadline is timed from here, ahead of the queue — a push waiting
+	// behind a stalled one is just as silent.
+	const before = shownCount;
+	const deadline = setTimeout(() => {
+		if (shownCount === before) {
+			void showGeneric();
+		}
+	}, STRICT_SHOW_DEADLINE_MS);
+
+	return enqueuePush(() => handlePushNow(raw)).finally(() => clearTimeout(deadline));
 }
 
 /** A page's message (see the "message" listener), in the same queue as the
@@ -1150,6 +1229,9 @@ async function handlePushNow(raw) {
 	// would degrade to the generic fallback. Trim trailing control bytes
 	// before parsing so the payload is always clean.
 	const clean = raw.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]+$/, "");
+	// Under WebKit this event must end in a showNotification (above): the
+	// seen ring is not consulted and a read relay leaves a stub.
+	const strict = strictUserVisible();
 
 	// Everything below reads IndexedDB (idbGet, getStash) and the
 	// Notifications API — a rejection there (private mode, IndexedDB
@@ -1164,8 +1246,7 @@ async function handlePushNow(raw) {
 
 		// Another device read a channel (JSON opt-down tier): close what we show for it.
 		if (json && json.t === "read") {
-			await closeForTarget(json.target, json.ts);
-			await updateBadge();
+			await readRelay(json.target, json.ts, strict);
 			return;
 		}
 
@@ -1174,38 +1255,90 @@ async function handlePushNow(raw) {
 
 		// The same relay as a MARKREAD line (the full tier).
 		if (parsed && parsed.command === "MARKREAD") {
-			await closeForTarget(parsed.target, parsed.timestamp);
-			await updateBadge();
+			await readRelay(parsed.target, parsed.timestamp, strict);
 			return;
 		}
 
 		if (parsed && (parsed.command === "PRIVMSG" || parsed.command === "NOTICE")) {
-			await showMessage(P, parsed, true);
+			await showMessage(P, parsed, !strict, strict);
 			return;
 		}
 
 		// userVisibleOnly means every push should surface something.
-		await showSafely("Seance", {
-			tag: "push-activity",
-			icon: "img/icon-192.png",
-			body: "New activity while you were away.",
-		});
+		await showGeneric();
+		await updateBadge();
+	} catch (e) {
+		await showGeneric();
+		await updateBadge();
+	}
+}
+
+/** A read relay (`:server MARKREAD target timestamp=…`, or the JSON tier's
+ * `t:"read"`): close what this worker shows for the target up to the
+ * marker. Under WebKit (`strict`) that alone is a silent push, so the
+ * target's notification is replaced with a silent "Marked as read" stub
+ * under its own tag — a notification the marker leaves standing (it
+ * postdates the marker) keeps its tag and the stub takes `push-read` — and
+ * the worker closes the stub once WebKit lets it (READ_STUB_LIFETIME_MS;
+ * a worker killed before then leaves it to the next push on the target or
+ * the page's app-opened sweep, which replace or close it). Not inside
+ * `waitUntil`: the event must not outlive WebKit's handler lifetime. */
+async function readRelay(target, ts, strict) {
+	await closeForTarget(target, ts);
+
+	if (strict) {
+		await showReadStub(target, ts);
+	}
+
+	await updateBadge();
+}
+
+async function showReadStub(target, ts) {
+	const cutoff = ts ? Date.parse(ts) : Infinity;
+	const targetTag = "push-" + (target || "read");
+	const live = await self.registration.getNotifications({tag: targetTag});
+	// A notification the relay kept (newer than the marker) stays; a close
+	// WebKit refused (shown under 30 s ago) is replaced by the stub as well.
+	const kept = live.some(
+		(n) => n.data && n.data.kind === "push" && n.data.time && Date.parse(n.data.time) > cutoff
+	);
+	const tag = kept ? "push-read" : targetTag;
+
+	await showSafely(target || "Seance", {
+		tag,
+		silent: true,
+		icon: "img/icon-192.png",
+		body: "Marked as read",
+		// network + target: a tap still opens the conversation (routeFor)
+		data: {kind: "read", target, network: scopeNetwork || undefined},
+	});
+
+	setTimeout(() => {
+		void closeReadStub(tag);
+	}, READ_STUB_LIFETIME_MS);
+}
+
+async function closeReadStub(tag) {
+	try {
+		for (const n of await self.registration.getNotifications({tag})) {
+			if (n.data && n.data.kind === "read") {
+				n.close();
+			}
+		}
 
 		await updateBadge();
 	} catch (e) {
-		await showSafely("Seance", {
-			tag: "push-activity",
-			icon: "img/icon-192.png",
-			body: "New activity while you were away.",
-		});
-		await updateBadge();
+		// the next push on the target, or the page's sweep, takes it
 	}
 }
 
 /** Show (or merge) one message's notification: a pushed PRIVMSG/NOTICE, or
  * a page's message (`checkSeen` false — the page recorded it as seen
- * itself, and is asking for it to be shown). */
-async function showMessage(P, parsed, checkSeen) {
+ * itself, and is asking for it to be shown). `mustShow` (a push under
+ * WebKit, above) shows the notification even when the message adds nothing
+ * to it: same tag, same count, so a redelivery or a message the page took
+ * first is one notification, re-shown, and never a silent push. */
+async function showMessage(P, parsed, checkSeen, mustShow = false) {
 	const msgid = typeof parsed.tags.msgid === "string" ? parsed.tags.msgid : undefined;
 
 	const line = P.lineIndexOf(parsed.tags);
@@ -1275,8 +1408,9 @@ async function showMessage(P, parsed, checkSeen) {
 	);
 
 	// The ring lost this msgid but the notification still holds it: a
-	// plain message pushed again adds nothing, so show nothing again.
-	if (!added.isNew && !line) {
+	// plain message pushed again adds nothing, so show nothing again —
+	// except where showing nothing is what loses the subscription.
+	if (!added.isNew && !line && !mustShow) {
 		return;
 	}
 
@@ -1366,6 +1500,7 @@ async function handlePageMessageNow(payload) {
 async function showSafely(title, options) {
 	try {
 		await self.registration.showNotification(title, options);
+		shownCount++;
 		return;
 	} catch (e) {
 		// fall through to the reduced forms
@@ -1375,7 +1510,9 @@ async function showSafely(title, options) {
 		await self.registration.showNotification(title, {
 			tag: options.tag,
 			body: options.body,
+			silent: options.silent === true,
 		});
+		shownCount++;
 		return;
 	} catch (e) {
 		// fall through to the bare form
@@ -1383,6 +1520,7 @@ async function showSafely(title, options) {
 
 	try {
 		await self.registration.showNotification(title, {});
+		shownCount++;
 	} catch (e) {
 		// nothing else to try
 	}
