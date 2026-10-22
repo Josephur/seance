@@ -9,47 +9,54 @@
  *    letter shows itself; a `web+irc:` host is opaque to URL and compared as
  *    written, lowercased;
  *  - the label's addresses are what the linkifier finds in it (bare domains
- *    included; an e-mail address counts by its domain); two hosts match when
- *    they are equal or one is a subdomain of the other, after one leading
- *    `www.` is dropped. A schemeless word that is a file name — a segment of
- *    the link's own path, or ending in an extension that is also a TLD
- *    (`setup.py`, `readme.md`, `backup.zip`) — is not an address: the link is
- *    then judged `masked` and still shows its host;
- *  - any label address that does not match → `mismatch` (warn, confirm);
- *    addresses that all match → `honest`; none → `honest` when the label is
- *    the href, else `masked` (show the host).
+ *    included; an e-mail address counts by its domain), compared after one
+ *    leading `www.` is dropped. A schemeless word ending in a source-file
+ *    extension that is also a TLD (`setup.py`, `readme.md`, `main.rs`) is not
+ *    an address;
+ *  - a label address on another site → `mismatch` (warn, confirm); one
+ *    naming only a parent of the real host (`github.io` for
+ *    attacker.github.io — a shared host is everyone's parent) → `masked`
+ *    (show the host); the same host or a subdomain of it → `honest`; no
+ *    address → `honest` when the label is the href, else `masked`.
  *
  * Vue-free and DOM-free: layout.ts puts the verdict on the href node,
  * parse.ts renders it. Tests: test/helpers/linkSafety.ts.
  */
 
 import {findLinks} from "../../../shared/linkify";
+import {urlHost} from "./urlHost";
 
 export type LinkVerdict =
 	| {kind: "honest"} // the label is the destination, or a URL on the same host
 	| {kind: "masked"; host: string} // prose label: show the host
 	| {kind: "mismatch"; host: string; shown: string}; // the label names another address
 
-/** The host a URL opens: lowercased, a trailing dot dropped; undefined when it does not parse. */
+/** The host a URL opens: lowercased, no trailing dot; undefined when it does not parse. */
 export function linkHost(href: string): string | undefined {
-	let url: URL;
-
-	try {
-		url = new URL(href);
-	} catch {
-		return undefined;
-	}
-
-	const host = url.hostname.toLowerCase().replace(/\.$/, "");
-	return host === "" ? undefined : host;
+	return urlHost(href) ?? undefined;
 }
 
 const bare = (host: string) => host.replace(/^www\./, "");
 
-function sameSite(a: string, b: string): boolean {
-	const x = bare(a);
-	const y = bare(b);
-	return x === y || x.endsWith("." + y) || y.endsWith("." + x);
+/**
+ * How a host the label names relates to the one the link opens: the same
+ * site, a subdomain of it (a label naming `login.paypal.com` for paypal.com),
+ * a parent of it (a label naming `github.io` for attacker.github.io: a
+ * shared host is everyone's parent, so the real host is shown), or another.
+ */
+function relation(shown: string, real: string): "same" | "narrower" | "parent" | "other" {
+	const x = bare(shown);
+	const y = bare(real);
+
+	if (x === y) {
+		return "same";
+	}
+
+	if (x.endsWith("." + y)) {
+		return "narrower";
+	}
+
+	return y.endsWith("." + x) ? "parent" : "other";
 }
 
 /** The host an address the linkifier found names; an e-mail address names its domain. */
@@ -63,48 +70,21 @@ function addressHost(link: string): string | undefined {
 }
 
 /**
- * File extensions that are also top-level domains: a schemeless `setup.py` or
- * `readme.md` in a label is a file name, not a claim about where the link goes.
+ * Source-file extensions that are also top-level domains, and rarely anyone's
+ * site: a schemeless `setup.py`, `readme.md` or `main.rs` in a label is a file
+ * name, not a claim about where the link goes. Kept short on purpose: every
+ * entry is a TLD a phishing label could hide behind (`notion.so`,
+ * `claude.ai`, `allegro.pl`, `.zip` still warn).
  */
-const FILE_TLDS = new Set([
-	"ai",
-	"cc",
-	"md",
-	"mov",
-	"pl",
-	"pm",
-	"ps",
-	"py",
-	"rb",
-	"rs",
-	"sh",
-	"so",
-	"zip",
-]);
+const FILE_TLDS = new Set(["md", "py", "rs"]);
 
-/**
- * `shown` (what the label wrote) is a file name rather than an address: it
- * has no scheme and no `www.`, and it is a segment of the link's own path or
- * ends in an extension-like TLD. An address written with a scheme or `www.`
- * always counts.
- */
-function isFileName(shown: string, shownHost: string, href: string): boolean {
+/** `shown` is a schemeless word ending in a source-file extension. */
+function isFileName(shown: string, shownHost: string): boolean {
 	if (/^[a-z][a-z0-9+.-]*:/i.test(shown) || /^www\./i.test(shown) || shown.includes("@")) {
 		return false;
 	}
 
-	let segments: string[] = [];
-
-	try {
-		segments = new URL(href).pathname
-			.split("/")
-			.map((p) => decodeURIComponent(p).toLowerCase());
-	} catch {
-		segments = [];
-	}
-
-	const tld = shownHost.slice(shownHost.lastIndexOf(".") + 1);
-	return segments.includes(shown.toLowerCase()) || FILE_TLDS.has(tld);
+	return FILE_TLDS.has(shownHost.slice(shownHost.lastIndexOf(".") + 1));
 }
 
 export function judgeLink(label: string, href: string): LinkVerdict {
@@ -115,25 +95,29 @@ export function judgeLink(label: string, href: string): LinkVerdict {
 	}
 
 	let named = false;
+	let parent = false;
 
 	for (const part of findLinks(label)) {
 		const shown = label.slice(part.start, part.end);
 		const shownHost = addressHost(part.link);
 
-		if (shownHost === undefined || isFileName(shown, shownHost, href)) {
+		if (shownHost === undefined || isFileName(shown, shownHost)) {
 			continue;
 		}
 
 		named = true;
+		const how = relation(shownHost, host);
 
-		if (!sameSite(shownHost, host)) {
+		if (how === "other") {
 			return {kind: "mismatch", host, shown};
 		}
+
+		parent ||= how === "parent";
 	}
 
-	if (named || label.trim() === href.trim()) {
-		return {kind: "honest"};
+	if (parent || (!named && label.trim() !== href.trim())) {
+		return {kind: "masked", host};
 	}
 
-	return {kind: "masked", host};
+	return {kind: "honest"};
 }

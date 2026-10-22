@@ -39,8 +39,25 @@ describe("linkSafety (masked markdown links)", function () {
 			});
 		});
 
-		it("lets a subdomain of the labelled host through", function () {
+		it("shows the host when the link goes to a subdomain of the labelled one", function () {
+			// The label names the parent: a shared host (github.io, co.uk) is
+			// anyone's parent, so the real host is shown, though not as a lie.
 			expect(judgeLink("github.com", "https://gist.github.com/x")).to.deep.equal({
+				kind: "masked",
+				host: "gist.github.com",
+			});
+			expect(judgeLink("github.io", "https://attacker.github.io/")).to.deep.equal({
+				kind: "masked",
+				host: "attacker.github.io",
+			});
+			expect(judgeLink("co.uk", "https://evil.co.uk/")).to.deep.equal({
+				kind: "masked",
+				host: "evil.co.uk",
+			});
+		});
+
+		it("lets a label naming a subdomain of the real host through", function () {
+			expect(judgeLink("login.paypal.com", "https://paypal.com/")).to.deep.equal({
 				kind: "honest",
 			});
 		});
@@ -75,25 +92,33 @@ describe("linkSafety (masked markdown links)", function () {
 			expect(verdict.kind === "mismatch" && verdict.shown).to.equal("paypal.com");
 		});
 
-		it("does not take a file name in the link's own path for an address", function () {
+		it("does not let a label pass by matching the link's own path", function () {
+			expect(judgeLink("paypal.com", "https://evil.example/paypal.com").kind).to.equal(
+				"mismatch"
+			);
 			expect(
-				judgeLink("setup.py", "https://github.com/org/repo/blob/main/setup.py")
-			).to.deep.equal({kind: "masked", host: "github.com"});
+				judgeLink("Verify at paypal.com", "https://evil.example/paypal.com").kind
+			).to.equal("mismatch");
 		});
 
-		it("does not take a bare file name for an address", function () {
-			for (const label of [
-				"readme.md",
-				"backup.zip",
-				"main.rs",
-				"demo.mov",
-				"script.sh",
-				"lib.so",
-			]) {
+		it("does not take a source file name for an address", function () {
+			for (const label of ["readme.md", "setup.py", "main.rs"]) {
 				expect(judgeLink(label, "https://github.com/org/repo"), label).to.deep.equal({
 					kind: "masked",
 					host: "github.com",
 				});
+			}
+		});
+
+		it("takes a real site under an extension-like TLD for an address", function () {
+			for (const label of [
+				"Sign in at claude.ai",
+				"notion.so",
+				"allegro.pl",
+				"backup.zip",
+				"script.sh",
+			]) {
+				expect(judgeLink(label, "https://evil.example/").kind, label).to.equal("mismatch");
 			}
 		});
 
