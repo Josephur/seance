@@ -106,6 +106,12 @@ export class Channel {
 	readonly idByMsgid = new Map<string, number>();
 	/** The newest message we have seen; a reconnect asks for history AFTER it. */
 	newestRef: MsgRef | undefined = undefined;
+	/**
+	 * A query opened by a line or a restored log rather than by the user, and
+	 * not yet opened, read or written in: a close another device or tab made
+	 * may still take it away (irc/closedQueries.ts applyClosed).
+	 */
+	autoOpened = false;
 	/** History has been requested at least once (so `newestRef` is a valid catch-up reference). */
 	historyRequested = false;
 	/** A `more` page the connection died on; asked again once we are back (history.ts). */

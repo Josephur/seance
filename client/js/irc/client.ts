@@ -37,7 +37,7 @@ import {handlers, unhandled} from "./handlers";
 import {FILEHOST_SERVICE, TokenRequests, filehostUrlOf} from "./authtoken";
 import {interceptBatchLine, resetBatches} from "./handlers/batch";
 import {PAYLOAD_KEY} from "./handlers/metadata";
-import {ClosedQueries} from "./closedQueries";
+import {CLOSED_KEY, ClosedQueries, encodeClosed} from "./closedQueries";
 import {
 	CONCAT_LINE_TAG_BYTES,
 	MULTILINE_CAP,
@@ -359,6 +359,10 @@ export class IrcClient {
 	readonly queryLog: QueryLog;
 	/** The queries the user closed: a line from before the close never reopens one. */
 	readonly closed: ClosedQueries;
+	/** This connection's GET of the shared closes answered (irc/closedQueries.ts). */
+	closedKnown = false;
+	/** A close waits for that answer before it is written. */
+	closedPending = false;
 	/** Server notices and WALLOPS kept on the device (noticelog.ts). */
 	readonly noticeLog: NoticeLog;
 	/** Being an oper here (oper.ts): level, privileges, snomask. */
@@ -511,7 +515,9 @@ export class IrcClient {
 			}
 
 			if (!this.findChannel(name) && !this.isChannelName(name)) {
-				this.restoredQueries.push(this.createChannel(name, ChanType.QUERY).channel);
+				const {channel} = this.createChannel(name, ChanType.QUERY);
+				channel.autoOpened = true;
+				this.restoredQueries.push(channel);
 			}
 		}
 	}
@@ -1128,7 +1134,7 @@ export class IrcClient {
 					Math.max(this.syncLineAt ?? -Infinity, lastInSync(this.uuid) ?? -Infinity),
 					Date.now()
 				);
-				lines.push(`METADATA * SUB ${MUTE_KEY} ${PRESENCE_KEY} ${MODE_KEY}`);
+				lines.push(`METADATA * SUB ${MUTE_KEY} ${PRESENCE_KEY} ${MODE_KEY} ${CLOSED_KEY}`);
 			}
 
 			const line = registrationAwayLine(this);
@@ -1262,6 +1268,7 @@ export class IrcClient {
 		this.presenceServer = null;
 		this.globalKnown = false;
 		this.globalServer = null;
+		this.closedKnown = false;
 		this.metadataSubscribed = false;
 		this.metadataBeforeConnect = false;
 		this.mutePending.length = 0;
@@ -1552,6 +1559,12 @@ export class IrcClient {
 		// The message itself ends the typing session on the receiver's side:
 		// forget ours (no `done`), and let the next `active` go out at once.
 		this.resetTyping(target);
+		const written = this.findChannel(target);
+
+		if (written) {
+			written.autoOpened = false; // the user wrote in it
+		}
+
 		const command = opts.notice ? "NOTICE" : "PRIVMSG";
 		const firstTags: ClientTags | undefined =
 			opts.tags || opts.firstTags ? {...opts.firstTags, ...opts.tags} : undefined;
@@ -2179,13 +2192,17 @@ export class IrcClient {
 			if (this.isWelcomed && this.transport.state === "open") {
 				if (!this.metadataSubscribed) {
 					this.metadataSubscribed = true;
-					this.send(`METADATA * SUB ${MUTE_KEY} ${PRESENCE_KEY} ${MODE_KEY}`);
+					this.send(
+						`METADATA * SUB ${MUTE_KEY} ${PRESENCE_KEY} ${MODE_KEY} ${CLOSED_KEY}`
+					);
 				}
 
 				// The payload tier rides along: an account that wrote it public
 				// before it was written private (WHOIS listed it) is told so in
 				// the answer, and handlers/metadata.ts rewrites it private.
-				this.send(`METADATA * GET ${MUTE_KEY} ${PRESENCE_KEY} ${MODE_KEY} ${PAYLOAD_KEY}`);
+				this.send(
+					`METADATA * GET ${MUTE_KEY} ${PRESENCE_KEY} ${MODE_KEY} ${PAYLOAD_KEY} ${CLOSED_KEY}`
+				);
 			}
 		}, MUTE_READ_DELAY_MS);
 		// Never what keeps a process (mocha) alive.
@@ -2233,6 +2250,8 @@ export class IrcClient {
 		const chan = this.channelById(chanId);
 
 		if (chan) {
+			chan.autoOpened = false; // the user has it now
+
 			// Only a person looking reads it: a page that lands here hidden
 			// (a cold start, a deep link) leaves that to attention returning
 			// (presence.ts).
@@ -2563,7 +2582,43 @@ export class IrcClient {
 			return undefined;
 		}
 
-		return this.announceChannel(nick, ChanType.QUERY);
+		const chan = this.announceChannel(nick, ChanType.QUERY);
+		chan.autoOpened = true;
+		return chan;
+	}
+
+	/**
+	 * Write the closes this device knows to the account's private
+	 * {@link CLOSED_KEY} (irc/closedQueries.ts), once this connection's read
+	 * of it has answered; until then the write waits for it.
+	 */
+	writeClosed(): void {
+		if (!this.closedKnown) {
+			this.closedPending = true;
+			return;
+		}
+
+		this.closedPending = false;
+
+		if (!this.isWelcomed || this.transport.state !== "open") {
+			return;
+		}
+
+		const value = encodeClosed(this.closed.entries(), this.metadataMaxValueBytes(), Date.now());
+		this.send(
+			value
+				? `METADATA * SET ${CLOSED_KEY} private :${value}`
+				: `METADATA * SET ${CLOSED_KEY}`
+		);
+	}
+
+	/** The server's `max-value-bytes` for metadata (draft/metadata-2), 300 when it names none. */
+	metadataMaxValueBytes(): number {
+		const token = (this.caps.value("draft/metadata-2") ?? "")
+			.split(",")
+			.find((t) => t.startsWith("max-value-bytes="));
+		const bytes = token ? parseInt(token.slice("max-value-bytes=".length), 10) : NaN;
+		return Number.isFinite(bytes) && bytes > 0 ? bytes : 300;
 	}
 
 	/** Create + announce (`join` event) a channel or query. */

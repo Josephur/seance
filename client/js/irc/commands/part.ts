@@ -37,6 +37,7 @@ const part: Command = {
 		// (irc/closedQueries.ts). Its newest line's server time marks it.
 		if (target.type === ChanType.QUERY && target.newestRef) {
 			client.closed.close(target.name, target.newestRef.time.getTime());
+			client.writeClosed(); // and on the account's other devices
 		}
 
 		if (

@@ -19,11 +19,15 @@
  */
 
 import storage from "../localStorage";
+import type {IrcClient} from "./client";
+import {ChanType} from "../../../shared/types/chan";
 
 export const CLOSED_KEY = "seance/closed";
 /** A close older than this is dropped: no replay reaches that far back. */
 export const CLOSED_TTL_MS = 30 * 24 * 3600 * 1000;
-const STORAGE_KEY = "thelounge.state.closedQueries";
+/** Where the tombstones live on this device (the `storage` event names it). */
+export const CLOSED_STORAGE_KEY = "thelounge.state.closedQueries";
+const STORAGE_KEY = CLOSED_STORAGE_KEY;
 
 export interface ClosedEntry {
 	/** Casefolded nick. */
@@ -181,5 +185,51 @@ export class ClosedQueries {
 		}
 
 		backend.set(STORAGE_KEY, JSON.stringify(all));
+	}
+}
+
+/**
+ * Tombstones that arrived after the windows did (another device's, read after
+ * registration; another tab's): a query this client opened by itself whose
+ * newest line is at or before its tombstone goes. One the user opened, read
+ * or wrote in stays — this never closes what the user is looking at.
+ */
+export function applyClosed(client: IrcClient, entries: ClosedEntry[]): void {
+	for (const entry of entries) {
+		const chan = client.findChannel(entry.nick);
+
+		if (
+			chan?.type === ChanType.QUERY &&
+			chan.autoOpened &&
+			(!chan.newestRef || chan.newestRef.time.getTime() <= entry.at)
+		) {
+			client.removeChannel(chan);
+		}
+	}
+}
+
+/**
+ * The account's {@link CLOSED_KEY} value (handlers/metadata.ts): adopted, and
+ * applied to the windows. `read` is true for the answer to this connection's
+ * GET (761/766) — only that lets a close be written, since a notification,
+ * the before-connect burst among them, can come from a stale copy and a write
+ * after it could drop another device's newer close.
+ */
+export function onClosedValue(client: IrcClient, value: string, read: boolean): void {
+	applyClosed(client, client.closed.adopt(decodeClosed(value)));
+
+	if (read) {
+		client.closedKnown = true;
+
+		if (client.closedPending) {
+			client.writeClosed();
+		}
+	}
+}
+
+/** Another tab wrote {@link CLOSED_STORAGE_KEY} (manager.ts's `storage` listener). */
+export function closedStorageChanged(clients: IrcClient[]): void {
+	for (const client of clients) {
+		applyClosed(client, client.closed.entries());
 	}
 }

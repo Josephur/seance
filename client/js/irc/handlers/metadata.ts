@@ -18,13 +18,14 @@ import type {BatchHandler} from "./batch";
 import {sharedBurstRead} from "../presence";
 import {MUTE_KEY, onMuteValue} from "../pushMute";
 import {MODE_KEY, PRESENCE_KEY, onGlobalModeValue, onPresenceValue} from "../presenceShare";
+import {CLOSED_KEY, onClosedValue} from "../closedQueries";
 // index.ts imports this module too; `unhandled` is only called at run time.
 import {unhandled} from "./index";
 
 /** The webpush payload tier (webpush.ts writes it through `webpush:metadata`). */
 export const PAYLOAD_KEY = "draft/webpush/payload";
 
-const OWN_KEYS = new Set([MUTE_KEY, PAYLOAD_KEY, PRESENCE_KEY, MODE_KEY]);
+const OWN_KEYS = new Set([MUTE_KEY, PAYLOAD_KEY, PRESENCE_KEY, MODE_KEY, CLOSED_KEY]);
 
 /** The shared keys this client reads (irc/presenceShare.ts). */
 const SHARED: Record<string, (client: Parameters<Handler>[0], value: string) => void> = {
@@ -50,6 +51,12 @@ const metadata: Handler = (client, msg) => {
 
 	if (onShared && ours(client, msg.params[0] ?? "", msg.params[2] ?? "")) {
 		onShared(client, msg.params[3] ?? "");
+	}
+
+	// The closed queries (irc/closedQueries.ts): a notification is adopted
+	// but is not this connection's read.
+	if (msg.params[1] === CLOSED_KEY && ours(client, msg.params[0] ?? "", msg.params[2] ?? "")) {
+		onClosedValue(client, msg.params[3] ?? "", false);
 	}
 };
 
@@ -79,6 +86,10 @@ const keyValue: Handler = (client, msg) => {
 	if (onShared && ours(client, msg.params[1] ?? "", msg.params[3] ?? "")) {
 		onShared(client, msg.params[4] ?? "");
 	}
+
+	if (msg.params[2] === CLOSED_KEY && ours(client, msg.params[1] ?? "", msg.params[3] ?? "")) {
+		onClosedValue(client, msg.params[4] ?? "", true);
+	}
 };
 
 // 766 <me> <target> <key> :key not set
@@ -96,6 +107,10 @@ const keyNotSet: Handler = (client, msg) => {
 
 	if (onShared && client.isSelf(msg.params[1] ?? "")) {
 		onShared(client, "");
+	}
+
+	if (msg.params[2] === CLOSED_KEY && client.isSelf(msg.params[1] ?? "")) {
+		onClosedValue(client, "", true);
 	}
 };
 

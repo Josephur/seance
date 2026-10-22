@@ -6,10 +6,13 @@
 
 import {expect} from "chai";
 import sinon from "ts-sinon";
+// The client first: pushMute and closedQueries are part of its import cycle.
+import "../../client/js/irc/client";
 import {ChanType} from "../../shared/types/chan";
 import {
 	CLOSED_TTL_MS,
 	ClosedQueries,
+	closedStorageChanged,
 	decodeClosed,
 	encodeClosed,
 	mergeClosed,
@@ -18,7 +21,8 @@ import {
 import type {SharedNetworkChan} from "../../shared/types/network";
 import * as saved from "../../client/js/irc/saved-networks";
 import {flushQueryLogs} from "../../client/js/irc/querylog";
-import {ALL_CAPS, Harness, joined, setup, stubStorage} from "./support";
+import {MUTE_READ_DELAY_MS} from "../../client/js/irc/pushMute";
+import {ALL_CAPS, Harness, joined, register, setup, stubStorage} from "./support";
 
 const T0 = "2026-08-28T11:00:00.000Z";
 const T1 = "2026-08-28T11:00:01.000Z";
@@ -253,6 +257,125 @@ describe("closed queries (irc/closedQueries.ts)", function () {
 				{nick: "bob", at: NOW - 10},
 				{nick: "carol", at: NOW - 70},
 			]);
+		});
+	});
+
+	describe("shared between devices and tabs", function () {
+		const META_CAPS = `${ALL_CAPS} draft/metadata-2=max-subs=50,max-keys=20,max-value-bytes=300`;
+		const t0 = Date.parse(T0);
+		const t36 = (ms: number) => ms.toString(36);
+
+		/** Registered with an account and draft/metadata-2. */
+		function account(): Harness {
+			const h = setup();
+			register(h, META_CAPS, [
+				":irc.test 900 alice alice!a@h alice :You are now logged in as alice",
+			]);
+			return h;
+		}
+
+		const sets = (h: Harness) =>
+			h.transport.sent.filter((l) => l.startsWith("METADATA * SET seance/closed"));
+
+		/** A query with bob opened by his line at T0, then closed by the user. */
+		function closeBob(h: Harness): void {
+			h.transport.line(`@time=${T0};msgid=p0 :bob!bob@host PRIVMSG alice :hi`);
+			h.client.input(h.client.findChannel("bob")!.id, "/close");
+		}
+
+		it("subscribes and reads seance/closed with the other shared keys", function () {
+			const h = account();
+			clock.tick(MUTE_READ_DELAY_MS);
+			const read = h.transport.sent.filter((l) => / (SUB|GET) /.test(l));
+			expect(read).to.have.length(2);
+			expect(read[0]).to.match(/^METADATA \* SUB .* seance\/closed$/);
+			expect(read[1]).to.match(/^METADATA \* GET .* seance\/closed$/);
+		});
+
+		it("writes a close private, merged with what the server holds", function () {
+			const h = account();
+			clock.tick(MUTE_READ_DELAY_MS);
+			h.transport.line(
+				`:irc.test 761 alice alice seance/closed private :carol:${t36(t0 - 60000)}`
+			);
+			closeBob(h);
+			expect(sets(h)).to.deep.equal([
+				`METADATA * SET seance/closed private :bob:${t36(t0)} carol:${t36(t0 - 60000)}`,
+			]);
+		});
+
+		it("waits for the read before writing", function () {
+			const h = account();
+			closeBob(h);
+			expect(sets(h)).to.deep.equal([]);
+			clock.tick(MUTE_READ_DELAY_MS);
+			expect(sets(h)).to.deep.equal([]);
+			h.transport.line(":irc.test 766 alice alice seance/closed :key not set");
+			expect(sets(h)).to.deep.equal([`METADATA * SET seance/closed private :bob:${t36(t0)}`]);
+		});
+
+		it("does not take a notification alone as the read (the burst can be stale)", function () {
+			const h = account();
+			closeBob(h);
+			h.transport.line(
+				`:irc.test METADATA alice seance/closed private :carol:${t36(t0 - 60000)}`
+			);
+			expect(sets(h)).to.deep.equal([]);
+		});
+
+		it("removes a window it opened by itself once a later-arriving tombstone covers it", function () {
+			const h = account();
+			h.transport.line(`@time=${T0};msgid=p0 :bob!bob@host PRIVMSG alice :hi`);
+			const id = h.client.findChannel("bob")!.id;
+			h.dispatch.resetHistory();
+			h.transport.line(`:irc.test 761 alice alice seance/closed private :bob:${t36(t0)}`);
+			expect(h.payloads<{chan: number}>("part")).to.deep.equal([{chan: id}]);
+			expect(h.client.findChannel("bob")).to.equal(undefined);
+		});
+
+		it("never removes a window the user opened or read", function () {
+			const h = account();
+			h.transport.line(`@time=${T0};msgid=p0 :bob!bob@host PRIVMSG alice :hi`);
+			h.client.open(h.client.findChannel("bob")!.id);
+			h.dispatch.resetHistory();
+			h.transport.line(`:irc.test 761 alice alice seance/closed private :bob:${t36(t0)}`);
+			expect(h.payloads("part")).to.deep.equal([]);
+		});
+
+		it("keeps a window whose newest line is after the tombstone", function () {
+			const h = account();
+			h.transport.line(`@time=${T1};msgid=p1 :bob!bob@host PRIVMSG alice :again`);
+			h.dispatch.resetHistory();
+			h.transport.line(`:irc.test 761 alice alice seance/closed private :bob:${t36(t0)}`);
+			expect(h.payloads("part")).to.deep.equal([]);
+		});
+
+		it("keeps both closes when two devices close different queries", function () {
+			const h = account();
+			clock.tick(MUTE_READ_DELAY_MS);
+			h.transport.line(":irc.test 766 alice alice seance/closed :key not set");
+			closeBob(h);
+			// The other device's write, made without ours.
+			h.transport.line(
+				`:irc.test METADATA alice seance/closed private :erin:${t36(t0 - 5000)}`
+			);
+			h.transport.line(`@time=${T1};msgid=d1 :dave!dave@host PRIVMSG alice :yo`);
+			h.client.input(h.client.findChannel("dave")!.id, "/close");
+			expect(sets(h).pop()).to.equal(
+				`METADATA * SET seance/closed private :dave:${t36(Date.parse(T1))} bob:${t36(
+					t0
+				)} erin:${t36(t0 - 5000)}`
+			);
+		});
+
+		it("another tab's close applies here", function () {
+			const h = account();
+			h.transport.line(`@time=${T0};msgid=p0 :bob!bob@host PRIVMSG alice :hi`);
+			const id = h.client.findChannel("bob")!.id;
+			h.dispatch.resetHistory();
+			new ClosedQueries(h.client.uuid, (n) => n.toLowerCase()).close("bob", t0);
+			closedStorageChanged([h.client]);
+			expect(h.payloads<{chan: number}>("part")).to.deep.equal([{chan: id}]);
 		});
 	});
 });

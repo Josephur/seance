@@ -13,6 +13,7 @@
  * successful `createNetwork` saves/updates the entry and marks it last used.
  */
 
+import {CLOSED_STORAGE_KEY, closedStorageChanged} from "./closedQueries";
 import socket from "../socket";
 import {store} from "../store";
 import {parseKeywordList} from "../highlight";
@@ -228,6 +229,13 @@ if (typeof window !== "undefined") {
 	// it out whenever the page may not come back — a phone kills a hidden
 	// page without a pagehide.
 	window.addEventListener("pagehide", flushQueryLogs);
+	// Another tab closed a query: a window this one opened by itself for
+	// that conversation goes too (irc/closedQueries.ts).
+	window.addEventListener("storage", (ev: StorageEvent) => {
+		if (ev.key === CLOSED_STORAGE_KEY) {
+			closedStorageChanged(allClients());
+		}
+	});
 	document.addEventListener("visibilitychange", () => {
 		if (document.visibilityState === "hidden") {
 			flushQueryLogs();
