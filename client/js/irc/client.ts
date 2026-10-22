@@ -15,7 +15,7 @@
  */
 
 import socket, {EventBus} from "../socket";
-import {brandingFeatures, connectThrottleRule} from "../branding";
+import {brandingFeatures} from "../branding";
 import {dialGateFor} from "./dialLedger";
 import {createHighlightTester} from "../highlight";
 import {ChanState, ChanType} from "../../../shared/types/chan";
@@ -820,11 +820,7 @@ export class IrcClient {
 		}
 
 		// Never dial into the server's connection throttle (irc/dialLedger.ts).
-		const rule = connectThrottleRule();
-
-		if (rule) {
-			transportOptions.gate = dialGateFor(this.options.host, rule);
-		}
+		transportOptions.gate = dialGateFor(this.options.host);
 
 		return this.options.transportFactory
 			? this.options.transportFactory(transportOptions)

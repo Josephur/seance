@@ -9,18 +9,26 @@ part is a proposal for nefarious2; filing it upstream is the maintainer's call.
 
 nefarious2's IPcheck (`ircd/IPcheck.c` `ip_registry_check_local`) runs when a
 connection is accepted, before TLS, the WebSocket upgrade and SASL. It counts
-connections per address. The count restarts after a gap of more than
-`IPCHECK_CLONE_PERIOD` (40 s) since the last connection, and the connection
-that brings it to `IPCHECK_CLONE_LIMIT` (4) is refused. `last_connect` is set
-before the check, so a refused connection still counts as the last one: a
-client that keeps dialling inside the window keeps it closed. Over a WebSocket
-the refusal is a close with code 1006, the same as an unreachable server.
+connections per address in whole seconds. The count restarts after a gap of
+more than `IPCHECK_CLONE_PERIOD` (40 s) since `last_connect`, and the
+connection that brings it to `IPCHECK_CLONE_LIMIT` (4) is refused.
+`last_connect` is set before the check, so a refused connection still counts as
+the last one: a client that keeps dialling inside the window keeps it closed.
+It is also set when the address's last connection closes
+(`ip_registry_disconnect`), so the gap runs from the moment the phone's
+socket dropped, not from when it connected. Over a WebSocket the refusal is a
+close with code 1006, the same as an unreachable server.
 
 A phone's OS drops the socket each time the app leaves the screen, so each
-return is a new connection. Three returns within 40 s of each other use up
-the window; the fourth is refused. Nothing refunds a connection that then logs
-in, or that resumes a held bouncer session: `bounce_revive` and
-`bounce_setup_local_alias` only call `IPcheck_connect_succeeded`.
+return is a new connection. Three returns, each within 40 s of the last
+connect or drop, use up the window; the fourth is refused: using the app for
+half a minute and leaving it for half a minute does it. Nothing refunds a
+connection that then logs in, or that resumes a held bouncer session:
+`bounce_setup_local_alias` calls `IPcheck_connect_succeeded`, and
+`bounce_revive` hands the ghost's count over with `IPcheck_disconnect`, which
+lowers no attempts. A held session (SASL with persistence) is spared the
+reset at the drop, since its connection stays counted while the session is
+held.
 
 The client made it worse. After a refusal its reconnect schedule retried at
 once, then after 1, 2, 4, 8, 16 and 32 s, and each retry renewed the window: a
@@ -28,15 +36,18 @@ lockout of a minute and a half where 42 s of quiet would have done.
 
 ## What the client does now
 
-`client/js/irc/dialLedger.ts` keeps this device's dials per server host in
-`thelounge.state.dials`, so a reloaded or reopened app and its other tabs
-share the record. Before any dial (a scheduled retry, the foreground poke, the
+`client/js/irc/dialLedger.ts` keeps this device's dials, and the closes of its
+sockets that had opened, per server host in `thelounge.state.dials`, so a
+reloaded or reopened app and its other tabs share the record, and replays them
+the way IPcheck counts, in whole seconds. Before any dial (a scheduled retry, the foreground poke, the
 user's Connect) the transport asks it whether the server would refuse, and if
 so waits out the gap. The strip says "Reconnecting to <network> in Ns: the
 server limits quick reconnects.", and Connect now waits too, because dialling
 would renew the window. The worst case is one wait of at most 42 s, never a
-spiral. A deploy can tune the rule or turn it off with
-`features.connectThrottle` (docs/resources/branding.md).
+spiral. It cannot see dials or drops from other devices behind the same
+address, nor tell whether another network on the same server still holds a
+connection (then the server would not reset at our drop, and the ledger waits
+when it need not).
 
 The cost: a dial that fails looks the same whether IPcheck refused it or the
 server is simply down (connection refused, DNS failure, both close with 1006),
@@ -59,8 +70,9 @@ Ordered by recommendation.
 1. **Refund the attempt once the connection logs in.** Call
    `IPcheck_connect_fail(cptr, 0)` when SASL succeeds, before registration
    completes. It is the hook nefarious2 already uses for a connection that is
-   "not penalized for the failure" (`m_webirc.c:153`, `s_auth.c:906`); with
-   `disconnect = 0` it lowers `attempts` and leaves the clone count alone.
+   "not penalized for the failure" (`s_auth.c:906`, `m_nick.c:315`, both with
+   `disconnect = 0`, which lowers `attempts` and leaves the clone count alone;
+   `m_webirc.c:153` uses it with `1` to undo a transplanted address).
    The success points are `sasl_complete_login()` in `ircd/sasl_auth.c` (local
    Keycloak and the P10 relay) and `iauth_cmd_sasl_done()` in `ircd/s_auth.c`
    (IAuth). Guard it with `IsIPChecked(cptr)` and do it once per connection.
@@ -78,7 +90,8 @@ Ordered by recommendation.
 
 2. **Stop a refused connection from renewing the window.** Set
    `entry->last_connect` after the refusal check instead of before. A client
-   in a retry loop then gets back in 40 s after its last accepted connection.
+   in a retry loop then gets back 40 s after its last accepted connection or
+   drop.
    This is weaker, and it changes ircu's deliberate penalty for clients that
    hammer the server.
 

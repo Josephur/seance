@@ -363,9 +363,7 @@ describe("closed queries (irc/closedQueries.ts)", function () {
 		it("does not take a notification alone as the read (the burst can be stale)", function () {
 			const h = account();
 			closeBob(h);
-			h.transport.line(
-				`:irc.test METADATA alice seance/closed private :carol:${t36(t0 - 60000)}`
-			);
+			h.transport.line(`:irc.test METADATA alice seance/closed * :carol:${t36(t0 - 60000)}`);
 			expect(sets(h)).to.deep.equal([]);
 		});
 
@@ -402,9 +400,7 @@ describe("closed queries (irc/closedQueries.ts)", function () {
 			h.transport.line(":irc.test 766 alice alice seance/closed :key not set");
 			closeBob(h);
 			// The other device's write, made without ours.
-			h.transport.line(
-				`:irc.test METADATA alice seance/closed private :erin:${t36(t0 - 5000)}`
-			);
+			h.transport.line(`:irc.test METADATA alice seance/closed * :erin:${t36(t0 - 5000)}`);
 			h.transport.line(`@time=${T1};msgid=d1 :dave!dave@host PRIVMSG alice :yo`);
 			h.client.input(h.client.findChannel("dave")!.id, "/close");
 			expect(sets(h).pop()).to.equal(

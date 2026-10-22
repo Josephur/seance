@@ -7,13 +7,6 @@
 
 import {expect} from "chai";
 import sinon from "ts-sinon";
-import {
-	DEFAULT_BRANDING,
-	connectThrottleRule,
-	normalizeBranding,
-	resetBranding,
-	setBranding,
-} from "../../client/js/branding";
 import type {TransportOptions} from "../../client/js/irc/transport";
 import {FakeTransport, register, setup} from "./support";
 import {
@@ -60,6 +53,25 @@ describe("dial ledger (irc/dialLedger.ts)", function () {
 			expect(throttleWaitMs(ahead, 0, NEFARIOUS_RULE)).to.be.at.most(42 * S);
 		});
 
+		it("counts whole seconds, as the server does", function () {
+			// 100.2 s and 140.7 s are 40 whole seconds apart on the server: one chain.
+			expect(
+				throttleWaitMs([100200, 140700, 141000], 142000, NEFARIOUS_RULE)
+			).to.be.greaterThan(0);
+		});
+
+		it("restarts the gap when a connection closes (IPcheck's reset at the last disconnect)", function () {
+			// Thirty seconds in, thirty out, three times: each gap since a close is 30 s.
+			const dials = [0, 60 * S, 120 * S];
+			const closes = [30 * S, 90 * S, 150 * S];
+			expect(throttleWaitMs(dials, 180 * S, NEFARIOUS_RULE, closes)).to.equal(12 * S);
+		});
+
+		it("starts over when a close comes long after the chain", function () {
+			const dials = [0, 10 * S, 20 * S];
+			expect(throttleWaitMs(dials, 200 * S, NEFARIOUS_RULE, [190 * S])).to.equal(0);
+		});
+
 		it("does not care about the order dials were recorded in", function () {
 			expect(throttleWaitMs([20 * S, 0, 10 * S], 30 * S, NEFARIOUS_RULE)).to.equal(32 * S);
 		});
@@ -103,7 +115,7 @@ describe("dial ledger (irc/dialLedger.ts)", function () {
 			gate.record(0);
 			gate.record(1000 * S);
 			const stored = JSON.parse(data.get("thelounge.state.dials") ?? "{}");
-			expect(stored["irc.example"]).to.deep.equal([1000 * S]);
+			expect(stored["irc.example"]).to.deep.equal({d: [1000 * S], c: []});
 		});
 
 		it("ignores dials recorded in the future (a clock that ran ahead)", function () {
@@ -114,38 +126,25 @@ describe("dial ledger (irc/dialLedger.ts)", function () {
 			expect(gate.waitMs(0)).to.equal(0);
 		});
 
+		it("keeps the closes it is told of, with the dials", function () {
+			const gate = dialGateFor("irc.example");
+			gate.record(0);
+			gate.closed(30 * S);
+			gate.record(60 * S);
+			gate.closed(90 * S);
+			gate.record(120 * S);
+			gate.closed(150 * S);
+			expect(dialGateFor("irc.example").waitMs(180 * S)).to.equal(12 * S);
+		});
+
+		it("reads a record from before closes were kept", function () {
+			data.set("thelounge.state.dials", JSON.stringify({"irc.example": [0, 10 * S, 20 * S]}));
+			expect(dialGateFor("irc.example").waitMs(30 * S)).to.equal(32 * S);
+		});
+
 		it("survives a broken record", function () {
 			data.set("thelounge.state.dials", "{not json");
 			expect(dialGateFor("irc.example").waitMs(0)).to.equal(0);
-		});
-	});
-
-	describe("connectThrottleRule (config.json features.connectThrottle)", function () {
-		it("is nefarious2's rule by default", function () {
-			expect(connectThrottleRule(DEFAULT_BRANDING)).to.deep.equal(NEFARIOUS_RULE);
-			expect(connectThrottleRule(normalizeBranding({}))).to.deep.equal(NEFARIOUS_RULE);
-		});
-
-		it("is off when the deploy says false", function () {
-			expect(
-				connectThrottleRule(normalizeBranding({features: {connectThrottle: false}}))
-			).to.equal(null);
-		});
-
-		it("takes a deploy's own limit and period", function () {
-			expect(
-				connectThrottleRule(
-					normalizeBranding({features: {connectThrottle: {limit: 5, periodSeconds: 60}}})
-				)
-			).to.deep.equal({limit: 5, periodMs: 60_000, marginMs: 2_000});
-		});
-
-		it("ignores a malformed value", function () {
-			for (const bad of [{limit: 0, periodSeconds: 40}, {limit: 4}, "yes", 3]) {
-				expect(
-					connectThrottleRule(normalizeBranding({features: {connectThrottle: bad}}))
-				).to.deep.equal(NEFARIOUS_RULE);
-			}
 		});
 	});
 
@@ -158,7 +157,6 @@ describe("dial ledger (irc/dialLedger.ts)", function () {
 
 		afterEach(function () {
 			clock.restore();
-			resetBranding();
 		});
 
 		/** The options the client builds its transport with. */
@@ -176,11 +174,6 @@ describe("dial ledger (irc/dialLedger.ts)", function () {
 
 		it("gives the transport a gate for the network's host", function () {
 			expect(transportOptions().gate).to.not.equal(undefined);
-		});
-
-		it("gives it none when the deploy switched the ledger off", function () {
-			setBranding(normalizeBranding({features: {connectThrottle: false}}));
-			expect(transportOptions().gate).to.equal(undefined);
 		});
 
 		it("says a wait is the server's throttle, and drops that once the dial starts", function () {

@@ -69,8 +69,7 @@ async function until(page, fn, timeout, label) {
 // These claims are about the back-off schedule as such. Against a proxy that
 // refuses every dial, the dial ledger (irc/dialLedger.ts) would rightly turn
 // the third quick failure into the server-throttle wait, which has its own
-// scenario (reconnect-throttle.mjs); so the ledger is kept empty here, as for
-// a deploy with `features.connectThrottle: false`.
+// scenario (reconnect-throttle.mjs); so the ledger is kept empty here.
 const NO_DIAL_LEDGER = `(() => {
 	const set = Storage.prototype.setItem;
 	Storage.prototype.setItem = function (key, value) {

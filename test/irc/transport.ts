@@ -906,7 +906,12 @@ describe("WsTransport: the dial gate (irc/dialLedger.ts)", function () {
 
 	/** A gate closed until `until` (fake-clock ms), recording every dial. */
 	function gate(until: number) {
-		const g = {until, record: sinon.spy(), waitMs: (now: number) => Math.max(0, g.until - now)};
+		const g = {
+			until,
+			record: sinon.spy(),
+			closed: sinon.spy(),
+			waitMs: (now: number) => Math.max(0, g.until - now),
+		};
 		return g;
 	}
 
@@ -979,6 +984,19 @@ describe("WsTransport: the dial gate (irc/dialLedger.ts)", function () {
 		clock.tick(100);
 		expect(FakeWebSocket.instances).to.have.length(2);
 		expect(g.record.args).to.deep.equal([[0], [100]]);
+	});
+
+	it("tells the gate when a socket that had opened closes, and not for a failed dial", function () {
+		const g = gate(0);
+		const {t} = make({reconnect: fastReconnect, gate: g});
+		t.connect();
+		last().closed(1006, "", false); // never opened
+		expect(g.closed.called).to.equal(false);
+		clock.tick(100);
+		last().open();
+		clock.tick(5_000);
+		last().closed(1006, "", false);
+		expect(g.closed.args).to.deep.equal([[5_100]]);
 	});
 
 	it("does not record a dial made offline", function () {

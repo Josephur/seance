@@ -10,8 +10,6 @@
 // `index.html` that must exist before any JavaScript runs (`<title>`,
 // `theme-color`, the loading splash). See docs/resources/branding.md.
 
-import {NEFARIOUS_RULE, type ThrottleRule} from "./irc/dialLedger";
-
 export interface BrandingNetwork {
 	/** Display name for the network (defaults to the host name). */
 	name?: string;
@@ -73,14 +71,6 @@ export interface BrandingFeatures {
 	 * leaves only the account form, for a network that requires an account.
 	 */
 	guestAccess?: boolean;
-	/**
-	 * The server's connection throttle, which the client waits out instead of
-	 * dialling into a refusal (irc/dialLedger.ts). Default: nefarious2's
-	 * IPcheck, `{limit: 4, periodSeconds: 40}` — the connection that brings
-	 * the count of connections, each within `periodSeconds` of the last, to
-	 * `limit` is refused. `false` dials whenever the reconnect schedule says.
-	 */
-	connectThrottle?: {limit: number; periodSeconds: number} | false;
 }
 
 /**
@@ -286,55 +276,6 @@ export function getBranding(): BrandingConfig {
 	return current;
 }
 
-/**
- * The connection throttle the transport waits out (`features.connectThrottle`):
- * nefarious2's rule unless the deploy names its own, `null` when it is off.
- */
-export function connectThrottleRule(config: BrandingConfig = current): ThrottleRule | null {
-	const throttle = config.features?.connectThrottle;
-
-	if (throttle === false) {
-		return null;
-	}
-
-	if (throttle === undefined) {
-		return NEFARIOUS_RULE;
-	}
-
-	return {
-		limit: throttle.limit,
-		periodMs: throttle.periodSeconds * 1000,
-		marginMs: NEFARIOUS_RULE.marginMs,
-	};
-}
-
-/** `false`, or a limit of at least 1 and a positive period; anything else is unset. */
-function normalizeThrottle(
-	value: unknown
-): {limit: number; periodSeconds: number} | false | undefined {
-	if (value === false) {
-		return false;
-	}
-
-	if (!isRecord(value)) {
-		return undefined;
-	}
-
-	const {limit, periodSeconds} = value;
-
-	if (
-		typeof limit !== "number" ||
-		typeof periodSeconds !== "number" ||
-		!Number.isInteger(limit) ||
-		limit < 1 ||
-		!(periodSeconds > 0)
-	) {
-		return undefined;
-	}
-
-	return {limit, periodSeconds};
-}
-
 /** Overwrite the loaded branding (tests, or a host shell injecting its own). */
 export function setBranding(config: BrandingConfig): BrandingConfig {
 	current = config;
@@ -377,9 +318,7 @@ export function nickFromAccount(account: string, fallback: string): string {
  * to. A sign-in deploy shows no server fields at all, so it also pins the
  * host the way `allowCustomServer: false` does.
  */
-export function brandingFeatures(
-	config: BrandingConfig = current
-): Required<Omit<BrandingFeatures, "connectThrottle">> {
+export function brandingFeatures(config: BrandingConfig = current): Required<BrandingFeatures> {
 	const signIn = config.features?.signIn === true && config.defaultNetwork !== undefined;
 
 	return {
@@ -691,14 +630,6 @@ export function normalizeBranding(
 
 	// Opt-in, so it is the one flag a missing value leaves off.
 	features.signIn = optionalBoolean(rawFeatures.signIn) ?? defaults.features?.signIn ?? false;
-
-	const throttle = normalizeThrottle(rawFeatures.connectThrottle);
-
-	if (throttle !== undefined) {
-		features.connectThrottle = throttle;
-	} else if (defaults.features?.connectThrottle !== undefined) {
-		features.connectThrottle = defaults.features.connectThrottle;
-	}
 
 	const config: BrandingConfig = {
 		appName: optionalString(source.appName) ?? defaults.appName,

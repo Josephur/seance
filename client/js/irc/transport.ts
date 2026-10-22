@@ -381,6 +381,13 @@ export class WsTransport {
 		// staring at the screen. A retry that fails backs off from there.
 		const wasStable =
 			this.openedAt !== null && Date.now() - this.openedAt >= STABLE_CONNECTION_MS;
+
+		// The server restarts its throttle's gap when a connection closes
+		// (irc/dialLedger.ts): one that never opened never counted there.
+		if (this.openedAt !== null) {
+			this.opts.gate?.closed(Date.now());
+		}
+
 		const atOnce = wasStable || probing;
 
 		if (atOnce) {
