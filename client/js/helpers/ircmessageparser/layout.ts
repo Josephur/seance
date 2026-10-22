@@ -1,4 +1,5 @@
 import {findLinks} from "../../../../shared/linkify";
+import {judgeLink, type LinkVerdict} from "../linkSafety";
 import anyIntersection from "./anyIntersection";
 import findChannels from "./findChannels";
 import findEmoji from "./findEmoji";
@@ -50,7 +51,9 @@ export type LayoutNode =
 	// `table` is one alignment letter (`l`, `r`, `c`) per column, the
 	// separator row's word on how each column sits
 	| {kind: "wrap"; wrap: "table"; table: string; children: LayoutNode[]}
-	| {kind: "wrap"; wrap: "href"; href: string; children: LayoutNode[]};
+	// A masked link; `verdict` compares its visible text with where it goes
+	// (helpers/linkSafety.ts): parse.ts shows the host or asks before opening
+	| {kind: "wrap"; wrap: "href"; href: string; verdict: LinkVerdict; children: LayoutNode[]};
 
 // Flags that wrap a run of neighbouring nodes in one element, outermost first:
 // a header sits inside the quote it was written in, never the other way round.
@@ -391,7 +394,14 @@ function sameWrap(a: Wrap, b: Wrap) {
 
 function wrapNode(key: WrapKey, wrap: Wrap, children: LayoutNode[]): LayoutNode {
 	if (key === "href") {
-		return {kind: "wrap", wrap: "href", href: String(wrap.href), children};
+		const target = String(wrap.href);
+		return {
+			kind: "wrap",
+			wrap: "href",
+			href: target,
+			verdict: judgeLink(toPlainText(children), target),
+			children,
+		};
 	}
 
 	if (key === "header") {
