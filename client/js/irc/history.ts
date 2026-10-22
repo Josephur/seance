@@ -649,7 +649,15 @@ function deliverCatchup(client: IrcClient, target: string, lines: IrcMessage[]):
 	let chan = client.findChannel(target);
 
 	if (!chan && !client.isChannelName(target)) {
-		chan = client.announceChannel(target, ChanType.QUERY);
+		// A query the user closed: only what was said since opens it again,
+		// and only that is shown (irc/closedQueries.ts).
+		lines = lines.filter((line) => !client.closed.suppresses(target, client.timeOf(line)));
+
+		if (lines.length === 0) {
+			return;
+		}
+
+		chan = client.openAutoQuery(target, client.timeOf(lines[lines.length - 1]));
 	}
 
 	if (!chan || (chan.type !== ChanType.CHANNEL && chan.type !== ChanType.QUERY)) {

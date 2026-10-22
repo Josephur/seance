@@ -321,6 +321,11 @@ export class QueryLog {
 		);
 	}
 
+	/** Epoch ms of the newest line logged for `name`, if it has a log. */
+	newestAt(name: string): number | undefined {
+		return this.find(name)?.touched;
+	}
+
 	/** The time query `name` was last known read up to, if it was. */
 	readUpTo(name: string): Date | undefined {
 		const read = this.find(name)?.read;

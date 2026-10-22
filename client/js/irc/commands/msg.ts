@@ -40,6 +40,7 @@ function openQuery({client, chan}: CommandContext, targetName: string): boolean 
 		return false;
 	}
 
+	client.closed.reopen(targetName); // the user asked for it back
 	client.announceChannel(targetName, ChanType.QUERY, {shouldOpen: true});
 	return true;
 }

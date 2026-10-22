@@ -32,6 +32,13 @@ const part: Command = {
 			return;
 		}
 
+		// Closing a query is meant: a line from before the close must not
+		// open it again — here after a reconnect, or on another device
+		// (irc/closedQueries.ts). Its newest line's server time marks it.
+		if (target.type === ChanType.QUERY && target.newestRef) {
+			client.closed.close(target.name, target.newestRef.time.getTime());
+		}
+
 		if (
 			target.type !== ChanType.CHANNEL ||
 			target.state === ChanState.PARTED ||

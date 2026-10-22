@@ -142,7 +142,15 @@ function handleMessage(
 				showInActive = true;
 				chan = client.lobby;
 			} else {
-				chan = client.announceChannel(target, ChanType.QUERY);
+				// A line from before the user closed this query (an unwrapped
+				// replay) does not open it again (irc/closedQueries.ts).
+				const opened = client.openAutoQuery(target, time);
+
+				if (!opened) {
+					return;
+				}
+
+				chan = opened;
 			}
 		}
 	}

@@ -37,6 +37,7 @@ import {handlers, unhandled} from "./handlers";
 import {FILEHOST_SERVICE, TokenRequests, filehostUrlOf} from "./authtoken";
 import {interceptBatchLine, resetBatches} from "./handlers/batch";
 import {PAYLOAD_KEY} from "./handlers/metadata";
+import {ClosedQueries} from "./closedQueries";
 import {
 	CONCAT_LINE_TAG_BYTES,
 	MULTILINE_CAP,
@@ -356,6 +357,8 @@ export class IrcClient {
 	readonly lobby: Channel;
 	/** Private conversations kept on this device (querylog.ts). */
 	readonly queryLog: QueryLog;
+	/** The queries the user closed: a line from before the close never reopens one. */
+	readonly closed: ClosedQueries;
 	/** Server notices and WALLOPS kept on the device (noticelog.ts). */
 	readonly noticeLog: NoticeLog;
 	/** Being an oper here (oper.ts): level, privileges, snomask. */
@@ -496,8 +499,17 @@ export class IrcClient {
 		);
 
 		this.noticeLog = new NoticeLog(this.uuid, () => getSavedNetwork(this.uuid) !== undefined);
+		this.closed = new ClosedQueries(this.uuid, (s) => this.casefold(s));
 
 		for (const name of this.queryLog.names()) {
+			const newest = this.queryLog.newestAt(name);
+
+			// Closed in another tab since this log was written.
+			if (newest !== undefined && this.closed.suppresses(name, new Date(newest))) {
+				this.queryLog.forget(name);
+				continue;
+			}
+
 			if (!this.findChannel(name) && !this.isChannelName(name)) {
 				this.restoredQueries.push(this.createChannel(name, ChanType.QUERY).channel);
 			}
@@ -2539,6 +2551,19 @@ export class IrcClient {
 
 		this.channels.splice(index, 0, channel);
 		return {channel, index};
+	}
+
+	/**
+	 * Open the query with `nick` for a line it did not ask for (a message, a
+	 * catch-up), unless the user closed that conversation after `time`:
+	 * then nothing opens (irc/closedQueries.ts).
+	 */
+	openAutoQuery(nick: string, time: Date): Channel | undefined {
+		if (this.closed.suppresses(nick, time)) {
+			return undefined;
+		}
+
+		return this.announceChannel(nick, ChanType.QUERY);
 	}
 
 	/** Create + announce (`join` event) a channel or query. */
