@@ -7224,6 +7224,12 @@ html[data-reduce-motion] #chat .msg.actions-open .msg-actions {
 	text-overflow: ellipsis;
 }
 
+/* The throttle's wait says why it waits: on a phone that is a second line,
+ * not an ellipsis over the reason. */
+#form .connection-bar-label.throttled {
+	white-space: normal;
+}
+
 #form .connection-bar-icon {
 	display: inline-flex;
 	align-items: center;

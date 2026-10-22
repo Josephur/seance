@@ -15,7 +15,8 @@
  */
 
 import socket, {EventBus} from "../socket";
-import {brandingFeatures} from "../branding";
+import {brandingFeatures, connectThrottleRule} from "../branding";
+import {dialGateFor} from "./dialLedger";
 import {createHighlightTester} from "../highlight";
 import {ChanState, ChanType} from "../../../shared/types/chan";
 import {MessageType, SharedMsg, TypingState} from "../../../shared/types/msg";
@@ -450,6 +451,8 @@ export class IrcClient {
 	private closeExplained = false;
 	/** When the transport's next automatic dial is due; only while waiting for a retry. */
 	private retryAt: number | undefined;
+	/** That wait is the server's connection throttle, not the backoff (irc/dialLedger.ts). */
+	private retryThrottled = false;
 	private activeChanId = 0;
 	/** Set while a history batch is replayed through the handlers (see `collectReplay`). */
 	private replayContext: {target: Channel; collected: ReplayCollection} | null = null;
@@ -610,6 +613,7 @@ export class IrcClient {
 			connecting: this._state === "connecting" || this._state === "registering",
 			secure: this.options.tls,
 			...(this.retryAt !== undefined ? {retryAt: this.retryAt} : {}),
+			...(this.retryAt !== undefined && this.retryThrottled ? {retryThrottled: true} : {}),
 		};
 	}
 
@@ -811,6 +815,13 @@ export class IrcClient {
 			transportOptions.reconnect = this.options.reconnect;
 		}
 
+		// Never dial into the server's connection throttle (irc/dialLedger.ts).
+		const rule = connectThrottleRule();
+
+		if (rule) {
+			transportOptions.gate = dialGateFor(this.options.host, rule);
+		}
+
 		return this.options.transportFactory
 			? this.options.transportFactory(transportOptions)
 			: new WsTransport(transportOptions);
@@ -902,16 +913,30 @@ export class IrcClient {
 			case "reconnecting":
 				this._state = "connecting";
 				this.bus.dispatch("connecting");
+
+				// The server's throttle, waited out (irc/dialLedger.ts): a
+				// connect() that never dialled has no close to carry its due time.
+				if (ev.throttled) {
+					this.retryAt = Date.now() + ev.delayMs;
+					this.retryThrottled = true;
+					this.announceStatus();
+				}
+
 				this.pushMessage(
 					this.lobby,
 					{
 						// A stable connection's loss retries at once (transport.ts).
-						text:
-							ev.delayMs < 500
-								? `Reconnecting now (attempt ${ev.attempt})…`
-								: `Reconnecting in ${Math.round(ev.delayMs / 1000)}s (attempt ${
-										ev.attempt
-								  })…`,
+						text: ev.throttled
+							? `Waiting ${Math.round(
+									ev.delayMs / 1000
+							  )}s: the server limits how often a device can reconnect (attempt ${
+									ev.attempt
+							  })…`
+							: ev.delayMs < 500
+							? `Reconnecting now (attempt ${ev.attempt})…`
+							: `Reconnecting in ${Math.round(ev.delayMs / 1000)}s (attempt ${
+									ev.attempt
+							  })…`,
 					},
 					true
 				);
@@ -920,6 +945,7 @@ export class IrcClient {
 				// The scheduled retry is dialling now: no due time any more.
 				this._state = "connecting";
 				this.retryAt = undefined;
+				this.retryThrottled = false;
 				this.announceStatus();
 				this.pushMessage(
 					this.lobby,
@@ -1274,7 +1300,9 @@ export class IrcClient {
 		this.mutePending.length = 0;
 		presenceClosed(this);
 		// The wait before the transport's retry, for the UI to count down;
-		// an immediate retry has nothing worth counting.
+		// an immediate retry has nothing worth counting. Whether it is the
+		// server's throttle comes with the `reconnecting` that follows.
+		this.retryThrottled = false;
 		this.retryAt =
 			willReconnect && delayMs !== undefined && delayMs > 0
 				? Date.now() + delayMs
@@ -1329,6 +1357,7 @@ export class IrcClient {
 			connecting: willReconnect,
 			secure: this.options.tls,
 			...(this.retryAt !== undefined ? {retryAt: this.retryAt} : {}),
+			...(this.retryAt !== undefined && this.retryThrottled ? {retryThrottled: true} : {}),
 		});
 
 		if (wasUp) {

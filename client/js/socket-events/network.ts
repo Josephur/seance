@@ -138,6 +138,13 @@ socket.on("network:status", function (data) {
 		delete network.status.retryAt;
 	}
 
+	// And whether that wait is the server's connection throttle.
+	if (data.retryAt !== undefined && data.retryThrottled) {
+		network.status.retryThrottled = true;
+	} else {
+		delete network.status.retryThrottled;
+	}
+
 	// A private conversation to reopen now that we are registered: the one
 	// a notification deep link names, or the one the last page had open.
 	// Channels arrive with the join burst, a query window only when opened —

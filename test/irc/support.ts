@@ -62,6 +62,11 @@ export class FakeTransport implements Transport {
 		this.emit({type: "close", code: 1006, reason: "", wasClean: false, willReconnect: false});
 	}
 
+	/** Any transport event, as the real transport would emit it. */
+	event(ev: TransportEvent): void {
+		this.emit(ev);
+	}
+
 	private emit(ev: TransportEvent): void {
 		for (const listener of [...this.listeners]) {
 			listener(ev);

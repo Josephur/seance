@@ -6,6 +6,16 @@
  */
 
 import {expect} from "chai";
+import sinon from "ts-sinon";
+import {
+	DEFAULT_BRANDING,
+	connectThrottleRule,
+	normalizeBranding,
+	resetBranding,
+	setBranding,
+} from "../../client/js/branding";
+import type {TransportOptions} from "../../client/js/irc/transport";
+import {FakeTransport, register, setup} from "./support";
 import {
 	NEFARIOUS_RULE,
 	dialGateFor,
@@ -93,6 +103,122 @@ describe("dial ledger (irc/dialLedger.ts)", function () {
 		it("survives a broken record", function () {
 			data.set("thelounge.state.dials", "{not json");
 			expect(dialGateFor("irc.example").waitMs(0)).to.equal(0);
+		});
+	});
+
+	describe("connectThrottleRule (config.json features.connectThrottle)", function () {
+		it("is nefarious2's rule by default", function () {
+			expect(connectThrottleRule(DEFAULT_BRANDING)).to.deep.equal(NEFARIOUS_RULE);
+			expect(connectThrottleRule(normalizeBranding({}))).to.deep.equal(NEFARIOUS_RULE);
+		});
+
+		it("is off when the deploy says false", function () {
+			expect(
+				connectThrottleRule(normalizeBranding({features: {connectThrottle: false}}))
+			).to.equal(null);
+		});
+
+		it("takes a deploy's own limit and period", function () {
+			expect(
+				connectThrottleRule(
+					normalizeBranding({features: {connectThrottle: {limit: 5, periodSeconds: 60}}})
+				)
+			).to.deep.equal({limit: 5, periodMs: 60_000, marginMs: 2_000});
+		});
+
+		it("ignores a malformed value", function () {
+			for (const bad of [{limit: 0, periodSeconds: 40}, {limit: 4}, "yes", 3]) {
+				expect(
+					connectThrottleRule(normalizeBranding({features: {connectThrottle: bad}}))
+				).to.deep.equal(NEFARIOUS_RULE);
+			}
+		});
+	});
+
+	describe("wired into the client", function () {
+		let clock: sinon.SinonFakeTimers;
+
+		beforeEach(function () {
+			clock = sinon.useFakeTimers({now: Date.parse("2026-10-22T12:00:00.000Z")});
+		});
+
+		afterEach(function () {
+			clock.restore();
+			resetBranding();
+		});
+
+		/** The options the client builds its transport with. */
+		function transportOptions(): TransportOptions {
+			let captured: TransportOptions | undefined;
+			const h = setup({
+				transportFactory(opts) {
+					captured = opts;
+					return new FakeTransport();
+				},
+			});
+			h.client.connect();
+			return captured as TransportOptions;
+		}
+
+		it("gives the transport a gate for the network's host", function () {
+			expect(transportOptions().gate).to.not.equal(undefined);
+		});
+
+		it("gives it none when the deploy switched the ledger off", function () {
+			setBranding(normalizeBranding({features: {connectThrottle: false}}));
+			expect(transportOptions().gate).to.equal(undefined);
+		});
+
+		it("says a wait is the server's throttle, and drops that once the dial starts", function () {
+			const h = setup();
+			register(h);
+			h.transport.event({
+				type: "close",
+				code: 1006,
+				reason: "",
+				wasClean: false,
+				willReconnect: true,
+				delayMs: 30_000,
+			});
+			h.transport.event({type: "reconnecting", attempt: 1, delayMs: 30_000, throttled: true});
+			const status =
+				h.payloads<{retryAt?: number; retryThrottled?: boolean}>("network:status");
+			expect(status[status.length - 1]).to.include({
+				retryAt: Date.now() + 30_000,
+				retryThrottled: true,
+			});
+			expect(h.lastMessage(h.client.lobby.id).text).to.match(/limits how often/);
+
+			h.transport.event({type: "retry", attempt: 1});
+			const after = h.payloads<{retryThrottled?: boolean}>("network:status");
+			expect(after[after.length - 1].retryThrottled).to.equal(undefined);
+		});
+
+		it("shows the due time of a throttled connect() that no close came before", function () {
+			const h = setup();
+			h.transport.event({type: "reconnecting", attempt: 0, delayMs: 20_000, throttled: true});
+			const status =
+				h.payloads<{retryAt?: number; retryThrottled?: boolean}>("network:status");
+			expect(status[status.length - 1]).to.include({
+				retryAt: Date.now() + 20_000,
+				retryThrottled: true,
+			});
+		});
+
+		it("keeps a plain backoff wait unmarked", function () {
+			const h = setup();
+			register(h);
+			h.transport.event({
+				type: "close",
+				code: 1006,
+				reason: "",
+				wasClean: false,
+				willReconnect: true,
+				delayMs: 4_000,
+			});
+			h.transport.event({type: "reconnecting", attempt: 3, delayMs: 4_000});
+			const status = h.payloads<{retryThrottled?: boolean}>("network:status");
+			expect(status[status.length - 1].retryThrottled).to.equal(undefined);
 		});
 	});
 });
