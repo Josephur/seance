@@ -94,9 +94,7 @@ hosts match when equal or one is a subdomain of the other, after one `www.`. An 
   confirm dialog ("Check this link"), whose Open anyway opens it
   (`helpers/openLink.ts`).
 
-Limits: a long press's own "Open in new tab" menu cannot be intercepted, so
-there the inline host is the only warning; Enter never reaches a chat link
-(`keybinds.ts` sends keys outside a field to the composer). Tests
+Limits: a long press's own menu, a right click's "Open in new tab" or a drag cannot be intercepted, so there the host after the label is the only warning; the label holds no link of its own (layout.ts finds no link, channel or nick inside an `href` wrap), so those menus name the real destination. Enter never reaches a chat link (`keybinds.ts` sends keys outside a field to the composer). Tests
 `test/helpers/linkSafety.ts`, `test/helpers/layout.ts`; browser check
 `tools/scenarios/masked-links.mjs` (also `--mobile --width=390 --height=844`,
 and `SEANCE_THEME=ps`). CSS for the wrapped elements

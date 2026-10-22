@@ -140,6 +140,25 @@ describe("layout — wraps", () => {
 		]);
 	});
 
+	it("finds no link, channel or nick inside a masked link's label", () => {
+		const kinds = (nodes: LayoutNode[]): string[] =>
+			nodes.flatMap((n) => [n.kind, ...("children" in n ? kinds(n.children) : [])]);
+		const [node] = layout("[paypal.com #help alice](https://evil.example)", {
+			markdown: true,
+			users: ["alice"],
+		});
+		expect(node.kind === "wrap" && node.wrap).to.equal("href");
+		expect(
+			kinds([node]).filter((k) => k === "link" || k === "channel" || k === "nick")
+		).to.deep.equal([]);
+		expect(toPlainText([node])).to.equal("paypal.com #help alice");
+	});
+
+	it("still finds links outside a masked link", () => {
+		const nodes = layout("see https://x.org and [docs](https://example.org)", {markdown: true});
+		expect(nodes.some((n) => n.kind === "link")).to.equal(true);
+	});
+
 	it("judges a masked link by its visible text", () => {
 		const [node] = layout("[paypal.com](https://evil.example)", markdown);
 		expect(node.kind === "wrap" && node.wrap === "href" && node.verdict).to.deep.equal({
