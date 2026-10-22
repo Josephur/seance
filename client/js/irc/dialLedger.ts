@@ -74,7 +74,12 @@ export function throttleWaitMs(dials: readonly number[], now: number, rule: Thro
 		return 0;
 	}
 
-	return Math.max(0, last + rule.periodMs + rule.marginMs - now);
+	// Never more than one window: a record from a clock that ran ahead must
+	// not hold the network for however far ahead it ran.
+	return Math.min(
+		rule.periodMs + rule.marginMs,
+		Math.max(0, last + rule.periodMs + rule.marginMs - now)
+	);
 }
 
 function readAll(): Record<string, number[]> {
@@ -90,18 +95,20 @@ function readAll(): Record<string, number[]> {
 export function dialGateFor(host: string, rule: ThrottleRule = NEFARIOUS_RULE): DialGate {
 	const key = host.toLowerCase();
 
-	const dials = (): number[] => {
+	// A dial "in the future" was recorded by a clock that has since gone back:
+	// it says nothing about now.
+	const dials = (now: number): number[] => {
 		const list = readAll()[key];
-		return Array.isArray(list) ? list.filter((t) => typeof t === "number") : [];
+		return Array.isArray(list) ? list.filter((t) => typeof t === "number" && t <= now) : [];
 	};
 
 	return {
-		waitMs: (now) => throttleWaitMs(dials(), now, rule),
+		waitMs: (now) => throttleWaitMs(dials(now), now, rule),
 		record(at) {
 			// Older than a whole refused chain can reach: it no longer counts.
 			const horizon = at - rule.limit * rule.periodMs;
 			const all = readAll();
-			all[key] = [...dials(), at].filter((t) => t > horizon);
+			all[key] = [...dials(at), at].filter((t) => t > horizon);
 			backend.set(STORAGE_KEY, JSON.stringify(all));
 		},
 	};

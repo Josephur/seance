@@ -54,6 +54,12 @@ describe("dial ledger (irc/dialLedger.ts)", function () {
 			expect(throttleWaitMs([0], 10 * S, rule)).to.equal(32 * S);
 		});
 
+		it("never holds a dial longer than one window, whatever the record says", function () {
+			// Three dials recorded while the clock ran an hour ahead, asked on the corrected clock.
+			const ahead = [3600 * S, 3610 * S, 3620 * S];
+			expect(throttleWaitMs(ahead, 0, NEFARIOUS_RULE)).to.be.at.most(42 * S);
+		});
+
 		it("does not care about the order dials were recorded in", function () {
 			expect(throttleWaitMs([20 * S, 0, 10 * S], 30 * S, NEFARIOUS_RULE)).to.equal(32 * S);
 		});
@@ -98,6 +104,14 @@ describe("dial ledger (irc/dialLedger.ts)", function () {
 			gate.record(1000 * S);
 			const stored = JSON.parse(data.get("thelounge.state.dials") ?? "{}");
 			expect(stored["irc.example"]).to.deep.equal([1000 * S]);
+		});
+
+		it("ignores dials recorded in the future (a clock that ran ahead)", function () {
+			const gate = dialGateFor("irc.example");
+			gate.record(3600 * S);
+			gate.record(3610 * S);
+			gate.record(3620 * S);
+			expect(gate.waitMs(0)).to.equal(0);
 		});
 
 		it("survives a broken record", function () {
