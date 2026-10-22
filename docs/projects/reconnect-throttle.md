@@ -38,6 +38,15 @@ would renew the window. The worst case is one wait of at most 42 s, never a
 spiral. A deploy can tune the rule or turn it off with
 `features.connectThrottle` (docs/resources/branding.md).
 
+The cost: a dial that fails looks the same whether IPcheck refused it or the
+server is simply down (connection refused, DNS failure, both close with 1006),
+and only a radio that is off is told apart (`navigator.onLine`). So after three
+quick failures against a server that is down, the next try waits up to 42 s
+instead of the schedule's next step. The wait is never longer than one window,
+whatever the record says: a clock that ran ahead and was put back cannot hold
+a network. The service worker's own short connections (away on close, mark
+read, a reply) count on the server but are not in the record.
+
 That is as far as a client can go. It cannot keep a socket alive while the OS
 has suspended the page, and it cannot see dials from other devices behind the
 same address. Carrier NAT puts many phones behind one address, so the
