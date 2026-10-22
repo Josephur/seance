@@ -27,7 +27,7 @@
  * solar noon, until the first sample after noon where it fails, so the words
  * change at most once before noon and once after.
  */
-import {luminance, mix} from "./colour";
+import {hexToOklch, luminance, mix, oklchToHex} from "./colour";
 import {momentFor, SOLAR_NOON, type Moment, type Weather} from "./engine";
 import {
 	GLASS_NIGHT_AT,
@@ -250,6 +250,27 @@ export function haloFor(p: Palette): string {
 	return mix(p.skyHorizon, "#ffffff", 0.55);
 }
 
+/** How far the rim's lightness sits under the sky-top's (OKLCH L). */
+export const RIM_LIGHTNESS = 0.45;
+
+/**
+ * The tinted rim's colour (docs/projects/ps-words.md §5): the hour's sky-top
+ * (what the page canvas is) at RIM_LIGHTNESS of its OKLCH lightness, hue
+ * and chroma kept, the chroma pulled in by steps of 0.92 until sRGB holds
+ * it. Published as --ps-rim; ps.css's `rim` treatment draws its ring in it.
+ */
+export function rimFor(p: Pick<Palette, "skyTop">): string {
+	const [L, C, h] = hexToOklch(p.skyTop);
+
+	for (let c = C; ; c *= 0.92) {
+		const hex = oklchToHex(L * RIM_LIGHTNESS, c < 1e-6 ? 0 : c, h);
+
+		if (hex) {
+			return hex;
+		}
+	}
+}
+
 /**
  * The lowest luminance a ground may have, through the halo, for both INK at
  * 4.5 : 1 and INK_FAINT_HELD at 3 : 1: both are darker than any such ground,
@@ -335,6 +356,8 @@ export interface Published {
 	halo: string;
 	/** The page canvas and the iOS status bar: the sky-top of the hour. */
 	canvas: string;
+	/** The tinted rim's ring: the sky-top at RIM_LIGHTNESS of its lightness (rimFor). */
+	rim: string;
 }
 
 export function publishedFor(p: Palette, m: Moment): Published {
@@ -343,6 +366,7 @@ export function publishedFor(p: Palette, m: Moment): Published {
 		text: treatmentFor(m, p),
 		halo: haloFor(p),
 		canvas: p.skyTop,
+		rim: rimFor(p),
 	};
 }
 

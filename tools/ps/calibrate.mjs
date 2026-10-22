@@ -1,9 +1,13 @@
-// How strong the ps theme's two text treatments really are, measured from
-// rendered pixels (docs/projects/ps-theme.md §7, §11). The legibility model
+// How strong the ps theme's text treatments really are, measured from
+// rendered pixels (docs/projects/ps-theme.md §7, §11; docs/projects/ps-words.md
+// §5): the outline's two states (ALPHA_SHADOW, ALPHA_HALO), the tinted rim's
+// white words (ALPHA_RIM, toward the rim's colour) and the soft glow's two
+// states (ALPHA_GLOW, ALPHA_GLOW_HALO), each forced through html[data-ps-words]. The legibility model
 // (tools/ps/legibility.ts) treats the ground right around a word as
 // `mix(ground, S, α)`: S is the halo colour for ink text by day and black for
 // white text's shadow from dusk. This scenario measures α in Chromium and
-// prints what tools/ps/legibility.ts records as ALPHA_HALO and ALPHA_SHADOW.
+// prints what tools/ps/legibility.ts records as ALPHA_HALO, ALPHA_SHADOW,
+// ALPHA_RIM, ALPHA_GLOW and ALPHA_GLOW_HALO.
 //
 //   NODE_ENV=production corepack yarn build && python3 -m http.server -d public 8021 &
 //   node tools/browser-drive.mjs tools/ps/calibrate.mjs --chrome=… --out=<dir>
@@ -111,42 +115,49 @@ const PORT = process.env.SEANCE_IRC_PORT ?? "8067";
 export const url = `${BASE}?host=127.0.0.1&port=${PORT}&tls=false&nick=${NICK}&join=%23seance`;
 
 const HALO = "#ebf5fd";
+/** The tinted rim's colour, fixed for the run as --ps-halo is (the scene's would move with the hour). */
+const RIM = "#123a6e";
+const LIGHT_GROUNDS = {
+	"dusk amber": "#ffb96f",
+	"moon disc": "#fdfaf0",
+	"sun core": "#fffef6",
+	snow: "#eef2f7",
+	sky: "#9ccaf5",
+	grass: "#69b04a",
+	// Plan 3 (white sooner, 2026-09-25): the brightest grounds the light
+	// treatment now meets by day (tools/ps/legibility.ts, the moments where
+	// dark ink would not hold): a cloud on a clear afternoon, the yurt's
+	// roof and felt, the snowy far fields and the river's pale far end on a
+	// winter afternoon, the yurt's roof under the rain's veil and the noon
+	// horizon under the storm's.
+	"cloud by day": "#ffffff",
+	"roof by day": "#f5f8fb",
+	"felt by day": "#f7f0e3",
+	"snowy fields": "#fceaf2",
+	"river far end": "#e4e7de",
+	"rain-veiled roof": "#c7ccd5",
+	"storm-veiled horizon": "#8797a9",
+};
+const INK_GROUNDS = {
+	sky: "#9ccaf5",
+	grass: "#69b04a",
+	amber: "#ffc478",
+	snow: "#eef2f7",
+};
+/**
+ * The treatments measured, by the Words over the plains setting
+ * (docs/projects/ps-words.md: html[data-ps-words]) and the words' state:
+ * the outline (today's, the control against the recorded figures), the
+ * tinted rim (white words toward RIM; its ink is the outline's halo, not
+ * measured twice) and the soft glow (white words toward black, ink toward
+ * the halo's colour through its wider aura).
+ */
 const TREATMENTS = {
-	light: {
-		text: "#ffffff",
-		toward: "#000000",
-		grounds: {
-			"dusk amber": "#ffb96f",
-			"moon disc": "#fdfaf0",
-			"sun core": "#fffef6",
-			snow: "#eef2f7",
-			sky: "#9ccaf5",
-			grass: "#69b04a",
-			// Plan 3 (white sooner, 2026-09-25): the brightest grounds the light
-			// treatment now meets by day (tools/ps/legibility.ts, the moments where
-			// dark ink would not hold): a cloud on a clear afternoon, the yurt's
-			// roof and felt, the snowy far fields and the river's pale far end on a
-			// winter afternoon, the yurt's roof under the rain's veil and the noon
-			// horizon under the storm's.
-			"cloud by day": "#ffffff",
-			"roof by day": "#f5f8fb",
-			"felt by day": "#f7f0e3",
-			"snowy fields": "#fceaf2",
-			"river far end": "#e4e7de",
-			"rain-veiled roof": "#c7ccd5",
-			"storm-veiled horizon": "#8797a9",
-		},
-	},
-	ink: {
-		text: "#1b2638",
-		toward: HALO,
-		grounds: {
-			sky: "#9ccaf5",
-			grass: "#69b04a",
-			amber: "#ffc478",
-			snow: "#eef2f7",
-		},
-	},
+	"outline/light": {text: "#ffffff", toward: "#000000", grounds: LIGHT_GROUNDS},
+	"outline/ink": {text: "#1b2638", toward: HALO, grounds: INK_GROUNDS},
+	"rim/light": {text: "#ffffff", toward: RIM, grounds: LIGHT_GROUNDS},
+	"glow/light": {text: "#ffffff", toward: "#000000", grounds: LIGHT_GROUNDS},
+	"glow/ink": {text: "#1b2638", toward: HALO, grounds: INK_GROUNDS},
 };
 /**
  * The real chat phrases α is measured on, each in both faces: the shortest
@@ -295,11 +306,16 @@ const READ_TREATMENTS = `(() => {
 		return {font, color: cs.color, textShadow: cs.textShadow};
 	};
 	h.style.setProperty("--ps-halo", ${JSON.stringify(HALO)});
+	h.style.setProperty("--ps-rim", ${JSON.stringify(RIM)});
 	const out = {htmlFontSize: getComputedStyle(h).fontSize, fontSizeStep: h.dataset.fontSize ?? null};
-	for (const state of ["ink", "light"]) {
-		h.dataset.psText = state;
-		out[state] = {words: read(content), nick: read(nick)};
+	for (const words of ["outline", "rim", "glow"]) {
+		h.dataset.psWords = words;
+		for (const state of ["ink", "light"]) {
+			h.dataset.psText = state;
+			out[words + "/" + state] = {words: read(content), nick: read(nick)};
+		}
 	}
+	h.dataset.psWords = "outline";
 	return out;
 })()`;
 
@@ -581,7 +597,7 @@ export default async function run(page) {
 	peer.quit();
 	console.log(`html font-size ${read.htmlFontSize} (step ${read.fontSizeStep ?? "default"})`);
 
-	for (const state of ["ink", "light"]) {
+	for (const state of Object.keys(TREATMENTS)) {
 		for (const face of FACES) {
 			const r = read[state][face];
 			console.log(
@@ -591,50 +607,77 @@ export default async function run(page) {
 		}
 	}
 
+	const ink = read["outline/ink"].words;
+	const light = read["outline/light"].words;
 	page.check(
-		`the ink treatment's halo is #ebf5fd (${read.ink.words.textShadow})`,
-		read.ink.words.textShadow.split("rgb(235, 245, 253)").length === 4
+		`the ink treatment's halo is #ebf5fd (${ink.textShadow})`,
+		ink.textShadow.split("rgb(235, 245, 253)").length === 4
 	);
 	page.check(
-		`the light treatment's shadow is the 70/45/35 % black (${read.light.words.textShadow})`,
+		`the light treatment's shadow is the 70/45/35 % black (${light.textShadow})`,
 		/rgba\(0, 0, 0, 0\.7\).*rgba\(0, 0, 0, 0\.45\).*rgba\(0, 0, 0, 0\.35\)/.test(
-			read.light.words.textShadow
+			light.textShadow
 		)
 	);
 	page.check(
 		`the light treatment's outline (B) is eight 1px offsets at 78 % black (${
-			read.light.words.textShadow.split("0.78)").length - 1
+			light.textShadow.split("0.78)").length - 1
 		} found)`,
-		read.light.words.textShadow.split("0.78)").length - 1 === 8
+		light.textShadow.split("0.78)").length - 1 === 8
 	);
 	page.check(
 		`under it, the faint second ring is eight 2px offsets at 28 % black (${
-			read.light.words.textShadow.split("0.28)").length - 1
+			light.textShadow.split("0.28)").length - 1
 		} found)`,
-		read.light.words.textShadow.split("0.28)").length - 1 === 8 &&
-			read.light.words.textShadow.indexOf("0.28)") >
-				read.light.words.textShadow.lastIndexOf("0.78)")
+		light.textShadow.split("0.28)").length - 1 === 8 &&
+			light.textShadow.indexOf("0.28)") > light.textShadow.lastIndexOf("0.78)")
+	);
+	page.check(`ink text is #1b2638 (${ink.color})`, ink.color === "rgb(27, 38, 56)");
+	page.check(`light text is white (${light.color})`, light.color === "rgb(255, 255, 255)");
+
+	// The tinted rim: one ring at 60 % in --ps-rim (#123a6e = 18, 58, 110), no second ring; its ink is the outline's halo.
+	const rim = read["rim/light"].words;
+	// A relative colour (`rgb(from var(--ps-rim) r g b / 60%)`) computes to
+	// `color(srgb r g b / a)`: #123a6e is srgb 0.0705882 0.227451 0.431373.
+	const RIM_SRGB = "color(srgb 0.0705882 0.227451 0.431373 / ";
+	page.check(
+		`the rim is eight 1px offsets at 60 % in the rim's colour and no second ring (${rim.textShadow})`,
+		rim.textShadow.split(`${RIM_SRGB}0.6)`).length - 1 === 8 &&
+			rim.textShadow.split(RIM_SRGB).length - 1 === 11 &&
+			!rim.textShadow.includes("0.28)") &&
+			!rim.textShadow.includes("rgba(0, 0, 0")
 	);
 	page.check(
-		`ink text is #1b2638 (${read.ink.words.color})`,
-		read.ink.words.color === "rgb(27, 38, 56)"
+		`the rim's ink is the outline's halo (${read["rim/ink"].words.textShadow})`,
+		read["rim/ink"].words.textShadow === ink.textShadow
 	);
+	// The soft glow: four black layers and no ring; four aura layers in the halo's colour under the ink.
+	const glow = read["glow/light"].words;
+	const glowInk = read["glow/ink"].words;
 	page.check(
-		`light text is white (${read.light.words.color})`,
-		read.light.words.color === "rgb(255, 255, 255)"
+		`the glow is four black layers and no ring (${glow.textShadow})`,
+		glow.textShadow.split("rgba(0, 0, 0").length - 1 === 4 &&
+			!glow.textShadow.includes("1.25px 0px") &&
+			!glow.textShadow.includes("0px 1.25px 1.25px")
+	);
+	// #ebf5fd is srgb 0.921569 0.960784 0.992157.
+	page.check(
+		`the glow's aura is four layers of the halo's colour (${glowInk.textShadow})`,
+		glowInk.textShadow.split("color(srgb 0.921569 0.960784 0.992157 / ").length - 1 === 4
 	);
 	// The computed family list quotes a name with a space or a figure
 	// ("Source Sans 3"), so the first entry is read with its quotes off.
 	const firstFamily = (font) => font["font-family"].split(",")[0].trim().replace(/^"|"$/g, "");
 	page.check(
-		`the words are Source Sans 3 500 (${read.ink.words.font["font-family"]} ${read.ink.words.font["font-weight"]})`,
-		firstFamily(read.ink.words.font) === "Source Sans 3" &&
-			read.ink.words.font["font-weight"] === "500"
+		`the words are Source Sans 3 500 (${read["outline/ink"].words.font["font-family"]} ${read["outline/ink"].words.font["font-weight"]})`,
+		firstFamily(read["outline/ink"].words.font) === "Source Sans 3" &&
+			read["outline/ink"].words.font["font-weight"] === "500"
 	);
+	// A sender's nick over its message is the words' face, bold, since 2026-10-09 (Newsreader is the chrome's names').
 	page.check(
-		`the nick is Newsreader 700 (${read.ink.nick.font["font-family"]} ${read.ink.nick.font["font-weight"]})`,
-		firstFamily(read.ink.nick.font) === "Newsreader" &&
-			read.ink.nick.font["font-weight"] === "700"
+		`the nick is Source Sans 3 700 (${read["outline/ink"].nick.font["font-family"]} ${read["outline/ink"].nick.font["font-weight"]})`,
+		firstFamily(read["outline/ink"].nick.font) === "Source Sans 3" &&
+			read["outline/ink"].nick.font["font-weight"] === "700"
 	);
 
 	// ---- measure
@@ -677,7 +720,7 @@ export default async function run(page) {
 				});
 				const file = join(
 					page.outDir,
-					`ps-calibration-${treatment}-dpr${dpr}-${k + 1}.png`
+					`ps-calibration-${treatment.replace("/", "-")}-dpr${dpr}-${k + 1}.png`
 				);
 				writeFileSync(file, Buffer.from(shot.data, "base64"));
 				console.log(`shot ${file}`);
@@ -738,7 +781,7 @@ export default async function run(page) {
 			? `skipped: |S − G| = ${r.span} < ${MIN_SPAN}  `
 			: `${f3(r.p10)}  ${f3(r.median)}   ${String(r.ring).padEnd(5)}  ${f3(r.layers[0].p10)}`;
 		console.log(
-			`${r.treatment.padEnd(9)} ${r.face.padEnd(5)} ${r.dpr}   ${r.ground}  ${r.name.padEnd(
+			`${r.treatment.padEnd(13)} ${r.face.padEnd(5)} ${r.dpr}   ${r.ground}  ${r.name.padEnd(
 				12
 			)}  ${JSON.stringify(r.sample).padEnd(20)} ${main}    ${lit}`
 		);
@@ -748,7 +791,7 @@ export default async function run(page) {
 
 	for (const r of results.filter((x) => !x.skipped)) {
 		console.log(
-			`${r.treatment.padEnd(6)} ${r.face.padEnd(5)} dpr ${r.dpr} ${r.name.padEnd(
+			`${r.treatment.padEnd(13)} ${r.face.padEnd(5)} dpr ${r.dpr} ${r.name.padEnd(
 				11
 			)} ${JSON.stringify(r.sample).padEnd(20)} ` +
 				r.layers.map((l) => `d${l.d} ${f3(l.p10)} / ${f3(l.median)}`).join("   ")
@@ -779,10 +822,12 @@ export default async function run(page) {
 	// ---- the sanity gates
 
 	for (const r of results.filter(
-		(x) => x.treatment === "light" && x.name === "grass" && x.reference
+		(x) => x.treatment.endsWith("/light") && x.name === "grass" && x.reference
 	)) {
 		page.check(
-			`the shadow over grass measures clearly above 0 (${r.face} dpr ${r.dpr}: ${f3(r.p10)})`,
+			`${r.treatment}: the shadow over grass measures clearly above 0 (${r.face} dpr ${
+				r.dpr
+			}: ${f3(r.p10)})`,
 			r.p10 > GRASS_FLOOR
 		);
 	}

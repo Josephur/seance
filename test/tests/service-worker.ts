@@ -31,6 +31,7 @@ interface Rec {
 		messages?: Array<{from: string; text: string; msgid?: string}>;
 	};
 	actions?: Array<{action: string; type?: string; title: string}>;
+	silent?: boolean;
 	closed: boolean;
 	close(): void;
 }
@@ -332,6 +333,12 @@ interface HarnessOptions {
 	/** Make `indexedDB.open` throw synchronously — the worker must still
 	 * show something rather than let handlePush reject silently. */
 	failIndexedDB?: boolean;
+	/** Make `indexedDB.open` never answer — a worker stalled on storage,
+	 * which under WebKit's 30 s clock is a silent push. */
+	hangIndexedDB?: boolean;
+	/** The worker's `navigator.userAgent` (default a browser that is neither
+	 * WebKit nor Chromium: the lenient path). */
+	userAgent?: string;
 	/** The registration's scope (default the app root; `push/<uuid>/` for a push-only worker). */
 	scope?: string;
 	/** Run the worker's timers a hundred times faster (its delays are seconds long). */
@@ -366,7 +373,7 @@ function makeSW(options: HarnessOptions = {}): SWHarness {
 		TextEncoder,
 		btoa: (s: string) => Buffer.from(s, "binary").toString("base64"),
 		navigator: {
-			userAgent: "Mozilla/5.0 (X11; Linux x86_64)",
+			userAgent: options.userAgent ?? "Mozilla/5.0 (X11; Linux x86_64)",
 			setAppBadge() {},
 			clearAppBadge() {},
 		},
@@ -406,6 +413,7 @@ function makeSW(options: HarnessOptions = {}): SWHarness {
 					body: opts.body,
 					data: opts.data,
 					actions: opts.actions,
+					silent: opts.silent,
 					closed: false,
 					close() {
 						rec.closed = true;
@@ -445,6 +453,11 @@ function makeSW(options: HarnessOptions = {}): SWHarness {
 				}
 
 				const req: FakeReq = {};
+
+				if (options.hangIndexedDB) {
+					return req; // neither onsuccess nor onerror, ever
+				}
+
 				queueMicrotask(() => {
 					req.result = {
 						transaction() {
@@ -1004,6 +1017,166 @@ describe("service worker push notifications", function () {
 		expect(sw.shown).to.have.lengthOf(1);
 		expect(sw.shown[0].tag).to.equal("push-activity");
 		expect(sw.shown[0].body).to.equal("New activity while you were away.");
+	});
+});
+
+describe("service worker push notifications under WebKit (every push shows)", function () {
+	// WebKit (an iPhone's Home Screen web app, Safari) counts a push event
+	// that ends without a showNotification on its registration as silent,
+	// never resets the count, and at the third removes every subscription of
+	// the origin without a word — so the paths that drop a push (the seen
+	// ring, a redelivery, a read relay) must show something there; the
+	// lenient browsers keep their behaviour (service-worker.js § WebKit).
+	const IOS_UA =
+		"Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148";
+	const CHROME_UA =
+		"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36";
+
+	/** Fire a push without waiting for its handler (one that will never finish). */
+	function firePushUnawaited(sw: SWHarness, raw: string): void {
+		const ev = {data: {text: () => raw}, waitUntil: () => undefined};
+
+		for (const h of sw.handlers.push) {
+			h(ev);
+		}
+	}
+
+	it("shows a push whose msgid the live page already saw, rather than dropping it", async function () {
+		const sw = makeSW({userAgent: IOS_UA});
+		const msgid = "BjAAAaBjzZ0";
+
+		sw.kv.set("seen", [msgid]);
+		await firePush(sw, msgPayload("alice", "pushtest", "hello there", msgid));
+
+		expect(sw.shown).to.have.lengthOf(1);
+		expect(sw.shown[0].body).to.equal("hello there");
+		expect(sw.shown[0].data.count).to.equal(1);
+	});
+
+	it("re-shows, same tag and count, a message its notification already holds", async function () {
+		const sw = makeSW({userAgent: IOS_UA});
+
+		await firePush(sw, msgPayload("alice", "pushtest", "hello there", "m1"));
+		await firePush(sw, msgPayload("alice", "pushtest", "hello there", "m1"));
+
+		expect(sw.shown, "shown twice").to.have.lengthOf(2);
+
+		const live = sw.records.filter((n) => !n.closed);
+		expect(live, "one notification").to.have.lengthOf(1);
+		expect(live[0].title).to.equal("alice");
+		expect(live[0].body).to.equal("hello there");
+		expect(live[0].data.count).to.equal(1);
+	});
+
+	it("a Chromium worker still drops what the page saw (AppleWebKit with Chrome/ is not WebKit)", async function () {
+		const sw = makeSW({userAgent: CHROME_UA});
+		const msgid = "BjAAAaBjzZ0";
+
+		sw.kv.set("seen", [msgid]);
+		await firePush(sw, msgPayload("alice", "pushtest", "hello there", msgid));
+
+		expect(sw.shown).to.have.lengthOf(0);
+	});
+
+	it("a read relay replaces the target's notification with a silent stub, closed once WebKit allows", async function () {
+		const sw = makeSW({userAgent: IOS_UA, fastTimers: true});
+
+		await firePush(sw, msgPayload("alice", "pushtest", "hello there"));
+
+		const ts = new Date(Date.now() + 5000).toISOString();
+		await firePush(sw, `{"t":"read","target":"alice","ts":"${ts}"}`);
+
+		expect(sw.shown, "the stub was shown").to.have.lengthOf(2);
+
+		const stub = sw.shown[1];
+		expect(stub.tag).to.equal("push-alice");
+		expect(stub.silent).to.be.true;
+		expect(stub.body).to.equal("Marked as read");
+		expect(stub.data.kind).to.equal("read");
+		expect(stub.data.target).to.equal("alice");
+		expect(
+			sw.records.filter((n) => !n.closed),
+			"the message's notification is gone, the stub stands"
+		).to.deep.equal([stub]);
+
+		// 31 s, a hundred times faster: the worker closes the stub itself.
+		await new Promise((r) => setTimeout(r, 450));
+		expect(stub.closed, "stub closed after the minimum lifetime").to.be.true;
+	});
+
+	it("a MARKREAD line is the same relay", async function () {
+		const sw = makeSW({userAgent: IOS_UA});
+
+		await firePush(sw, msgPayload("alice", "pushtest", "hello there"));
+		await firePush(
+			sw,
+			`:irc.testnet.local MARKREAD alice timestamp=${new Date(
+				Date.now() + 5000
+			).toISOString()}`
+		);
+
+		const live = sw.records.filter((n) => !n.closed);
+		expect(live).to.have.lengthOf(1);
+		expect(live[0].data.kind).to.equal("read");
+		expect(live[0].tag).to.equal("push-alice");
+	});
+
+	it("a read relay that keeps a newer notification puts the stub beside it", async function () {
+		const sw = makeSW({userAgent: IOS_UA});
+
+		// the payload's time is fixed in the past; the read marker predates it
+		await firePush(sw, msgPayload("alice", "pushtest", "arrived later"));
+		await firePush(sw, `{"t":"read","target":"alice","ts":"2026-09-01T00:00:00.000Z"}`);
+
+		const live = sw.records.filter((n) => !n.closed);
+		expect(live.map((n) => n.tag).sort()).to.deep.equal(["push-alice", "push-read"]);
+		expect(live.find((n) => n.tag === "push-alice")?.body).to.equal("arrived later");
+	});
+
+	it("a read relay with nothing to close still shows the stub", async function () {
+		const sw = makeSW({userAgent: IOS_UA});
+
+		await firePush(sw, `{"t":"read","target":"alice","ts":"${new Date().toISOString()}"}`);
+
+		expect(sw.shown).to.have.lengthOf(1);
+		expect(sw.shown[0].tag).to.equal("push-alice");
+		expect(sw.shown[0].silent).to.be.true;
+	});
+
+	it("the next push on the target replaces its stub", async function () {
+		const sw = makeSW({userAgent: IOS_UA});
+
+		await firePush(sw, msgPayload("alice", "pushtest", "hello there"));
+		await firePush(
+			sw,
+			`{"t":"read","target":"alice","ts":"${new Date(Date.now() + 5000).toISOString()}"}`
+		);
+		await firePush(sw, msgPayload("alice", "pushtest", "and again"));
+
+		const live = sw.records.filter((n) => !n.closed);
+		expect(live).to.have.lengthOf(1);
+		expect(live[0].body).to.equal("and again");
+		expect(live[0].data.count, "the stub held no messages").to.equal(1);
+	});
+
+	it("a stalled handler shows the generic notification before WebKit's 30 s clock runs out", async function () {
+		const sw = makeSW({userAgent: IOS_UA, fastTimers: true, hangIndexedDB: true});
+
+		firePushUnawaited(sw, msgPayload("alice", "pushtest", "hello there"));
+
+		// 20 s, a hundred times faster.
+		await new Promise((r) => setTimeout(r, 350));
+		expect(sw.shown).to.have.lengthOf(1);
+		expect(sw.shown[0].tag).to.equal("push-activity");
+	});
+
+	it("a lenient worker shows nothing for a stalled handler (Chrome has its own budget)", async function () {
+		const sw = makeSW({fastTimers: true, hangIndexedDB: true});
+
+		firePushUnawaited(sw, msgPayload("alice", "pushtest", "hello there"));
+
+		await new Promise((r) => setTimeout(r, 350));
+		expect(sw.shown).to.have.lengthOf(0);
 	});
 });
 

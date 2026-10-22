@@ -37,8 +37,18 @@ import {sceneGrounds, type SceneGround} from "./grounds";
 import {paletteAt} from "./palette";
 import {GRASS_EDGE_LOWEST} from "./plains";
 
-export type GlassSurface = "header" | "composer" | "side" | "float";
-export const GLASS_SURFACES: readonly GlassSurface[] = ["header", "composer", "side", "float"];
+/**
+ * The four chrome surfaces, and `card`: the Words over the plains setting's
+ * surface family (docs/projects/ps-words.md §4) — the translucent card under
+ * every row of the message column (Bubbles), and the scrim's far edge. A
+ * card has no backdrop filter, so its tint is solved flat, over every ground,
+ * for the surface palette's lightest text and its faint ink (below), at or
+ * under the palette's declared 0.66. The glass column reads the float tint.
+ */
+export type GlassSurface = "header" | "composer" | "side" | "float" | "card";
+/** The chrome's four, through the day backdrop filter. */
+export const CHROME_SURFACES: readonly GlassSurface[] = ["header", "composer", "side", "float"];
+export const GLASS_SURFACES: readonly GlassSurface[] = [...CHROME_SURFACES, "card"];
 
 /** The day glass's tint (ps.css: rgb(255 251 244 / …)). */
 export const DAY_TINT = "#fffbf4";
@@ -75,6 +85,37 @@ const NEED = Math.max(
 	MARK_SOLVE * (luminance(DAY_GLASS_MARK) + 0.05) - 0.05
 );
 
+/**
+ * The lightest text the surface palette writes on the day card (held at 4.5)
+ * and its faint ink (held at 3): the generated `ps:surface-palette` block's
+ * header names both (tools/ps/palette-blocks.ts), and the floors test holds
+ * these two to it. Every other colour of the day surface is darker than the
+ * first, so the two bind.
+ */
+export const DAY_CARD_TEXT = "#07423e";
+export const DAY_CARD_FAINT = "#49566e";
+
+/**
+ * What the faint ink is held at on the card: its 3:1 floor itself. The
+ * generator moves the faint ink under rule 2 by the smallest step that clears
+ * 3, with no margin, so a margin here would push the card past the declared
+ * 0.66 at the moments the faint ink binds.
+ */
+export const FAINT_SOLVE = 3;
+
+/**
+ * A mention row's wash on the day card (ps.css: rgb(255 214 230 / the card
+ * tint)): darker than the paper, so the card is solved under it as well as
+ * under the paper, for the same two colours.
+ */
+export const DAY_WASH = "#ffd6e6";
+
+/** The lowest luminance a ground may have under the flat card tint for the day surface's text to clear its floors. */
+const NEED_CARD = Math.max(
+	TEXT_SOLVE * (luminance(DAY_CARD_TEXT) + 0.05) - 0.05,
+	FAINT_SOLVE * (luminance(DAY_CARD_FAINT) + 0.05) - 0.05
+);
+
 /** The yurt's areas (grounds.ts): its felt, door, roof, crown, band and their glows, the pool before the door, the smoke. */
 const YURT = /^(felt|door|roof|crown|band|pool|smoke)/;
 
@@ -92,6 +133,7 @@ export function isBehind(surface: GlassSurface, g: SceneGround): boolean {
 		case "side":
 			return !YURT.test(g.area);
 		case "float":
+		case "card":
 			return true;
 	}
 }
@@ -109,6 +151,7 @@ const DECODED = Array.from({length: 256}, (_, v) => {
 	return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
 });
 const TINT_RGB = hexRgb(DAY_TINT);
+const WASH_RGB = hexRgb(DAY_WASH);
 /** saturate(SATURATE)'s matrix (Filter Effects §9.5), by rows. */
 const SAT = [
 	[0.213 + 0.787 * SATURATE, 0.715 - 0.715 * SATURATE, 0.072 - 0.072 * SATURATE],
@@ -128,9 +171,29 @@ function filteredRgb(hex: string): [number, number, number] {
 	];
 }
 
+/** A ground's sRGB bytes as they are: under a card there is no filter. */
+function rawRgb(hex: string): [number, number, number] {
+	return [
+		parseInt(hex.slice(1, 3), 16),
+		parseInt(hex.slice(3, 5), 16),
+		parseInt(hex.slice(5, 7), 16),
+	];
+}
+
 /** A ground as the day's backdrop filter draws it. */
 export function backdropFiltered(hex: string): string {
 	return rgbHex(...filteredRgb(hex));
+}
+
+/** A ground under the day card's flat tint at `alpha` (the paper, or a mention's wash): the tint mixed straight over it, as mix() does. */
+export function throughCard(ground: string, alpha: number, tint = DAY_TINT): string {
+	const f = rawRgb(ground);
+	const t = tint === DAY_TINT ? TINT_RGB : hexRgb(tint);
+	return rgbHex(
+		f[0] + (t[0] - f[0]) * alpha,
+		f[1] + (t[1] - f[1]) * alpha,
+		f[2] + (t[2] - f[2]) * alpha
+	);
 }
 
 /** A ground seen through the day glass at tint `alpha`: filtered, then the tint over it, as mix() does. */
@@ -143,38 +206,56 @@ export function throughDayGlass(ground: string, alpha: number): string {
 	);
 }
 
-/** The luminance of filtered bytes under the tint at `alpha`: luminance(mix(…, DAY_TINT, alpha)). */
-function luminanceUnder(f: readonly number[], alpha: number): number {
+/** The luminance of bytes under `tint` at `alpha`: luminance(mix(…, tint, alpha)). */
+function luminanceUnder(
+	f: readonly number[],
+	alpha: number,
+	tint: readonly number[] = TINT_RGB
+): number {
 	return (
-		0.2126 * DECODED[byte(f[0] + (TINT_RGB[0] - f[0]) * alpha)] +
-		0.7152 * DECODED[byte(f[1] + (TINT_RGB[1] - f[1]) * alpha)] +
-		0.0722 * DECODED[byte(f[2] + (TINT_RGB[2] - f[2]) * alpha)]
+		0.2126 * DECODED[byte(f[0] + (tint[0] - f[0]) * alpha)] +
+		0.7152 * DECODED[byte(f[1] + (tint[1] - f[1]) * alpha)] +
+		0.0722 * DECODED[byte(f[2] + (tint[2] - f[2]) * alpha)]
 	);
 }
 
-/** Whether every filtered ground clears NEED under the tint at `hundredths` / 100. */
-function clears(filtered: ReadonlyArray<readonly number[]>, hundredths: number): boolean {
+/** Whether every ground (filtered, or raw under a card) clears `need` under each of `tints` at `hundredths` / 100. */
+function clears(
+	grounds: ReadonlyArray<readonly number[]>,
+	hundredths: number,
+	need: number,
+	tints: ReadonlyArray<readonly number[]>
+): boolean {
 	const alpha = hundredths / 100;
 
-	for (const f of filtered) {
-		if (luminanceUnder(f, alpha) < NEED) {
-			return false;
+	for (const f of grounds) {
+		for (const tint of tints) {
+			if (luminanceUnder(f, alpha, tint) < need) {
+				return false;
+			}
 		}
 	}
 
 	return true;
 }
 
-/** The lowest tint on a 0.01 grid at which every filtered ground clears NEED, kept within [TINT_FLOOR, TINT_CAP]. */
-function solve(filtered: ReadonlyArray<readonly number[]>): number {
+const PAPER = [TINT_RGB];
+const PAPER_AND_WASH = [TINT_RGB, WASH_RGB];
+
+/** The lowest tint on a 0.01 grid at which every ground clears `need` under each tint, kept within [TINT_FLOOR, TINT_CAP]. */
+function solve(
+	grounds: ReadonlyArray<readonly number[]>,
+	need = NEED,
+	tints: ReadonlyArray<readonly number[]> = PAPER
+): number {
 	const lo = Math.round(TINT_FLOOR * 100);
 	const hi = Math.round(TINT_CAP * 100);
 
-	if (clears(filtered, lo)) {
+	if (clears(grounds, lo, need, tints)) {
 		return lo / 100;
 	}
 
-	if (!clears(filtered, hi)) {
+	if (!clears(grounds, hi, need, tints)) {
 		return hi / 100;
 	}
 
@@ -183,7 +264,7 @@ function solve(filtered: ReadonlyArray<readonly number[]>): number {
 
 	while (b - a > 1) {
 		const mid = (a + b) >> 1;
-		[a, b] = clears(filtered, mid) ? [a, mid] : [mid, b];
+		[a, b] = clears(grounds, mid, need, tints) ? [a, mid] : [mid, b];
 	}
 
 	return b / 100;
@@ -194,7 +275,11 @@ export function lowestTint(grounds: readonly string[]): number {
 	return solve([...new Set(grounds)].map(filteredRgb));
 }
 
-/** Each surface's lowest tint that holds over the grounds given (one moment's, or several moments' together). */
+/**
+ * Each surface's lowest tint that holds over the grounds given (one moment's,
+ * or several moments' together): the chrome's through the day backdrop filter
+ * for its own colours, the card flat for the surface palette's.
+ */
 export function tintsOver(grounds: readonly SceneGround[]): Record<GlassSurface, number> {
 	const filtered = new Map<string, readonly number[]>();
 
@@ -208,7 +293,10 @@ export function tintsOver(grounds: readonly SceneGround[]): Record<GlassSurface,
 
 	for (const s of GLASS_SURFACES) {
 		const behind = new Set(grounds.filter((g) => isBehind(s, g)).map((g) => g.hex));
-		out[s] = solve([...behind].map((hex) => filtered.get(hex)!));
+		out[s] =
+			s === "card"
+				? solve([...behind].map(rawRgb), NEED_CARD, PAPER_AND_WASH)
+				: solve([...behind].map((hex) => filtered.get(hex)!));
 	}
 
 	return out;
@@ -280,9 +368,10 @@ export function composerAboveGrass(
 export const GLASS_TINT_VARS: readonly string[] = GLASS_SURFACES.map((s) => `--ps-g-tint-${s}`);
 
 /**
- * What the scene writes on <html> for the glass: by day the four surfaces'
- * tints, which ps.css's glass reads; at night null, to take them off (the
- * night glass keeps its generated tint).
+ * What the scene writes on <html> for the glass: by day the five surfaces'
+ * tints (the chrome's four and the card's), which ps.css's glass and the
+ * surface family read; at night null, to take them off (the night glass and
+ * the night surface keep their generated tints).
  */
 export function glassVars(
 	m: Pick<Moment, "doy" | "minute" | "weather">,

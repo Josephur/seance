@@ -2,7 +2,7 @@
  * What the ps scene publishes each minute beyond its own custom properties
  * (docs/projects/ps-theme.md §3, §6): the moon's lit shape, the day's weather
  * and season on the scene's root, the four values the chrome reads on
- * <html>, the day glass's four tints (glass.ts; none at night), and the
+ * <html>, the rim's colour, the day glass's four tints (glass.ts; none at night), and the
  * hour's sky as the browser's `theme-color`; and taking it all down again.
  * Moved out of scene.ts so a renderer other than classic's can publish the
  * same without importing scene.ts (and with it the stepper and the gates).
@@ -33,6 +33,7 @@ export function publishMoment(
 	html.dataset.psLight = out.light;
 	html.dataset.psText = out.text;
 	html.style.setProperty("--ps-halo", out.halo);
+	html.style.setProperty("--ps-rim", out.rim);
 	html.style.setProperty("--canvas-bg-color", out.canvas);
 
 	// The luminous day glass's tints, one per surface (glass.ts); none at night.
@@ -67,6 +68,7 @@ export function unpublish(
 	delete html.dataset.psLight;
 	delete html.dataset.psText;
 	html.style.removeProperty("--ps-halo");
+	html.style.removeProperty("--ps-rim");
 	html.style.removeProperty("--canvas-bg-color");
 
 	for (const name of GLASS_TINT_VARS) {

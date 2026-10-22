@@ -2,6 +2,7 @@ import type {TypedStore} from "./store";
 import {mirrorPushPrefs} from "./push-prefs";
 import {normalizeFontSize} from "./helpers/fontSize";
 import {normalizeOwnMessageStyle} from "./helpers/ownMessages";
+import {normalizePsWords} from "./helpers/psWords";
 import {prefersTwelveHourClock} from "./helpers/hourCycle";
 import {normalizeSceneMotion, themeScene} from "./themeScene";
 import {setQueryLogEnabled} from "./irc/querylog";
@@ -252,6 +253,15 @@ const defaultConfig = {
 	// and time (MessageList.vue, helpers/messageRuns.ts).
 	psGroupMessages: {
 		default: true,
+	},
+	// Which treatment the words in the message column get over the plains
+	// (helpers/psWords.ts; ps.css reads html[data-ps-words], a missing
+	// attribute is Bubbles). Reflected like fontSize and ownMessages.
+	psWords: {
+		default: "bubbles",
+		apply(store: TypedStore, value: string) {
+			document.documentElement.dataset.psWords = normalizePsWords(value);
+		},
 	},
 	media: {
 		default: true,

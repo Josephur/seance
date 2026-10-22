@@ -10,6 +10,27 @@ describe("Increase Contrast reaches every theme", function () {
 	const TOKENS = ["--body-color-muted", "--chat-fg-muted", "--chat-fg-faint", "--rail-fg-muted"];
 	const themes = path.join(process.cwd(), "client", "themes");
 
+	/** A selector list split on its top-level commas: a comma inside `:is(…)` or `:not(…)` joins, never splits. */
+	function parts(list: string): string[] {
+		const out: string[] = [];
+		let depth = 0;
+		let start = 0;
+
+		for (let i = 0; i < list.length; i++) {
+			if (list[i] === "(") {
+				depth++;
+			} else if (list[i] === ")") {
+				depth--;
+			} else if (list[i] === "," && depth === 0) {
+				out.push(list.slice(start, i));
+				start = i + 1;
+			}
+		}
+
+		out.push(list.slice(start));
+		return out.map((p) => p.trim());
+	}
+
 	/** Innermost rules as [selector, body], comments and @imports removed. */
 	function rules(css: string): [string, string][] {
 		const text = css.replace(/\/\*[\s\S]*?\*\//g, "").replace(/@import[^;]*;/g, "");
@@ -40,7 +61,7 @@ describe("Increase Contrast reaches every theme", function () {
 						: `html[data-contrast="more"] ${selector}`;
 					const reset = all.find(
 						([s, b]) =>
-							s.split(",").some((part) => part.trim() === scoped) &&
+							parts(s).some((part) => part === scoped) &&
 							new RegExp(`${token}\\s*:`).test(b)
 					);
 					expect(reset, `${selector} re-maps ${token}`).to.not.equal(undefined);
