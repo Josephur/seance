@@ -1,6 +1,7 @@
 import {h as createElement, VNode} from "vue";
 import {layout, LayoutNode, toPlainText} from "./ircmessageparser/layout";
 import {createFragment} from "./fragment";
+import {confirmMismatch} from "./openLink";
 import emojiMap from "./fullnamemap.json";
 import LinkPreviewToggle from "../../components/LinkPreviewToggle.vue";
 import LinkPreviewFileSize from "../../components/LinkPreviewFileSize.vue";
@@ -146,22 +147,55 @@ function wrapNode(node: WrapNode, children: Rendered[], message?: ClientMessage)
 				},
 				children
 			);
-		case "href":
+
+		case "href": {
 			// A masked link carries the destination in its title and the
 			// `md-link` class, which is what tells it apart from a linkified
-			// anchor (`test/e2e/markdown.spec.ts` picks it out that way).
+			// anchor (`test/e2e/markdown.spec.ts` picks it out that way). Its
+			// text is free, so unless it is the destination the real host
+			// follows it (a phone shows no title), and one whose text names
+			// another address asks before opening (helpers/linkSafety.ts).
+			// A long press's own "Open in new tab" cannot be intercepted: the
+			// host is the warning there.
+			const verdict = node.verdict;
+			const mismatch = verdict.kind === "mismatch";
+
+			const ask = (ev: MouseEvent) => {
+				ev.preventDefault();
+
+				if (verdict.kind === "mismatch") {
+					confirmMismatch(node.href, verdict.shown);
+				}
+			};
+
 			return createElement(
 				"a",
 				{
-					class: ["md-link"],
+					class: mismatch ? ["md-link", "mismatch"] : ["md-link"],
 					href: node.href,
 					title: node.href,
 					dir: "auto",
 					target: "_blank",
 					rel: "noopener",
+					// A Ctrl/Cmd or Shift click arrives as a click, the middle
+					// button as an auxclick. (Enter never reaches a chat link:
+					// keybinds.ts sends it to the composer.)
+					...(mismatch
+						? {
+								onClick: ask,
+								onAuxclick(ev: MouseEvent) {
+									if (ev.button === 1) {
+										ask(ev);
+									}
+								},
+						  }
+						: {}),
 				},
-				children
+				verdict.kind === "honest"
+					? children
+					: [...children, createElement("span", {class: "md-link-host"}, verdict.host)]
 			);
+		}
 	}
 }
 

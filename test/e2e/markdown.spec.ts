@@ -108,7 +108,9 @@ test("renders Markdown in own messages", async ({page}) => {
 	// its title, which is what tells it apart from a linkified one.
 	const masked = msg.locator("a.md-link");
 
-	await expect(masked).toHaveText("lnk");
+	// Its text is not its URL, so the real host follows the label.
+	await expect(masked).toHaveText("lnkexample.com");
+	await expect(masked.locator(".md-link-host")).toHaveText("example.com");
 	await expect(masked).toHaveAttribute("title", "https://example.com/");
 	await expect(msg.locator(".content")).not.toContainText("**");
 	await expect(msg.locator(".content")).not.toContainText("||");

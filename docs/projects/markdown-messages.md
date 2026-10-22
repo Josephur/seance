@@ -75,7 +75,31 @@ link, monospace block — is defined in `CONTEXT.md`; use those words.
   window-title `title` attribute.
 
 A masked link is an `<a class="md-link" title="<url>">`; the class is what
-tells it apart from a linkified anchor. CSS for the wrapped elements
+tells it apart from a linkified anchor.
+
+**Masked links can lie, so they say where they go** (2026-10-22). The label is
+free text, so `[paypal.com](https://evil.example)` shows one address and opens
+another. `client/js/helpers/linkSafety.ts` `judgeLink(label, href)` compares
+hosts, never strings: the destination is `new URL(href).hostname`, which sees
+through userinfo (`https://bank.com@evil.example`) and shows an IDN host in
+punycode; the label's addresses are what the linkifier finds in it, and two
+hosts match when equal or one is a subdomain of the other, after one `www.`.
+`layout()` puts the verdict on the `href` node and `parse.ts` renders it:
+
+- `honest` (the label is the URL, or URLs on the same host): unchanged;
+- `masked` (prose label): the real host follows the label, in
+  `<span class="md-link-host">` inside the anchor — a phone shows no title;
+- `mismatch` (the label names another address): the host in the error colour,
+  a warning glyph, and a click, Ctrl/Cmd-click or middle click raises the
+  confirm dialog ("Check this link"), whose Open anyway opens it
+  (`helpers/openLink.ts`).
+
+Limits: a long press's own "Open in new tab" menu cannot be intercepted, so
+there the inline host is the only warning; Enter never reaches a chat link
+(`keybinds.ts` sends keys outside a field to the composer). Tests
+`test/helpers/linkSafety.ts`, `test/helpers/layout.ts`; browser check
+`tools/scenarios/masked-links.mjs` (also `--mobile --width=390 --height=844`,
+and `SEANCE_THEME=ps`). CSS for the wrapped elements
 (`.md-quote`, `.md-header`/`.md-h1`…`.md-h6`, `.md-code-block`,
 `.md-code-toggle`, `.md-spoiler`/`.md-spoiler-shown`) lives in
 `client/css/style.css`, after `.irc-italic`. The channel header's topic is one
