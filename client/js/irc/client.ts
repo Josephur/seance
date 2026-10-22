@@ -2633,12 +2633,16 @@ export class IrcClient {
 			return;
 		}
 
-		const value = encodeClosed(this.closed.entries(), this.metadataMaxValueBytes(), Date.now());
-		this.send(
-			value
-				? `METADATA * SET ${CLOSED_KEY} private :${value}`
-				: `METADATA * SET ${CLOSED_KEY}`
+		// What the server keeps, and what fits one line after the command
+		// (MAX_LINE_BYTES): a server allowing more must not get an unsendable line.
+		const prefix = `METADATA * SET ${CLOSED_KEY} private :`;
+		const room = MAX_LINE_BYTES - new TextEncoder().encode(prefix).length;
+		const value = encodeClosed(
+			this.closed.entries(),
+			Math.min(this.metadataMaxValueBytes(), room),
+			Date.now()
 		);
+		this.send(value ? `${prefix}${value}` : `METADATA * SET ${CLOSED_KEY}`);
 	}
 
 	/** The server's `max-value-bytes` for metadata (draft/metadata-2), 300 when it names none. */

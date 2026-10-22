@@ -368,6 +368,24 @@ describe("closed queries (irc/closedQueries.ts)", function () {
 			);
 		});
 
+		it("keeps the write within the 500-byte line cap whatever the server allows", function () {
+			const h = setup();
+			register(h, `${ALL_CAPS} draft/metadata-2=max-value-bytes=2000`, [
+				":irc.test 900 alice alice!a@h alice :You are now logged in as alice",
+			]);
+
+			for (let i = 0; i < 40; i++) {
+				h.client.closed.close(`somewhatlongnick${i}`, t0 - i * 1000);
+			}
+
+			clock.tick(MUTE_READ_DELAY_MS);
+			h.transport.line(":irc.test 766 alice alice seance/closed :key not set");
+			closeBob(h);
+			const line = sets(h).pop() as string;
+			expect(new TextEncoder().encode(line).length).to.be.at.most(500);
+			expect(line).to.match(/[ :]bob:/);
+		});
+
 		it("another tab's close applies here", function () {
 			const h = account();
 			h.transport.line(`@time=${T0};msgid=p0 :bob!bob@host PRIVMSG alice :hi`);
