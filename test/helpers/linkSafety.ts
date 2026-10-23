@@ -86,6 +86,12 @@ describe("linkSafety (masked markdown links)", function () {
 				"paypal.c\u205fom",
 				// A combining mark is part of its letter, not a break.
 				"paypal.c\u0323om",
+				// Punctuation in front that no letter precedes.
+				".paypal.com",
+				"Verify…paypal.com",
+				"Login...paypal.com",
+				"-paypal.com",
+				"+paypal.com",
 			]) {
 				expect(
 					judgeLink(label, "https://evil.example/login").kind,
@@ -192,7 +198,9 @@ describe("linkSafety (masked markdown links)", function () {
 				expect(judgeLink(label, href).kind, label).to.equal("masked");
 			}
 
-			expect(judgeLink("PayPal.com", "https://evil.example/").kind).to.equal("mismatch");
+			for (const label of ["PayPal.com", "PayPal.Com"]) {
+				expect(judgeLink(label, "https://evil.example/").kind, label).to.equal("mismatch");
+			}
 		});
 
 		it("lets an IDN in a script with combining marks through on its own site", function () {

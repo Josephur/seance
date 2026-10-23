@@ -16,7 +16,7 @@
  *    compared after one leading `www.` is dropped. A schemeless word with no
  *    path after it is a name, not an address, when it ends in a source-file
  *    extension that is also a TLD (`setup.py`, `readme.md`, `install.sh`) or
- *    in a TLD written in capitals (`ASP.NET`, `Socket.IO`);
+ *    in a TLD written all in capitals (`ASP.NET`, `Socket.IO`);
  *  - a label address on another site → `mismatch` (warn, confirm); one on
  *    a parent or a subdomain of the real host (`github.io` for
  *    attacker.github.io, `paypal.s3.amazonaws.com` for s3.amazonaws.com — a
@@ -93,12 +93,14 @@ function readable(label: string): string {
  * A host-shaped word in the label: an optional scheme, an optional userinfo
  * (`support@`, or `paypal.com@` in front of the real host, as URL reads it),
  * then labels of letters (with their combining marks: `उदाहरण`), digits and
- * hyphens joined by dots. It starts only where a word does, and the scheme
- * and userinfo are bounded, so a long label is read in one pass: a message
- * can be 16 KB.
+ * hyphens joined by dots. It starts only where a word does — not inside
+ * one, nor after a dot, plus or hyphen that follows a letter (`a.b`'s `b`),
+ * though after one that does not (`Verify…paypal.com`) — and the scheme and
+ * userinfo are bounded, so a long label is read in one pass: a message can be
+ * 16 KB.
  */
 const HOST_WORD =
-	/(?<![\p{L}\p{N}\p{M}+.-])(?:([a-z][a-z0-9+.-]{0,31}):\/\/)?(?:([^\s@/]{1,64})@)?((?:[\p{L}\p{N}][\p{L}\p{N}\p{M}-]*\.)+[\p{L}\p{N}][\p{L}\p{N}\p{M}-]*)/giu;
+	/(?<![\p{L}\p{N}\p{M}])(?<![\p{L}\p{N}\p{M}][+.-])(?:([a-z][a-z0-9+.-]{0,31}):\/\/)?(?:([^\s@/]{1,64})@)?((?:[\p{L}\p{N}][\p{L}\p{N}\p{M}-]*\.)+[\p{L}\p{N}][\p{L}\p{N}\p{M}-]*)/giu;
 const IPV4 = /^\d{1,3}(?:\.\d{1,3}){3}$/;
 
 export function judgeLink(label: string, href: string): LinkVerdict {
@@ -134,7 +136,7 @@ export function judgeLink(label: string, href: string): LinkVerdict {
 			!userinfo &&
 			!followedByPath &&
 			!/^www\./i.test(word) &&
-			(FILE_TLDS.has(tld) || /[A-Z]/.test(ending))
+			(FILE_TLDS.has(tld) || /^[A-Z]+$/.test(ending))
 		) {
 			continue;
 		}

@@ -89,7 +89,7 @@ of their letters) that end in a real TLD, carry a letter outside ASCII (a
 lookalike) or are an IPv4 address; an e-mail address counts by its domain. A
 schemeless word with no path after it is a name, not an address, when it is a
 source-file name (`setup.py`, `readme.md`, `main.rs`, `install.sh`) or its TLD
-is written in capitals (`ASP.NET`, `Socket.IO`): the real host still shows,
+is written all in capitals (`ASP.NET`, `Socket.IO`): the real host still shows,
 without the dialog. A word only starts where a word does and the scheme and
 userinfo are bounded, so a 16 KB label is one pass. Colour decides what counts
 (`layout.ts` `judgeLabel`, `ircmessageparser/colours.ts`): text whose
