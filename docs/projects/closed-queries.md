@@ -26,8 +26,10 @@ Closing a query leaves a **tombstone** with two times:
 - its **boundary**, the time of the newest line the server sent in that window
   (`Channel.newestServerAt`: lines with a msgid). A line this device made, such
   as an error pushed into the query, carries the device clock and never counts,
-  so a clock that runs ahead cannot swallow a later message. A query with no
-  line from the server leaves no tombstone: there is nothing to replay.
+  so a clock that runs ahead cannot swallow a later message. A boundary may sit
+  up to the minute's skew allowance after this device's clock (the server's
+  may run ahead of it). A query with no line from the server leaves no
+  tombstone: there is nothing to replay.
 - its **event time**, when the close was made.
 
 The rule, then:
@@ -40,11 +42,16 @@ The rule, then:
 - The user's `/query` is a **reopen**: an event of its own that outranks an
   older close, here and on the account's other devices, so a conversation
   brought back stays back after a reload or the next read. A close made after
-  the reopen outranks it in turn: each nick keeps only its newest event.
+  the reopen outranks it in turn: each nick keeps only its newest event. A
+  reopen is recorded (and written) only when there is a close to outrank, or
+  before this connection's read of the account's list, when one may still
+  arrive; a `/query` with nothing to reopen writes nothing.
 - Nothing dated more than a minute after this device's clock is taken, from
-  this device or the account. That stops a close made on a clock that runs
-  ahead, and a value written to silence a nick: an IRC operator can set
-  another user's metadata.
+  this device or the account, and nothing expired. That stops a close made on
+  a clock that runs ahead, and a future-dated value written to silence a nick
+  for good. An IRC operator can set another user's metadata, so one dated now
+  can still hide that nick's earlier lines; a later line opens the query as
+  ever.
 - Removing the network forgets all its tombstones.
 
 All of it is `client/js/irc/closedQueries.ts` (`ClosedQueries`,
@@ -56,8 +63,9 @@ All of it is `client/js/irc/closedQueries.ts` (`ClosedQueries`,
   never in the settings backup. Another tab hears a change through the
   `storage` event (`manager.ts` → `closedStorageChanged`).
 - **The account's other devices:** the private metadata key `seance/closed`.
-  Its value is newest first: `nick:<boundary>[+<seconds from the boundary to the close>]` for a close and `nick:!<time>` for a reopen, times in base-36
-  ms (the older `nick:<boundary>` reads as a close made at its boundary). It
+  Its value is newest first: `nick:<boundary>[+<ms from the boundary to the close>]` for a close (a close made at its boundary carries no offset) and
+  `nick:!<time>` for a reopen, all in base-36 ms. A 761 is taken only for our
+  own nick, never another user's value an oper asked for. It
   is subscribed with the other shared keys (before `CAP END` where the server
   offers `before-connect`) and read in the login read 10 s after
   registration. A close is written only once this connection's GET has
@@ -75,7 +83,11 @@ All of it is `client/js/irc/closedQueries.ts` (`ClosedQueries`,
   `keepPrivateConversations` off) tombstones live in memory for the page only
   and are never shared. Turning it off deletes this device's copy and, from
   every connected network, the account's shared list
-  (`setClosedQueriesKept`).
+  (`setClosedQueriesKept` → `manager.ts`'s hook → `IrcClient.unshareClosed`).
+  A network that was down then, or a device where the setting was already off
+  (a restored backup), deletes it at its next login read, once per network
+  (`thelounge.state.closedUnshared`, cleared when the setting is turned back
+  on). Another device that still keeps them writes its list again.
 
 ## A tombstone that arrives late
 

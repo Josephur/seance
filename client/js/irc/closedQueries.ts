@@ -37,7 +37,7 @@ export const CLOSED_KEY = "seance/closed";
 /** An event older than this is dropped: no replay reaches that far back. */
 export const CLOSED_TTL_MS = 30 * 24 * 3600 * 1000;
 /** How far ahead of this device's clock an entry may be dated and still be taken. */
-export const CLOSED_SKEW_MS = 60_000;
+const CLOSED_SKEW_MS = 60_000;
 /** Where the tombstones live on this device (the `storage` event names it). */
 export const CLOSED_STORAGE_KEY = "thelounge.state.closedQueries";
 
@@ -69,8 +69,10 @@ const memoryBackend: StorageBackend = {
 };
 const store = () => (kept ? backend : memoryBackend);
 const readRecord = recordReader<ClosedEntry[]>();
-/** What an IrcClient does when sharing stops: delete the account's key. */
-const unsharers = new Set<() => void>();
+/** What stops the sharing on the connected networks (manager.ts registers it). */
+let onStop: (() => void) | null = null;
+/** Networks whose shared list this device has deleted since sharing stopped. */
+const UNSHARED_KEY = "thelounge.state.closedUnshared";
 
 /** Swap the persistence backend (tests); `null` restores localStorage. */
 export function useStorageBackend(next: StorageBackend | null): void {
@@ -90,12 +92,44 @@ export function setClosedQueriesKept(on: boolean): void {
 	kept = on;
 	memory.clear();
 
-	if (!on) {
-		backend.remove(CLOSED_STORAGE_KEY);
+	if (on) {
+		backend.remove(UNSHARED_KEY);
+		return;
+	}
 
-		for (const unshare of unsharers) {
-			unshare();
-		}
+	backend.remove(CLOSED_STORAGE_KEY);
+	onStop?.();
+}
+
+/** Register what deletes the account's list on the connected networks when sharing stops. */
+export function onClosedSharingStopped(fn: (() => void) | null): void {
+	onStop = fn;
+}
+
+function unshared(): string[] {
+	try {
+		const list: unknown = JSON.parse(backend.get(UNSHARED_KEY) ?? "[]");
+		return Array.isArray(list) ? list.filter((u): u is string => typeof u === "string") : [];
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * Sharing is off and this network's list has not been deleted from here yet:
+ * its next login read deletes it (a network that was down when the setting
+ * changed, or a setting off before this device ever ran this code).
+ */
+export function closedUnshareDue(uuid: string): boolean {
+	return !kept && !unshared().includes(uuid);
+}
+
+/** This network's shared list was deleted from here. */
+export function markClosedUnshared(uuid: string): void {
+	const list = unshared();
+
+	if (!list.includes(uuid)) {
+		backend.set(UNSHARED_KEY, JSON.stringify([...list, uuid]));
 	}
 }
 
@@ -114,7 +148,7 @@ function item(e: ClosedEntry): string {
 		return `${e.nick}:!${e.when.toString(36)}`;
 	}
 
-	const after = Math.max(0, Math.round((e.when - e.at) / 1000));
+	const after = Math.max(0, e.when - e.at);
 	return `${e.nick}:${e.at.toString(36)}${after > 0 ? `+${after.toString(36)}` : ""}`;
 }
 
@@ -132,7 +166,10 @@ export function encodeClosed(entries: ClosedEntry[], maxBytes: number, now: numb
 	return items.join(" ");
 }
 
-/** Read the wire form (the older `nick:<boundary>` too), skipping anything malformed or dated after now. */
+/**
+ * Read the wire form (a close made at its boundary carries no offset),
+ * skipping anything malformed, expired or dated after now.
+ */
 export function decodeClosed(value: string, now: number): ClosedEntry[] {
 	const out: ClosedEntry[] = [];
 
@@ -152,15 +189,10 @@ export function decodeClosed(value: string, now: number): ClosedEntry[] {
 		} else {
 			const [boundary, after] = rest.split("+");
 			const at = parseInt(boundary, 36);
-			entry = {nick, at, when: at + (after ? parseInt(after, 36) * 1000 : 0)};
+			entry = {nick, at, when: at + (after ? parseInt(after, 36) : 0)};
 		}
 
-		if (
-			Number.isFinite(entry.when) &&
-			entry.when > 0 &&
-			entry.at <= now + CLOSED_SKEW_MS &&
-			entry.when <= now + CLOSED_SKEW_MS
-		) {
+		if (Number.isFinite(entry.at) && Number.isFinite(entry.when) && live(entry, now)) {
 			out.push(entry);
 		}
 	}
@@ -203,13 +235,9 @@ export class ClosedQueries {
 	private readonly fold: (nick: string) => string;
 
 	/** `unshare`: delete the account's shared list (called when sharing stops). */
-	constructor(uuid: string, fold: (nick: string) => string, unshare?: () => void) {
+	constructor(uuid: string, fold: (nick: string) => string) {
 		this.uuid = uuid;
 		this.fold = fold;
-
-		if (unshare) {
-			unsharers.add(unshare);
-		}
 	}
 
 	/** The events held, newest first (read fresh: another tab may have written). */
@@ -220,30 +248,42 @@ export class ClosedQueries {
 			return [];
 		}
 
-		// A tombstone stored before event times were kept: made at its boundary.
-		return list
-			.filter((e) => typeof e?.nick === "string" && typeof e?.at === "number")
-			.map((e) => (typeof e.when === "number" ? e : {...e, when: e.at}));
+		return list.filter(
+			(e) =>
+				typeof e?.nick === "string" &&
+				typeof e?.at === "number" &&
+				typeof e?.when === "number"
+		);
 	}
 
 	/** The query with `nick` was closed; the newest line the server sent in it was at `at`. */
 	close(nick: string, at: number): void {
 		const key = this.fold(nick);
-		const now = Date.now();
-		this.write(
-			mergeClosed(this.entries(), [{nick: key, at: Math.min(at, now), when: this.after(key)}])
-		);
+		// The server's clock may run ahead of this device's: a boundary up to
+		// the skew allowance past now is the server's, not a lie.
+		const boundary = Math.min(at, Date.now() + CLOSED_SKEW_MS);
+		const when = Math.max(this.after(key), boundary);
+		this.write(mergeClosed(this.entries(), [{nick: key, at: boundary, when}]));
 	}
 
-	/** The user opened the query again (`/query`): a reopen outranking the close. */
-	reopen(nick: string): void {
+	/**
+	 * The user opened the query again (`/query`): a reopen outranking the
+	 * close. Recorded when a close is held, or when `unknown` — this
+	 * connection will read the account's list but has not yet, so a close may
+	 * still arrive. Returns whether anything was recorded (and so is worth writing).
+	 */
+	reopen(nick: string, unknown = false): boolean {
 		const key = this.fold(nick);
+		const held = this.entries().find((e) => e.nick === key);
 
-		if (this.entries().some((e) => e.nick === key && !e.open)) {
-			this.write(
-				mergeClosed(this.entries(), [{nick: key, at: 0, when: this.after(key), open: true}])
-			);
+		if (held?.open || (!held && !unknown)) {
+			return false;
 		}
+
+		this.write(
+			mergeClosed(this.entries(), [{nick: key, at: 0, when: this.after(key), open: true}])
+		);
+		return true;
 	}
 
 	/** A local event's time: now, and always after the nick's last event here. */
@@ -297,7 +337,7 @@ export class ClosedQueries {
  * user opened, read or wrote in stays — this never closes what the user is
  * looking at. A reopen closes nothing.
  */
-export function applyClosed(client: IrcClient, entries: ClosedEntry[]): void {
+function applyClosed(client: IrcClient, entries: ClosedEntry[]): void {
 	for (const entry of entries) {
 		const chan = client.findChannel(entry.nick);
 
@@ -321,6 +361,16 @@ export function applyClosed(client: IrcClient, entries: ClosedEntry[]): void {
  */
 export function onClosedValue(client: IrcClient, value: string, read: boolean): void {
 	applyClosed(client, client.closed.adopt(decodeClosed(value, Date.now())));
+
+	// Sharing is off and this network still has a list from before: delete
+	// it once (closedUnshareDue).
+	if (read && closedUnshareDue(client.uuid)) {
+		if (value) {
+			client.unshareClosed();
+		} else {
+			markClosedUnshared(client.uuid);
+		}
+	}
 
 	if (read) {
 		client.closedKnown = true;

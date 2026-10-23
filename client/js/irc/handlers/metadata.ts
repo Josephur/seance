@@ -60,14 +60,15 @@ const metadata: Handler = (client, msg) => {
 	}
 };
 
-// 761 <me> <target> <key> <visibility> :<value>
+// 761 <me> <target> <key> <visibility> :<value>: our own GET (`*` expands to our
+// nick) — never another user's value an oper asked for, private or not.
 const keyValue: Handler = (client, msg) => {
 	if (!ownKey(msg.params[2])) {
 		unhandled(client, msg);
 		return;
 	}
 
-	if (msg.params[2] === MUTE_KEY && ours(client, msg.params[1] ?? "", msg.params[3] ?? "")) {
+	if (msg.params[2] === MUTE_KEY && client.isSelf(msg.params[1] ?? "")) {
 		onMuteValue(client, msg.params[4] ?? "");
 	}
 
@@ -83,11 +84,11 @@ const keyValue: Handler = (client, msg) => {
 
 	const onShared = SHARED[msg.params[2] ?? ""];
 
-	if (onShared && ours(client, msg.params[1] ?? "", msg.params[3] ?? "")) {
+	if (onShared && client.isSelf(msg.params[1] ?? "")) {
 		onShared(client, msg.params[4] ?? "");
 	}
 
-	if (msg.params[2] === CLOSED_KEY && ours(client, msg.params[1] ?? "", msg.params[3] ?? "")) {
+	if (msg.params[2] === CLOSED_KEY && client.isSelf(msg.params[1] ?? "")) {
 		onClosedValue(client, msg.params[4] ?? "", true);
 	}
 };

@@ -14,6 +14,7 @@ import {
 	CLOSED_TTL_MS,
 	ClosedQueries,
 	closedStorageChanged,
+	onClosedSharingStopped,
 	setClosedQueriesKept,
 	decodeClosed,
 	encodeClosed,
@@ -73,6 +74,7 @@ describe("closed queries (irc/closedQueries.ts)", function () {
 		clock.restore();
 		sinon.restore();
 		setClosedQueriesKept(true);
+		onClosedSharingStopped(null);
 	});
 
 	describe("the reopen paths", function () {
@@ -187,7 +189,7 @@ describe("closed queries (irc/closedQueries.ts)", function () {
 			expect(decodeClosed(encodeClosed(entries, 300, NOW), NOW)).to.deep.equal(entries);
 		});
 
-		it("reads the older form, a close with no event time of its own", function () {
+		it("reads a close made at its boundary, which carries no offset", function () {
 			expect(decodeClosed(`bob:${(NOW - 1000).toString(36)}`, NOW)).to.deep.equal([
 				close("bob", NOW - 1000, NOW - 1000),
 			]);
@@ -216,10 +218,20 @@ describe("closed queries (irc/closedQueries.ts)", function () {
 			expect(decodeClosed(value, NOW).map((e) => e.nick)).to.deep.equal(["new"]);
 		});
 
+		it("keeps a close's event time to the millisecond on the wire", function () {
+			const entries = [close("bob", NOW - 60000, NOW - 54400)];
+			expect(decodeClosed(encodeClosed(entries, 300, NOW), NOW)).to.deep.equal(entries);
+		});
+
+		it("drops expired events when reading, as when writing", function () {
+			const old = NOW - CLOSED_TTL_MS - 1000;
+			expect(decodeClosed(`bob:${old.toString(36)}`, NOW)).to.deep.equal([]);
+		});
+
 		it("skips malformed items", function () {
-			expect(decodeClosed("x:zz bad :: y:! z:+1", NOW).map((e) => e.nick)).to.deep.equal([
-				"x",
-			]);
+			expect(
+				decodeClosed(`x:${NOW.toString(36)} bad :: y:! z:+1`, NOW).map((e) => e.nick)
+			).to.deep.equal(["x"]);
 		});
 
 		it("drops anything dated in the future (a clock ahead, or a value written to silence a nick)", function () {
@@ -245,10 +257,10 @@ describe("closed queries (irc/closedQueries.ts)", function () {
 			expect(closed.suppresses("bob", new Date(0))).to.equal(false);
 		});
 
-		it("never dates a close after now", function () {
+		it("never dates a close more than the skew allowance after now", function () {
 			const closed = new ClosedQueries("net-g", (s) => s);
 			closed.close("bob", NOW + 3600000);
-			expect(closed.entries()[0].at).to.be.at.most(NOW);
+			expect(closed.entries()[0].at).to.be.at.most(NOW + 60000);
 		});
 
 		it("keeps tombstones per network across instances", function () {
@@ -265,22 +277,6 @@ describe("closed queries (irc/closedQueries.ts)", function () {
 			expect(
 				new ClosedQueries("net-d", (s) => s).suppresses("bob", new Date(NOW - 1000))
 			).to.equal(false);
-		});
-
-		it("reads a stored tombstone from before event times were kept", function () {
-			const data = new Map<string, string>([
-				[
-					"thelounge.state.closedQueries",
-					JSON.stringify({"net-i": [{nick: "bob", at: NOW - 1000}]}),
-				],
-			]);
-			useStorageBackend({
-				get: (k) => data.get(k) ?? null,
-				set: (k, v) => void data.set(k, v),
-				remove: (k) => void data.delete(k),
-			});
-			const closed = new ClosedQueries("net-i", (n) => n);
-			expect(closed.suppresses("bob", new Date(NOW - 1000))).to.equal(true);
 		});
 
 		it("removing the network forgets its tombstones", function () {
@@ -358,7 +354,7 @@ describe("closed queries (irc/closedQueries.ts)", function () {
 			closeBob(h);
 			expect(sets(h)).to.deep.equal([
 				// Closed 3610 s after its newest line: 12:00:10, after the 10 s login read.
-				`METADATA * SET seance/closed private :bob:${t36(t0)}+${(3610).toString(
+				`METADATA * SET seance/closed private :bob:${t36(t0)}+${(3610000).toString(
 					36
 				)} carol:${t36(t0 - 60000)}`,
 			]);
@@ -372,7 +368,7 @@ describe("closed queries (irc/closedQueries.ts)", function () {
 			expect(sets(h)).to.deep.equal([]);
 			h.transport.line(":irc.test 766 alice alice seance/closed :key not set");
 			expect(sets(h)).to.deep.equal([
-				`METADATA * SET seance/closed private :bob:${t36(t0)}+${(3600).toString(36)}`,
+				`METADATA * SET seance/closed private :bob:${t36(t0)}+${(3600000).toString(36)}`,
 			]);
 		});
 
@@ -422,7 +418,7 @@ describe("closed queries (irc/closedQueries.ts)", function () {
 			expect(sets(h).pop()).to.equal(
 				`METADATA * SET seance/closed private :dave:${t36(
 					Date.parse(T1)
-				)}+${(3609).toString(36)} bob:${t36(t0)}+${(3610).toString(36)} erin:${t36(
+				)}+${(3609000).toString(36)} bob:${t36(t0)}+${(3610000).toString(36)} erin:${t36(
 					t0 - 5000
 				)}`
 			);
@@ -470,6 +466,7 @@ describe("closed queries (irc/closedQueries.ts)", function () {
 			clock.tick(MUTE_READ_DELAY_MS);
 			h.transport.line(":irc.test 766 alice alice seance/closed :key not set");
 			closeBob(h);
+			onClosedSharingStopped(() => h.client.unshareClosed());
 			setClosedQueriesKept(false);
 			expect(sets(h).pop()).to.equal("METADATA * SET seance/closed");
 			const before = sets(h).length;
@@ -487,6 +484,64 @@ describe("closed queries (irc/closedQueries.ts)", function () {
 			h.transport.line(":irc.test 766 alice alice seance/closed :key not set");
 			closeBob(h);
 			expect(sets(h).pop()).to.match(/ :bob:/);
+		});
+
+		it("a /query of a nick with nothing to reopen writes nothing", function () {
+			const h = account();
+			clock.tick(MUTE_READ_DELAY_MS);
+			h.transport.line(":irc.test 766 alice alice seance/closed :key not set");
+			h.client.input(h.client.lobby.id, "/query dave");
+			expect(sets(h)).to.deep.equal([]);
+		});
+
+		it("a /query before the login read outranks an older close that arrives with it", function () {
+			const h = account();
+			h.client.input(h.client.lobby.id, "/query bob");
+			clock.tick(MUTE_READ_DELAY_MS);
+			h.transport.line(`:irc.test 761 alice alice seance/closed private :bob:${t36(t0)}`);
+			expect(h.client.closed.suppresses("bob", new Date(T0))).to.equal(false);
+			expect(sets(h).pop()).to.match(/ :bob:!/);
+		});
+
+		it("a device clock behind the server does not cut a close's boundary short", function () {
+			const h = account();
+			// The server's time is 30 s ahead of this device's 12:00.
+			const ahead = "2026-08-28T12:00:30.000Z";
+			h.transport.line(`@time=${ahead};msgid=p9 :bob!bob@host PRIVMSG alice :hi`);
+			h.client.input(h.client.findChannel("bob")!.id, "/close");
+			h.dispatch.resetHistory();
+			h.transport.line(`@time=${ahead};msgid=p9 :bob!bob@host PRIVMSG alice :hi`);
+			expect(queryJoins(h, "bob")).to.deep.equal([]);
+		});
+
+		it("takes a 761 only for our own key, not another user's an oper asked for", function () {
+			const h = account();
+			h.transport.line(`:irc.test 761 alice mallory seance/closed private :bob:${t36(t0)}`);
+			expect(h.client.closed.entries()).to.deep.equal([]);
+		});
+
+		it("with private conversations not kept, the next login read deletes the account's list once", function () {
+			setClosedQueriesKept(false);
+			const h = account();
+			clock.tick(MUTE_READ_DELAY_MS);
+			h.transport.line(`:irc.test 761 alice alice seance/closed private :bob:${t36(t0)}`);
+			expect(sets(h)).to.deep.equal(["METADATA * SET seance/closed"]);
+			h.transport.line(`:irc.test 761 alice alice seance/closed private :carol:${t36(t0)}`);
+			expect(sets(h)).to.have.length(1);
+		});
+
+		it("turning it off while a network is down deletes that network's list when it next reads it", function () {
+			const h = account();
+			onClosedSharingStopped(() => h.client.unshareClosed());
+			h.transport.closed();
+			setClosedQueriesKept(false);
+			expect(sets(h)).to.deep.equal([]);
+			register(h, META_CAPS, [
+				":irc.test 900 alice alice!a@h alice :You are now logged in as alice",
+			]);
+			clock.tick(MUTE_READ_DELAY_MS);
+			h.transport.line(`:irc.test 761 alice alice seance/closed private :bob:${t36(t0)}`);
+			expect(sets(h)).to.deep.equal(["METADATA * SET seance/closed"]);
 		});
 
 		it("another tab's close applies here", function () {

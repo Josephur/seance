@@ -71,7 +71,9 @@ const STORE = `document.querySelector("[data-v-app]").__vue_app__.config.globalP
 const otherTabCloses = (nick, at) => `(() => {
 	const uuid = ${STORE}.state.networks[0].uuid;
 	const all = JSON.parse(localStorage.getItem(${JSON.stringify(KEY)}) || "{}");
-	all[uuid] = [{nick: ${JSON.stringify(nick)}.toLowerCase(), at: ${at}}, ...(all[uuid] || [])];
+	all[uuid] = [{nick: ${JSON.stringify(
+		nick
+	)}.toLowerCase(), at: ${at}, when: ${at}}, ...(all[uuid] || [])];
 	const value = JSON.stringify(all);
 	localStorage.setItem(${JSON.stringify(KEY)}, value);
 	window.dispatchEvent(new StorageEvent("storage", {key: ${JSON.stringify(KEY)}, newValue: value}));

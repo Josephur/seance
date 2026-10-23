@@ -38,7 +38,13 @@ import {handlers, unhandled} from "./handlers";
 import {FILEHOST_SERVICE, TokenRequests, filehostUrlOf} from "./authtoken";
 import {interceptBatchLine, resetBatches} from "./handlers/batch";
 import {PAYLOAD_KEY} from "./handlers/metadata";
-import {CLOSED_KEY, ClosedQueries, closedQueriesKept, encodeClosed} from "./closedQueries";
+import {
+	CLOSED_KEY,
+	ClosedQueries,
+	closedQueriesKept,
+	encodeClosed,
+	markClosedUnshared,
+} from "./closedQueries";
 import {
 	CONCAT_LINE_TAG_BYTES,
 	MULTILINE_CAP,
@@ -364,6 +370,11 @@ export class IrcClient {
 	closedKnown = false;
 	/** A close waits for that answer before it is written. */
 	closedPending = false;
+
+	/** This connection will read the account's closed queries but has not yet. */
+	get closedReadAhead(): boolean {
+		return !this.closedKnown && !!this.account && this.caps.hasCapability("draft/metadata-2");
+	}
 	/** Server notices and WALLOPS kept on the device (noticelog.ts). */
 	readonly noticeLog: NoticeLog;
 	/** Being an oper here (oper.ts): level, privileges, snomask. */
@@ -506,11 +517,7 @@ export class IrcClient {
 		);
 
 		this.noticeLog = new NoticeLog(this.uuid, () => getSavedNetwork(this.uuid) !== undefined);
-		this.closed = new ClosedQueries(
-			this.uuid,
-			(s) => this.casefold(s),
-			() => this.unshareClosed()
-		);
+		this.closed = new ClosedQueries(this.uuid, (s) => this.casefold(s));
 
 		for (const name of this.queryLog.names()) {
 			const newest = this.queryLog.newestAt(name);
@@ -2652,11 +2659,12 @@ export class IrcClient {
 	}
 
 	/**
-	 * Sharing stopped (closedQueries.ts setClosedQueriesKept): delete the
-	 * account's list of closed conversations, which the network's operators
-	 * can read, if this connection can.
+	 * Sharing stopped (closedQueries.ts setClosedQueriesKept, or a login read
+	 * that finds a list while it is off): delete the account's list of closed
+	 * conversations, which the network's operators can read, if this
+	 * connection can — and remember it, so it happens once per network.
 	 */
-	private unshareClosed(): void {
+	unshareClosed(): void {
 		this.closedPending = false;
 
 		if (
@@ -2666,6 +2674,7 @@ export class IrcClient {
 			this.caps.hasCapability("draft/metadata-2")
 		) {
 			this.send(`METADATA * SET ${CLOSED_KEY}`);
+			markClosedUnshared(this.uuid);
 		}
 	}
 
