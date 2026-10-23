@@ -8,22 +8,26 @@
  *    an internationalised http(s) host in punycode (`xn--…`), so a lookalike
  *    letter shows itself; a `web+irc:` host is opaque to URL and compared as
  *    written, lowercased;
- *  - the label's addresses are what the linkifier finds in it (bare domains
- *    included; an e-mail address counts by its domain), compared after one
- *    leading `www.` is dropped. A schemeless word ending in a source-file
- *    extension that is also a TLD (`setup.py`, `readme.md`, `main.rs`) is not
- *    an address;
- *  - a label address on another site → `mismatch` (warn, confirm); one
- *    naming only a parent of the real host (`github.io` for
- *    attacker.github.io — a shared host is everyone's parent) → `masked`
- *    (show the host); the same host or a subdomain of it → `honest`; no
- *    address → `honest` when the label is the href, else `masked`.
+ *  - the label is first read as a reader sees it (NFKC; invisible
+ *    characters, bidi marks and ideographic dots folded away), and its
+ *    addresses are the host-shaped words in it that end in a real TLD or
+ *    carry a letter outside ASCII (an e-mail address counts by its domain,
+ *    `a@b` by `b` as URL reads it), compared after one leading `www.` is
+ *    dropped. A schemeless word ending in a source-file extension that is
+ *    also a TLD (`setup.py`, `readme.md`, `main.rs`) is not an address unless
+ *    a path follows it;
+ *  - a label address on another site → `mismatch` (warn, confirm); one on
+ *    a parent or a subdomain of the real host (`github.io` for
+ *    attacker.github.io, `paypal.s3.amazonaws.com` for s3.amazonaws.com — a
+ *    shared host is anyone's) → `masked` (show the host); only the same host
+ *    → `honest`; no address → `honest` when the label is the href, else
+ *    `masked`.
  *
  * Vue-free and DOM-free: layout.ts puts the verdict on the href node,
  * parse.ts renders it. Tests: test/helpers/linkSafety.ts.
  */
 
-import {findLinks} from "../../../shared/linkify";
+import tlds from "tlds";
 import {urlHost} from "./urlHost";
 
 export type LinkVerdict =
@@ -31,20 +35,16 @@ export type LinkVerdict =
 	| {kind: "masked"; host: string} // prose label: show the host
 	| {kind: "mismatch"; host: string; shown: string}; // the label names another address
 
-/** The host a URL opens: lowercased, no trailing dot; undefined when it does not parse. */
-export function linkHost(href: string): string | undefined {
-	return urlHost(href) ?? undefined;
-}
-
 const bare = (host: string) => host.replace(/^www\./, "");
 
 /**
  * How a host the label names relates to the one the link opens: the same
- * site, a subdomain of it (a label naming `login.paypal.com` for paypal.com),
- * a parent of it (a label naming `github.io` for attacker.github.io: a
- * shared host is everyone's parent, so the real host is shown), or another.
+ * site, a subdomain of it (`login.paypal.com` for paypal.com — but a shared
+ * host such as s3.amazonaws.com/attacker is anyone's), a parent of it
+ * (`github.io` for attacker.github.io), or another site. Only the same site
+ * is honest; a narrower or a parent host shows the real one.
  */
-function relation(shown: string, real: string): "same" | "narrower" | "parent" | "other" {
+function relation(shown: string, real: string): "same" | "near" | "other" {
 	const x = bare(shown);
 	const y = bare(real);
 
@@ -52,21 +52,7 @@ function relation(shown: string, real: string): "same" | "narrower" | "parent" |
 		return "same";
 	}
 
-	if (x.endsWith("." + y)) {
-		return "narrower";
-	}
-
-	return y.endsWith("." + x) ? "parent" : "other";
-}
-
-/** The host an address the linkifier found names; an e-mail address names its domain. */
-function addressHost(link: string): string | undefined {
-	if (/^mailto:/i.test(link)) {
-		const domain = link.slice(link.lastIndexOf("@") + 1).toLowerCase();
-		return domain === "" ? undefined : domain.replace(/\.$/, "");
-	}
-
-	return linkHost(link);
+	return x.endsWith("." + y) || y.endsWith("." + x) ? "near" : "other";
 }
 
 /**
@@ -74,48 +60,80 @@ function addressHost(link: string): string | undefined {
  * site: a schemeless `setup.py`, `readme.md` or `main.rs` in a label is a file
  * name, not a claim about where the link goes. Kept short on purpose: every
  * entry is a TLD a phishing label could hide behind (`notion.so`,
- * `claude.ai`, `allegro.pl`, `.zip` still warn).
+ * `claude.ai`, `allegro.pl`, `.zip` still warn), and a word with a path after
+ * it (`docs.rs/serde`) is always an address.
  */
 const FILE_TLDS = new Set(["md", "py", "rs"]);
+const TLDS = new Set<string>(tlds);
 
-/** `shown` is a schemeless word ending in a source-file extension. */
-function isFileName(shown: string, shownHost: string): boolean {
-	if (/^[a-z][a-z0-9+.-]*:/i.test(shown) || /^www\./i.test(shown) || shown.includes("@")) {
-		return false;
-	}
+/**
+ * Characters that change what the linkifier sees but not what the reader
+ * does: the invisible ones (zero-width spaces and joiners, soft hyphens,
+ * variation selectors, bidi marks and overrides) and the ideographic full
+ * stops that read as a dot. NFKC folds the fullwidth and leader dots.
+ */
+const IGNORABLE =
+	/[\p{Default_Ignorable_Code_Point}\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu;
+const IDEOGRAPHIC_DOTS = /[\u3002\uFF61]/g;
 
-	return FILE_TLDS.has(shownHost.slice(shownHost.lastIndexOf(".") + 1));
+/** The label as a reader sees it, for judging: folded, the invisible gone. */
+function readable(label: string): string {
+	return label.normalize("NFKC").replace(IGNORABLE, "").replace(IDEOGRAPHIC_DOTS, ".");
 }
 
-export function judgeLink(label: string, href: string): LinkVerdict {
-	const host = linkHost(href);
+/**
+ * A host-shaped word in the label: an optional scheme, an optional userinfo
+ * (`support@`, or `paypal.com@` in front of the real host, as URL reads it),
+ * then labels of letters, digits and hyphens joined by dots.
+ */
+const HOST_WORD =
+	/(?:([a-z][a-z0-9+.-]*):\/\/)?(?:([^\s@/]+)@)?((?:[\p{L}\p{N}](?:[\p{L}\p{N}-]*[\p{L}\p{N}])?\.)+[\p{L}\p{N}](?:[\p{L}\p{N}-]*[\p{L}\p{N}])?)/giu;
 
-	if (host === undefined) {
+export function judgeLink(label: string, href: string): LinkVerdict {
+	const host = urlHost(href);
+
+	if (host === null) {
 		return {kind: "masked", host: href};
 	}
 
+	const text = readable(label);
 	let named = false;
-	let parent = false;
+	let near = false;
 
-	for (const part of findLinks(label)) {
-		const shown = label.slice(part.start, part.end);
-		const shownHost = addressHost(part.link);
+	for (const match of text.matchAll(HOST_WORD)) {
+		const [shown, scheme, userinfo, word] = match;
+		const tld = word.slice(word.lastIndexOf(".") + 1).toLowerCase();
+		// A word names a site when it ends in a real TLD, or carries a letter
+		// outside ASCII (a lookalike: `paypal.cоm` with a Cyrillic о).
+		const foreign = /[^\x00-\x7f]/.test(word);
 
-		if (shownHost === undefined || isFileName(shown, shownHost)) {
+		if (!TLDS.has(tld) && !foreign) {
+			continue;
+		}
+
+		const followedByPath = text[(match.index ?? 0) + shown.length] === "/";
+
+		if (
+			!scheme &&
+			!userinfo &&
+			!followedByPath &&
+			!/^www\./i.test(word) &&
+			FILE_TLDS.has(tld)
+		) {
 			continue;
 		}
 
 		named = true;
-		const how = relation(shownHost, host);
+		const how = relation(urlHost(`http://${word}`) ?? word.toLowerCase(), host);
 
 		if (how === "other") {
 			return {kind: "mismatch", host, shown};
 		}
 
-		parent ||= how === "parent";
+		near ||= how === "near";
 	}
 
-	if (parent || (!named && label.trim() !== href.trim())) {
+	if (near || (!named && label.trim() !== href.trim())) {
 		return {kind: "masked", host};
 	}
 

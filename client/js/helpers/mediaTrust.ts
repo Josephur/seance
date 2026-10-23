@@ -20,7 +20,7 @@
 
 import {reactive} from "vue";
 import storage from "../localStorage";
-import {urlHost} from "./urlHost";
+import {normalizeHost, urlHost} from "./urlHost";
 
 export const STORAGE_KEY = "thelounge.media.trusted";
 
@@ -130,10 +130,8 @@ function persist(): void {
 	backend.set(STORAGE_KEY, JSON.stringify(lists));
 }
 
-/** Lower-case, no trailing dot: the form hosts are compared and stored in. */
-export function normalizeHost(host: string): string {
-	return host.trim().toLowerCase().replace(/\.+$/, "");
-}
+/** Lower-case, no trailing dot: the form hosts are compared and stored in (helpers/urlHost.ts). */
+export {normalizeHost};
 
 function normalizeKey(key: string): string {
 	return key.trim();

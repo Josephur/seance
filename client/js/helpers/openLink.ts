@@ -14,13 +14,18 @@ function openExternal(href: string): void {
 	a.click();
 }
 
-/** Ask before opening a link whose text (`shown`) names another address than it opens. */
-export function confirmMismatch(href: string, shown: string): void {
+/**
+ * Ask before opening a link whose text (`shown`) names another address than
+ * it opens. The dialog names the real host (punycode, no userinfo: what
+ * linkSafety.ts judged), never the raw href, whose userinfo or lookalike
+ * letters could make the warning itself read as safe.
+ */
+export function confirmMismatch(href: string, shown: string, host: string): void {
 	eventbus.emit(
 		"confirm-dialog",
 		{
 			title: "Check this link",
-			text: `The link text shows ${shown}, but it opens ${href}.`,
+			text: `The link text shows ${shown}, but it goes to ${host}.`,
 			button: "Open anyway",
 		},
 		(confirmed: boolean) => {

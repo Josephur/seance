@@ -1,12 +1,18 @@
 /**
- * The host a URL names, in the form hosts are compared in: lowercased, no
- * trailing dot; `null` when the URL does not parse or names no host. Shared
- * by the media trust lists (mediaTrust.ts) and the masked-link verdict
- * (linkSafety.ts). Vue-free and DOM-free.
+ * Hosts in the form they are compared and stored in: lowercased, no trailing
+ * dot. Shared by the media trust lists (mediaTrust.ts) and the masked-link
+ * verdict (linkSafety.ts). Vue-free and DOM-free.
  */
+
+/** Lowercase, no trailing dot. */
+export function normalizeHost(host: string): string {
+	return host.trim().toLowerCase().replace(/\.+$/, "");
+}
+
+/** The host a URL names, normalized; `null` when it does not parse or names none. */
 export function urlHost(url: string): string | null {
 	try {
-		const host = new URL(url).hostname.trim().toLowerCase().replace(/\.+$/, "");
+		const host = normalizeHost(new URL(url).hostname);
 		return host === "" ? null : host;
 	} catch {
 		return null;

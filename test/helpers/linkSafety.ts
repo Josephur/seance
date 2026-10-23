@@ -1,5 +1,5 @@
 import {expect} from "chai";
-import {judgeLink, linkHost} from "../../client/js/helpers/linkSafety";
+import {judgeLink} from "../../client/js/helpers/linkSafety";
 
 describe("linkSafety (masked markdown links)", function () {
 	describe("judgeLink", function () {
@@ -56,10 +56,53 @@ describe("linkSafety (masked markdown links)", function () {
 			});
 		});
 
-		it("lets a label naming a subdomain of the real host through", function () {
+		it("shows the host when the label names a subdomain of the real one", function () {
+			// A shared host (s3.amazonaws.com/attacker) is anyone's, so a label
+			// naming a site under it claims more than the link proves.
 			expect(judgeLink("login.paypal.com", "https://paypal.com/")).to.deep.equal({
-				kind: "honest",
+				kind: "masked",
+				host: "paypal.com",
 			});
+			expect(
+				judgeLink("paypal.s3.amazonaws.com", "https://s3.amazonaws.com/attacker")
+			).to.deep.equal({kind: "masked", host: "s3.amazonaws.com"});
+		});
+
+		it("is not fooled by invisible characters or emoji glued to the label's domain", function () {
+			for (const label of [
+				"paypal.com\u200b",
+				"paypal.com\u200c",
+				"paypal.com\u200e",
+				"paypal.com\u2060",
+				"paypal.com\u00ad",
+				"paypal.com🔒",
+				"www.paypal.com✅",
+				"pay\u200cpal.com",
+				"https://paypal.com\u200e/login",
+			]) {
+				expect(
+					judgeLink(label, "https://evil.example/login").kind,
+					JSON.stringify(label)
+				).to.equal("mismatch");
+			}
+		});
+
+		it("is not fooled by lookalike dots or letters in the label's domain", function () {
+			for (const label of [
+				"paypal\u2024com",
+				"paypal\uff0ecom",
+				"paypal\u3002com",
+				"paypal.c\u043em",
+			]) {
+				expect(
+					judgeLink(label, "https://evil.example/login").kind,
+					JSON.stringify(label)
+				).to.equal("mismatch");
+			}
+		});
+
+		it("never takes a word with a path for a file name", function () {
+			expect(judgeLink("docs.rs/serde", "https://evil.example/").kind).to.equal("mismatch");
 		});
 
 		it("calls a label that is the URL honest", function () {
@@ -143,16 +186,6 @@ describe("linkSafety (masked markdown links)", function () {
 
 		it("treats an href it cannot parse as masked, showing it whole", function () {
 			expect(judgeLink("x", "https://")).to.deep.equal({kind: "masked", host: "https://"});
-		});
-	});
-
-	describe("linkHost", function () {
-		it("lowercases and drops a trailing dot", function () {
-			expect(linkHost("https://Example.ORG./a")).to.equal("example.org");
-		});
-
-		it("returns undefined for something that is not a URL", function () {
-			expect(linkHost("not a url")).to.equal(undefined);
 		});
 	});
 });

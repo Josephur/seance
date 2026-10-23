@@ -109,6 +109,15 @@ export function layout(text: string, options: LayoutOptions = {}): LayoutNode[] 
 	}
 
 	const outsideMasked = (part: Part) => !masked.some((range) => anyIntersection(range, part));
+	// An emoji may sit inside a label, but never reach across its edge: a
+	// shortcode closed outside the brackets would pull outside text in.
+	const crossesMasked = (part: Part) =>
+		masked.some(
+			(range) =>
+				part.start < range.end &&
+				part.end > range.start &&
+				(part.start < range.start || part.end > range.end)
+		);
 
 	// On the plain text, find channels and URLs, returned as "parts". Parts are
 	// objects containing start and end markers, as well as metadata depending on
@@ -119,8 +128,12 @@ export function layout(text: string, options: LayoutOptions = {}): LayoutNode[] 
 		.filter(outsideVerbatim)
 		.filter(outsideMasked);
 	const linkParts = findLinks(cleanText).filter(outsideMasked);
-	const emojiParts = findEmoji(cleanText).filter(outsideVerbatim);
-	const shortcodeParts = findShortcode(cleanText).filter(outsideVerbatim);
+	const emojiParts = findEmoji(cleanText)
+		.filter(outsideVerbatim)
+		.filter((part) => !crossesMasked(part));
+	const shortcodeParts = findShortcode(cleanText)
+		.filter(outsideVerbatim)
+		.filter((part) => !crossesMasked(part));
 	const nameParts = findNames(cleanText, options.users ?? [])
 		.filter(outsideVerbatim)
 		.filter(outsideMasked);
@@ -184,6 +197,34 @@ export function toPlainText(nodes: LayoutNode[]): string {
 }
 
 type TextNode = Extract<LayoutNode, {kind: "text"}>;
+
+/** Text drawn in its own background colour: there, but not to be seen. */
+function hiddenByColour(style: Style): boolean {
+	const sameCode =
+		style.textColor !== undefined &&
+		style.bgColor !== undefined &&
+		Number(style.textColor) === Number(style.bgColor);
+	const sameHex =
+		style.hexColor !== undefined &&
+		style.hexBgColor !== undefined &&
+		style.hexColor.toLowerCase() === style.hexBgColor.toLowerCase();
+	return sameCode || sameHex;
+}
+
+/** The text a reader can see: a masked link is judged by it (helpers/linkSafety.ts). */
+function visibleText(nodes: LayoutNode[]): string {
+	let out = "";
+
+	for (const node of nodes) {
+		if (node.kind === "text") {
+			out += hiddenByColour(node.style) ? "" : node.text;
+		} else {
+			out += visibleText(node.children);
+		}
+	}
+
+	return out;
+}
 
 // A quote of the message (the reply quote under a message, the composer's
 // "Replying to" bar): one line of styled text nodes, at most `maxLength`
@@ -418,7 +459,7 @@ function wrapNode(key: WrapKey, wrap: Wrap, children: LayoutNode[]): LayoutNode 
 			kind: "wrap",
 			wrap: "href",
 			href: target,
-			verdict: judgeLink(toPlainText(children), target),
+			verdict: judgeLink(visibleText(children), target),
 			children,
 		};
 	}

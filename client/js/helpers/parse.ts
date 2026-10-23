@@ -162,7 +162,7 @@ function wrapNode(node: WrapNode, children: Rendered[], message?: ClientMessage)
 				verdict.kind === "mismatch"
 					? (ev: MouseEvent) => {
 							ev.preventDefault();
-							confirmMismatch(node.href, verdict.shown);
+							confirmMismatch(node.href, verdict.shown, verdict.host);
 					  }
 					: undefined;
 

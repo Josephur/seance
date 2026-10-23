@@ -80,19 +80,29 @@ tells it apart from a linkified anchor.
 **Masked links can lie, so they say where they go** (2026-10-22). The label is
 free text, so `[paypal.com](https://evil.example)` shows one address and opens
 another. `client/js/helpers/linkSafety.ts` `judgeLink(label, href)` compares
-hosts, never strings: the destination is `new URL(href).hostname`, which sees
-through userinfo (`https://bank.com@evil.example`) and shows an IDN host in
-punycode; the label's addresses are what the linkifier finds in it, and two
-hosts match when equal or one is a subdomain of the other, after one `www.`. An e-mail address in the label counts by its domain. A schemeless source-file name (`setup.py`, `readme.md`, `main.rs`: extensions that are also TLDs and rarely anyone's site) is not an address, so such a link shows its host without the warning; nothing else is exempt (a label matching the link's own path proves nothing: the attacker writes the path), so `notion.so`, `claude.ai` or `backup.zip` naming another site still warns. A label naming only a parent of the real host (`github.io` for attacker.github.io) shows the host, since a shared host is everyone's parent.
-`layout()` puts the verdict on the `href` node and `parse.ts` renders it:
+hosts, never strings. The destination is `new URL(href).hostname`, which sees
+through userinfo (`https://bank.com@evil.example`) and gives an IDN host in
+punycode. The label is first read as a reader sees it: NFKC, invisible
+characters and bidi marks removed, ideographic dots read as dots, and text
+drawn in its own background colour left out (`layout.ts` `visibleText`). Its
+addresses are the host-shaped words that end in a real TLD or carry a letter
+outside ASCII (a lookalike); an e-mail address counts by its domain. A
+schemeless source-file name (`setup.py`, `readme.md`, `main.rs`) is not an
+address unless a path follows it. `layout()` puts the verdict on the `href`
+node, finds no link, channel or nick inside the label and lets no emoji
+shortcode reach across its edge, and `parse.ts` renders it:
 
-- `honest` (the label is the URL, or URLs on the same host): unchanged;
-- `masked` (prose label): the real host follows the label, in
-  `<span class="md-link-host">` inside the anchor — a phone shows no title;
-- `mismatch` (the label names another address): the host in the error colour,
-  a warning glyph, and a click, Ctrl/Cmd-click or middle click raises the
-  confirm dialog ("Check this link"), whose Open anyway opens it
-  (`helpers/openLink.ts`).
+- `honest`: every address in the label is the destination's host (one
+  leading `www.` aside); rendered as before;
+- `masked`: a prose label, or one naming a parent or a subdomain of the real
+  host (`github.io` for attacker.github.io, `paypal.s3.amazonaws.com` for
+  s3.amazonaws.com: a shared host is anyone's): the real host follows the
+  label, in `<span class="md-link-host">` inside the anchor (a phone shows no
+  title);
+- `mismatch` (the label names another site): the host in the error colour, a
+  warning glyph, and a click, Ctrl/Cmd-click or middle click raises the
+  confirm dialog ("Check this link"), which names the real host, not the raw
+  href, and whose Open anyway opens it (`helpers/openLink.ts`).
 
 Limits: a long press's own menu, a right click's "Open in new tab" or a drag cannot be intercepted, so there the host after the label is the only warning; the label holds no link of its own (layout.ts finds no link, channel or nick inside an `href` wrap), so those menus name the real destination. Enter never reaches a chat link (`keybinds.ts` sends keys outside a field to the composer). Tests
 `test/helpers/linkSafety.ts`, `test/helpers/layout.ts`; browser check

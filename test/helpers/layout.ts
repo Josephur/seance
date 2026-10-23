@@ -8,7 +8,7 @@ import {
 	toPlainText,
 } from "../../client/js/helpers/ircmessageparser/layout";
 import {HeaderLevel} from "../../client/js/helpers/ircmessageparser/parseStyle";
-import {judgeLink} from "../../client/js/helpers/linkSafety";
+import type {LinkVerdict} from "../../client/js/helpers/linkSafety";
 
 // Builders, so the assertions read as the tree they describe.
 const text = (value: string, style: Style = {}): LayoutNode => ({
@@ -35,11 +35,11 @@ const codeBlock = (children: LayoutNode[], lang?: string, file?: string): Layout
 
 const spoiler = (children: LayoutNode[]): LayoutNode => ({kind: "wrap", wrap: "spoiler", children});
 
-const href = (url: string, children: LayoutNode[]): LayoutNode => ({
+const href = (url: string, children: LayoutNode[], verdict: LinkVerdict): LayoutNode => ({
 	kind: "wrap",
 	wrap: "href",
 	href: url,
-	verdict: judgeLink(toPlainText(children), url),
+	verdict,
 	children,
 });
 
@@ -136,7 +136,7 @@ describe("layout — wraps", () => {
 
 	it("wraps a masked link around its children", () => {
 		expect(layout("[c](https://example.com/)", markdown)).to.deep.equal([
-			href("https://example.com/", [text("c")]),
+			href("https://example.com/", [text("c")], {kind: "masked", host: "example.com"}),
 		]);
 	});
 
@@ -157,6 +157,25 @@ describe("layout — wraps", () => {
 	it("still finds links outside a masked link", () => {
 		const nodes = layout("see https://x.org and [docs](https://example.org)", {markdown: true});
 		expect(nodes.some((n) => n.kind === "link")).to.equal(true);
+	});
+
+	it("judges a label by what can be seen, not by text hidden in its own colours", () => {
+		const [node] = layout(
+			"[paypal.com\u200B \x0301,01evil.com\x03](https://evil.com/)",
+			markdown
+		);
+		expect(node.kind === "wrap" && node.wrap === "href" && node.verdict.kind).to.equal(
+			"mismatch"
+		);
+	});
+
+	it("keeps an emoji shortcode from reaching across a label's edge", () => {
+		const nodes = layout("[paypal.com:](https://evil.example/login)lock: verify now", markdown);
+		const node = nodes[0];
+		expect(node.kind === "wrap" && node.wrap === "href" && node.verdict.kind).to.equal(
+			"mismatch"
+		);
+		expect(toPlainText([node])).to.equal("paypal.com:");
 	});
 
 	it("judges a masked link by its visible text", () => {

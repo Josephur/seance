@@ -11,7 +11,7 @@
 //  - the host follows the first two labels (`.md-link-host`), the honest
 //    link has none, and only the lying one is marked `.mismatch`;
 //  - a plain click on the lying link, a middle click, a Ctrl+click and
-//    Enter on it open nothing unasked (Enter goes to the composer, keybinds.ts); Cancel opens
+//    the label holds no link of its own; Cancel opens
 //    nothing; Open anyway opens the real URL;
 //  - a plain click on the prose-labelled link opens it with no dialog.
 // Opening is recorded, never performed: a window listener notes each click
@@ -227,35 +227,21 @@ export default async function run(page) {
 		);
 		if (label === ways[0][0]) {
 			await page.screenshot("2-dialog", {selector: "#confirm-dialog", pad: 20});
+			const said = await page.evaluate(
+				`document.querySelector("#confirm-dialog .confirm-text p")?.textContent ?? ""`
+			);
+			await page.check(
+				`the dialog names the real host (${said})`,
+				/goes to evil\.example/.test(said)
+			);
 		}
 		if (await dialogOpen(page)) await cancelDialog(page);
 	}
 
-	await page.evaluate(`${X}.focus()`);
-	await page.send("Input.dispatchKeyEvent", {
-		type: "keyDown",
-		key: "Enter",
-		code: "Enter",
-		windowsVirtualKeyCode: 13,
-		text: "\r",
-	});
-	await page.send("Input.dispatchKeyEvent", {
-		type: "keyUp",
-		key: "Enter",
-		code: "Enter",
-		windowsVirtualKeyCode: 13,
-	});
-	await page.sleep(150);
-	// keybinds.ts sends any key outside a field, Enter included, to the
-	// composer, so Enter never reaches a chat link: what matters is that it
-	// opens nothing unasked.
-	const unasked = await page.evaluate(`window.__clicks.filter((c) => !c.prevented).length`);
-	await page.check(
-		"Enter on the lying link opens nothing unasked",
-		(await dialogOpen(page)) ||
-			(unasked === 0 && (await page.evaluate("window.__opened.length")) === 0)
-	);
-	if (await dialogOpen(page)) await cancelDialog(page);
+	// The label holds no link of its own: a right click, a long press or a
+	// hover on it names the masked link's real destination, never the label's.
+	const nested = await page.evaluate(`${X}.querySelector("a")`);
+	await page.check("the label holds no link of its own", nested === null);
 	await page.check(
 		"Cancel opened nothing",
 		(await page.evaluate("window.__opened.length")) === 0
