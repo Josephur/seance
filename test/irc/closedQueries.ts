@@ -91,6 +91,15 @@ describe("closed queries (irc/closedQueries.ts)", function () {
 			expect(queryJoins(h, "bob")).to.deep.equal([]);
 		});
 
+		it("a replayed line in a batch keeps it closed, past the settling window too", function () {
+			const h = closedQuery();
+			clock.tick(RESTORE_MAX_WAIT_MS);
+			h.transport.line(":irc.test BATCH +r1 example.org/replay");
+			h.transport.line(`@batch=r1;time=${T0};msgid=p0 :bob!bob@host PRIVMSG alice :hi`);
+			h.transport.line(":irc.test BATCH -r1");
+			expect(queryJoins(h, "bob")).to.deep.equal([]);
+		});
+
 		it("a live line opens it whatever its time, and a reload keeps it open", function () {
 			// bob's server stamps his reply before our last line (it crossed
 			// ours, or his clock is behind); it arrives after the close.
