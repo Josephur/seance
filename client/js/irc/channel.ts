@@ -106,6 +106,18 @@ export class Channel {
 	readonly idByMsgid = new Map<string, number>();
 	/** The newest message we have seen; a reconnect asks for history AFTER it. */
 	newestRef: MsgRef | undefined = undefined;
+	/**
+	 * A query opened by a line or a restored log rather than by the user, and
+	 * not yet opened, read or written in: a close another device or tab made
+	 * may still take it away (irc/closedQueries.ts applyClosed).
+	 */
+	autoOpened = false;
+	/**
+	 * Unix ms of the newest line the server sent here (one with a msgid): a
+	 * close's boundary (irc/closedQueries.ts). Lines this device made carry its
+	 * clock, so they never move it.
+	 */
+	newestServerAt: number | undefined = undefined;
 	/** History has been requested at least once (so `newestRef` is a valid catch-up reference). */
 	historyRequested = false;
 	/**
@@ -190,6 +202,7 @@ export class Channel {
 		if (msg.msgid) {
 			ref.msgid = msg.msgid;
 			this.idByMsgid.set(msg.msgid, msg.id);
+			this.newestServerAt = Math.max(this.newestServerAt ?? 0, ref.time.getTime());
 		}
 
 		if (msg.type === MessageType.MESSAGE || msg.type === MessageType.ACTION) {

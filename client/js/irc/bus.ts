@@ -136,13 +136,17 @@ export function registerBusHandlers(bus: EventBus, registry: ClientRegistry): vo
 	});
 
 	// Account metadata writes for webpush settings (the payload tier; the
-	// mute list is pushMute.ts's, written private). SET with an empty value
-	// deletes the key.
+	// mute list is pushMute.ts's). Written private: a public key is listed in
+	// everyone's WHOIS of us (nefarious2 m_whois.c), which told the world we
+	// are subscribed to push. The server reads the tier whatever its
+	// visibility. SET with an empty value deletes the key.
 	bus.handle("webpush:metadata", ({network, key, value}) => {
 		const client = registry.clientForNetwork(network);
 
 		if (client) {
-			client.send(value ? `METADATA * SET ${key} * :${value}` : `METADATA * SET ${key}`);
+			client.send(
+				value ? `METADATA * SET ${key} private :${value}` : `METADATA * SET ${key}`
+			);
 		}
 	});
 

@@ -1,4 +1,6 @@
 import {findLinks} from "../../../../shared/linkify";
+import {judgeLink, type LinkVerdict} from "../linkSafety";
+import {colourReading} from "./colours";
 import anyIntersection from "./anyIntersection";
 import findChannels from "./findChannels";
 import findEmoji from "./findEmoji";
@@ -50,7 +52,9 @@ export type LayoutNode =
 	// `table` is one alignment letter (`l`, `r`, `c`) per column, the
 	// separator row's word on how each column sits
 	| {kind: "wrap"; wrap: "table"; table: string; children: LayoutNode[]}
-	| {kind: "wrap"; wrap: "href"; href: string; children: LayoutNode[]};
+	// A masked link; `verdict` compares its visible text with where it goes
+	// (helpers/linkSafety.ts): parse.ts shows the host or asks before opening
+	| {kind: "wrap"; wrap: "href"; href: string; verdict: LinkVerdict; children: LayoutNode[]};
 
 // Flags that wrap a run of neighbouring nodes in one element, outermost first:
 // a header sits inside the quote it was written in, never the other way round.
@@ -69,7 +73,12 @@ type WrapKey = typeof WRAP_KEYS[number];
 // `lang` is not a wrap of its own: it qualifies `codeBlock`, so that two
 // blocks in different languages never end up under one element. A header's
 // value is its level, so two levels never end up under one element either.
-type Wrap = Partial<Record<WrapKey, boolean | string | number>> & {lang?: string; file?: string};
+// `verdict` rides along on an href: the whole link's, judged once.
+type Wrap = Partial<Record<WrapKey, boolean | string | number>> & {
+	lang?: string;
+	file?: string;
+	verdict?: LinkVerdict;
+};
 // A part, or one run of a part's text, and the wraps it sits in
 type WrappedNodes = {nodes: LayoutNode[]; wrap: Wrap};
 
@@ -90,18 +99,50 @@ export function layout(text: string, options: LayoutOptions = {}): LayoutNode[] 
 	// Nicks, channels and emoji are not looked up inside code
 	const outsideVerbatim = (part: Part) => !verbatim.some((range) => anyIntersection(range, part));
 
+	// Nor links, channels or nicks inside a masked link's label: an anchor
+	// nested in its anchor would open the label's own address on a click,
+	// and on a hover or long press show it, not where the link goes
+	// (helpers/linkSafety.ts judges the label as text).
+	const masked: Range[] = [];
+	let offset = 0;
+
+	for (const fragment of fragments) {
+		if (fragment.href !== undefined) {
+			masked.push({start: offset, end: offset + fragment.text.length});
+		}
+
+		offset += fragment.text.length;
+	}
+
+	const outsideMasked = (part: Part) => !masked.some((range) => anyIntersection(range, part));
+	// An emoji may sit inside a label, but never reach across its edge: a
+	// shortcode closed outside the brackets would pull outside text in.
+	const crossesMasked = (part: Part) =>
+		masked.some(
+			(range) =>
+				part.start < range.end &&
+				part.end > range.start &&
+				(part.start < range.start || part.end > range.end)
+		);
+
 	// On the plain text, find channels and URLs, returned as "parts". Parts are
 	// objects containing start and end markers, as well as metadata depending on
 	// what was found (channel or link).
 	const channelPrefixes = options.channelPrefixes ?? ["#", "&"];
 	const userModes = options.userModes ?? ["!", "@", "%", "+"];
-	const channelParts = findChannels(cleanText, channelPrefixes, userModes).filter(
-		outsideVerbatim
-	);
-	const linkParts = findLinks(cleanText);
-	const emojiParts = findEmoji(cleanText).filter(outsideVerbatim);
-	const shortcodeParts = findShortcode(cleanText).filter(outsideVerbatim);
-	const nameParts = findNames(cleanText, options.users ?? []).filter(outsideVerbatim);
+	const channelParts = findChannels(cleanText, channelPrefixes, userModes)
+		.filter(outsideVerbatim)
+		.filter(outsideMasked);
+	const linkParts = findLinks(cleanText).filter(outsideMasked);
+	const emojiParts = findEmoji(cleanText)
+		.filter(outsideVerbatim)
+		.filter((part) => !crossesMasked(part));
+	const shortcodeParts = findShortcode(cleanText)
+		.filter(outsideVerbatim)
+		.filter((part) => !crossesMasked(part));
+	const nameParts = findNames(cleanText, options.users ?? [])
+		.filter(outsideVerbatim)
+		.filter(outsideMasked);
 
 	const parts = (channelParts as MergedParts)
 		.concat(linkParts)
@@ -145,6 +186,8 @@ export function layout(text: string, options: LayoutOptions = {}): LayoutNode[] 
 		wrapped.push({nodes: run, wrap: runWrap});
 	}
 
+	judgeLinks(wrapped);
+
 	return options.markdown
 		? groupNodes(wrapped)
 		: wrapped.flatMap((wrappedNodes) => wrappedNodes.nodes);
@@ -162,6 +205,79 @@ export function toPlainText(nodes: LayoutNode[]): string {
 }
 
 type TextNode = Extract<LayoutNode, {kind: "text"}>;
+
+/**
+ * A masked link's label as a reader may see it (`seen`: everything but text
+ * drawn too faint to read) and as a reader surely sees it (`sure`: only text
+ * in the theme's colours or in a readable pair the sender set — a single
+ * colour may vanish into a theme's background).
+ */
+function labelText(nodes: LayoutNode[], out = {seen: "", sure: ""}) {
+	for (const node of nodes) {
+		if (node.kind !== "text") {
+			labelText(node.children, out);
+			continue;
+		}
+
+		const reading = colourReading(node.style);
+
+		if (reading !== "hidden") {
+			out.seen += node.text;
+		}
+
+		if (reading === "plain" || reading === "readable") {
+			out.sure += node.text;
+		}
+	}
+
+	return out;
+}
+
+/**
+ * A label naming another site in anything a reader may see is a mismatch;
+ * it is honest only when what a reader surely sees is.
+ */
+function judgeLabel(nodes: LayoutNode[], href: string): LinkVerdict {
+	const {seen, sure} = labelText(nodes);
+	const verdict = judgeLink(seen, href);
+
+	if (verdict.kind !== "honest" || sure === seen) {
+		return verdict;
+	}
+
+	const surely = judgeLink(sure, href);
+	return surely.kind === "honest" ? verdict : surely;
+}
+
+/**
+ * One verdict per link, whatever splits its label (a spoiler, a header):
+ * the neighbouring runs that share an href are one label.
+ */
+function judgeLinks(wrapped: WrappedNodes[]): void {
+	let i = 0;
+
+	while (i < wrapped.length) {
+		const href = wrapped[i].wrap.href;
+		let j = i + 1;
+
+		while (href && j < wrapped.length && wrapped[j].wrap.href === href) {
+			j += 1;
+		}
+
+		if (href) {
+			const verdict = judgeLabel(
+				wrapped.slice(i, j).flatMap((item) => item.nodes),
+				String(href)
+			);
+
+			for (const item of wrapped.slice(i, j)) {
+				item.wrap.verdict = verdict;
+			}
+		}
+
+		i = j;
+	}
+}
 
 // A quote of the message (the reply quote under a message, the composer's
 // "Replying to" bar): one line of styled text nodes, at most `maxLength`
@@ -391,7 +507,14 @@ function sameWrap(a: Wrap, b: Wrap) {
 
 function wrapNode(key: WrapKey, wrap: Wrap, children: LayoutNode[]): LayoutNode {
 	if (key === "href") {
-		return {kind: "wrap", wrap: "href", href: String(wrap.href), children};
+		const target = String(wrap.href);
+		return {
+			kind: "wrap",
+			wrap: "href",
+			href: target,
+			verdict: wrap.verdict ?? judgeLabel(children, target),
+			children,
+		};
 	}
 
 	if (key === "header") {

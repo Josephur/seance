@@ -20,6 +20,7 @@
 
 import {reactive} from "vue";
 import storage from "../localStorage";
+import {normalizeHost, urlHost} from "./urlHost";
 
 export const STORAGE_KEY = "thelounge.media.trusted";
 
@@ -129,11 +130,6 @@ function persist(): void {
 	backend.set(STORAGE_KEY, JSON.stringify(lists));
 }
 
-/** Lower-case, no trailing dot: the form hosts are compared and stored in. */
-export function normalizeHost(host: string): string {
-	return host.trim().toLowerCase().replace(/\.+$/, "");
-}
-
 function normalizeKey(key: string): string {
 	return key.trim();
 }
@@ -167,12 +163,7 @@ export function splitKey(key: string): {network: string; name: string} {
 
 /** The host a preview loads from (`i.imgur.com`), or `null` for a bad URL. */
 export function mediaHost(link: string): string | null {
-	try {
-		const host = new URL(link).hostname;
-		return host ? normalizeHost(host) : null;
-	} catch {
-		return null;
-	}
+	return urlHost(link);
 }
 
 /** The file name part of a media URL, decoded, for the placeholder card. */

@@ -75,7 +75,50 @@ link, monospace block — is defined in `CONTEXT.md`; use those words.
   window-title `title` attribute.
 
 A masked link is an `<a class="md-link" title="<url>">`; the class is what
-tells it apart from a linkified anchor. CSS for the wrapped elements
+tells it apart from a linkified anchor.
+
+**Masked links can lie, so they say where they go** (2026-10-22). The label is
+free text, so `[paypal.com](https://evil.example)` shows one address and opens
+another. `client/js/helpers/linkSafety.ts` `judgeLink(label, href)` compares
+hosts, never strings. The destination is `new URL(href).hostname`, which sees
+through userinfo (`https://bank.com@evil.example`) and gives an IDN host in
+punycode. The label is first read as a reader sees it: NFKC, invisible
+characters, spaces too thin to notice and bidi marks removed, ideographic dots
+read as dots. Its addresses are the host-shaped words (combining marks are part
+of their letters) that end in a real TLD, carry a letter outside ASCII (a
+lookalike) or are an IPv4 address; an e-mail address counts by its domain. A
+schemeless word with no path after it is a name, not an address, when it is a
+source-file name (`setup.py`, `readme.md`, `main.rs`, `install.sh`) or its TLD
+is written all in capitals (`ASP.NET`, `Socket.IO`): the real host still shows,
+without the dialog. A word only starts where a word does and the scheme and
+userinfo are bounded, so a 16 KB label is one pass. Colour decides what counts
+(`layout.ts` `judgeLabel`, `ircmessageparser/colours.ts`): text whose
+foreground and background contrast under 2:1 (style.css's palette, or the hex
+the sender set) is not seen, so it can neither lie nor vouch; a label naming
+another site in anything a reader may see is a mismatch, and it is honest only
+when what a reader surely sees is — text in the theme's colours or in a
+readable pair, never text in one colour, which may vanish into a theme's
+background. A link a spoiler or another wrap splits is judged once, whole.
+`layout()` puts the verdict on every `href` node of the link, finds no link,
+channel or nick inside the label and lets no emoji shortcode reach across its
+edge, and `parse.ts` renders it:
+
+- `honest`: every address in the label is the destination's host (one
+  leading `www.` aside); rendered as before;
+- `masked`: a prose label, or one naming a parent or a subdomain of the real
+  host (`github.io` for attacker.github.io, `paypal.s3.amazonaws.com` for
+  s3.amazonaws.com: a shared host is anyone's): the real host follows the
+  label, in `<span class="md-link-host">` inside the anchor (a phone shows no
+  title);
+- `mismatch` (the label names another site): the host in the error colour, a
+  warning glyph, and a click, Ctrl/Cmd-click or middle click raises the
+  confirm dialog ("Check this link"), which names the real host, not the raw
+  href, and whose Open anyway opens it (`helpers/openLink.ts`).
+
+Limits: a long press's own menu, a right click's "Open in new tab" or a drag cannot be intercepted, so there the host after the label is the only warning; the label holds no link of its own (layout.ts finds no link, channel or nick inside an `href` wrap), so those menus name the real destination. Enter never reaches a chat link (`keybinds.ts` sends keys outside a field to the composer). Tests
+`test/helpers/linkSafety.ts`, `test/helpers/layout.ts`; browser check
+`tools/scenarios/masked-links.mjs` (also `--mobile --width=390 --height=844`,
+and `SEANCE_THEME=ps`). CSS for the wrapped elements
 (`.md-quote`, `.md-header`/`.md-h1`…`.md-h6`, `.md-code-block`,
 `.md-code-toggle`, `.md-spoiler`/`.md-spoiler-shown`) lives in
 `client/css/style.css`, after `.irc-italic`. The channel header's topic is one

@@ -28,6 +28,7 @@ import error from "./error";
 import invite from "./invite";
 import join from "./join";
 import kick from "./kick";
+import kill from "./kill";
 import list from "./list";
 import lists from "./lists";
 import markread from "./markread";
@@ -61,6 +62,7 @@ const modules: Record<string, Handler>[] = [
 	invite,
 	join,
 	kick,
+	kill,
 	list,
 	lists,
 	markread,

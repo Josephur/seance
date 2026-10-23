@@ -5,6 +5,7 @@
 // set of muted targets is remembered locally by network uuid + channel name.
 
 import storage from "./localStorage";
+import {mirrorPushPrefs} from "./push-prefs";
 import {store} from "./store";
 import {ClientNetwork} from "./types";
 import {ChanType} from "../../shared/types/chan";
@@ -23,7 +24,12 @@ function readMuted(): Set<string> {
 
 function writeMuted(muted: Set<string>): void {
 	storage.set(KEY, JSON.stringify(Array.from(muted)));
+	void mirrorPushPrefs({muted: Array.from(muted)});
 }
+
+// The push worker cannot read localStorage: it shows a muted conversation's
+// push quietly under WebKit from this copy (service-worker.js showMessage).
+void mirrorPushPrefs({muted: Array.from(readMuted())});
 
 function mutedKey(networkUuid: string, channelName: string): string {
 	return `${networkUuid}/${channelName.toLowerCase()}`;
