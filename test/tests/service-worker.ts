@@ -351,7 +351,7 @@ interface HarnessOptions {
 	 * (bug 309940). */
 	refuseYoungClose?: boolean;
 	/** Hold every `indexedDB.open` until this settles: storage that is slow,
-	 * not stalled. */
+	 * not stalled (or, if it rejects, that fails once it answers). */
 	idbGate?: Promise<void>;
 }
 
@@ -472,7 +472,14 @@ function makeSW(options: HarnessOptions = {}): SWHarness {
 					return req; // neither onsuccess nor onerror, ever
 				}
 
-				void (options.idbGate ?? Promise.resolve()).then(() => {
+				const gate = options.idbGate ?? Promise.resolve();
+
+				// A gate that rejects is storage that stalled, then failed.
+				gate.catch(() => {
+					(req as {error?: Error}).error = new Error("connection lost");
+					req.onerror?.();
+				});
+				void gate.then(() => {
 					req.result = {
 						transaction() {
 							// The worker awaits the TRANSACTION's oncomplete
@@ -1174,11 +1181,13 @@ describe("service worker push notifications under WebKit (every push shows)", fu
 
 		firePushUnawaited(sw, msgPayload("alice", "pushtest", "hello there"));
 
-		// 20 s, a hundred times faster: shown under the conversation's own
-		// tag, so the real notification, if it comes, replaces it.
+		// 20 s, a hundred times faster: silent, under a tag of its own, so
+		// it can never overwrite the real notification should that land.
 		await new Promise((r) => setTimeout(r, 350));
 		expect(sw.shown).to.have.lengthOf(1);
-		expect(sw.shown[0].tag).to.equal("push-net-1/alice");
+		expect(sw.shown[0].tag).to.equal("push-net-1/fallback/alice");
+		expect(sw.shown[0].silent).to.equal(true);
+		expect(sw.shown[0].title).to.equal("Seance");
 		expect(sw.shown[0].body).to.not.include("hello there");
 	});
 
@@ -1250,8 +1259,8 @@ describe("service worker push notifications under WebKit (every push shows)", fu
 
 		await new Promise((r) => setTimeout(r, 350));
 		expect(sw.shown.map((n) => n.tag).sort()).to.deep.equal([
-			"push-net-1/alice",
-			"push-net-1/bob",
+			"push-net-1/fallback/alice",
+			"push-net-1/fallback/bob",
 		]);
 		expect(sw.shown.every((n) => !n.body.includes("one") && !n.body.includes("two"))).to.equal(
 			true
@@ -1265,11 +1274,115 @@ describe("service worker push notifications under WebKit (every push shows)", fu
 		const done = firePush(sw, msgPayload("alice", "pushtest", "hello"));
 
 		await new Promise((r) => setTimeout(r, 250)); // 25 s, a hundred times faster
+		expect(sw.shown, "the fallback went up").to.have.lengthOf(1);
 		release();
 		await done;
 
+		expect(sw.shown).to.have.lengthOf(2);
 		const live = sw.records.filter((n) => !n.closed);
 		expect(live.map((n) => n.body)).to.deep.equal(["hello"]);
+	});
+
+	it("a store that stalls past the deadline and then fails alerts nobody twice", async function () {
+		let fail!: () => void;
+		const gate = new Promise<void>((resolve, reject) => (fail = () => reject(new Error("x"))));
+		const sw = makeSW({
+			userAgent: IOS_UA,
+			fastTimers: true,
+			idbGate: gate,
+			scope: SCOPE + "push/net-1/",
+		});
+		const done = firePush(sw, msgPayload("alice", "pushtest", "hello")).catch(() => undefined);
+
+		await new Promise((r) => setTimeout(r, 250));
+		fail();
+		await done;
+
+		expect(sw.shown).to.have.lengthOf(1);
+		expect(sw.shown.filter((n) => !n.silent)).to.deep.equal([]);
+	});
+
+	it("a muted push on a slow store leaves only a quiet stub, which goes", async function () {
+		let release!: () => void;
+		const gate = new Promise<void>((r) => (release = r));
+		const sw = makeSW({
+			userAgent: IOS_UA,
+			fastTimers: true,
+			idbGate: gate,
+			scope: SCOPE + "push/net-1/",
+		});
+
+		sw.kv.set("prefs", {muted: ["net-1/#help"]});
+		const done = firePush(sw, msgPayload("alice", "#help", "pushtest: secret", "m-slow"));
+		await new Promise((r) => setTimeout(r, 250));
+		release();
+		await done;
+
+		expect(
+			sw.shown.filter((n) => !n.silent),
+			"nothing alerted"
+		).to.deep.equal([]);
+		await new Promise((r) => setTimeout(r, 450)); // past 31 s
+		expect(sw.records.filter((n) => !n.closed)).to.deep.equal([]);
+	});
+
+	it("a stalled read relay's stub closes itself", async function () {
+		const sw = makeSW({
+			userAgent: IOS_UA,
+			fastTimers: true,
+			hangIndexedDB: true,
+			scope: SCOPE + "push/net-1/",
+		});
+
+		firePushUnawaited(sw, `{"t":"read","target":"alice"}`);
+		await new Promise((r) => setTimeout(r, 250));
+		expect(sw.shown).to.have.lengthOf(1);
+		expect(sw.shown[0].data.kind).to.equal("read");
+		await new Promise((r) => setTimeout(r, 450));
+		expect(sw.shown[0].closed).to.equal(true);
+	});
+
+	it("merges a notification an older worker showed without the network, and closes it", async function () {
+		const sw = makeSW({userAgent: IOS_UA, scope: SCOPE + "push/net-1/"});
+
+		await sw.sandbox.registration.showNotification("alice", {
+			tag: "push-alice",
+			body: "earlier",
+			data: {
+				kind: "push",
+				count: 1,
+				target: "alice",
+				messages: [{from: "alice", text: "earlier", msgid: "m-old"}],
+			},
+		});
+		await firePush(sw, msgPayload("alice", "pushtest", "later", "m-new"));
+
+		const live = sw.records.filter((n) => !n.closed);
+		expect(live.map((n) => n.tag)).to.deep.equal(["push-net-1/alice"]);
+		expect(live[0].data.count).to.equal(2);
+		expect(live[0].body).to.include("earlier");
+	});
+
+	it("matches a muted conversation under IRC's case folding", async function () {
+		const sw = makeSW({userAgent: IOS_UA});
+
+		sw.kv.set("prefs", {muted: ["net-1/nick{x}"]});
+		await firePush(sw, msgPayload("Nick[x]", "pushtest", "secret", "m-fold"));
+
+		expect(sw.shown).to.have.lengthOf(1);
+		expect(sw.shown[0].silent).to.equal(true);
+		expect(sw.shown[0].body).to.not.include("secret");
+	});
+
+	it("shows a muted conversation quietly on Chrome too", async function () {
+		const sw = makeSW({userAgent: CHROME_UA});
+
+		sw.kv.set("prefs", {muted: ["net-1/#help"]});
+		await firePush(sw, msgPayload("alice", "#help", "pushtest: secret", "m-chrome"));
+
+		expect(sw.shown).to.have.lengthOf(1);
+		expect(sw.shown[0].silent).to.equal(true);
+		expect(sw.shown[0].body).to.not.include("secret");
 	});
 
 	it("a read relay spelled in another case still replaces the message, even when WebKit refuses the close", async function () {

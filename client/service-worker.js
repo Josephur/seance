@@ -22,6 +22,10 @@
 // reopen the app.
 
 const cacheName = "__HASH__";
+// The deploy's name (config.json `appName`), written in at build time like
+// the hash; a worker run from source (the test harness) says "Seance".
+const STAMPED_APP_NAME = "__APP_NAME__";
+const appName = STAMPED_APP_NAME.startsWith("__") ? "Seance" : STAMPED_APP_NAME;
 const isDevBuild = cacheName === "dev";
 
 // The push module (client/js/push/*, built to js/push.js): the line parser,
@@ -1125,7 +1129,7 @@ self.addEventListener("push", function (event) {
  * made of it, and what a strict push event shows when its handler has not
  * shown anything in time. */
 function showGeneric(tag = "push-activity", target = undefined) {
-	return showSafely("Seance", {
+	return showSafely(appName, {
 		tag,
 		icon: "img/icon-192.png",
 		body: "New activity while you were away.",
@@ -1140,6 +1144,9 @@ function showGeneric(tag = "push-activity", target = undefined) {
 // each other's line, leaving `…` placeholders. Pushes are therefore handled
 // one at a time, in arrival order; a failed one never blocks the next.
 let pushChain = Promise.resolve();
+/** The strict push the queue is running (handlePush): showSafely marks it
+ * shown, so its deadline knows it has answered WebKit. */
+let activePush = null;
 
 function handlePush(raw) {
 	if (!strictUserVisible()) {
@@ -1150,15 +1157,26 @@ function handlePush(raw) {
 	// deadline is timed from here, ahead of the queue — a push waiting
 	// behind a stalled one is just as silent. Each push has its own: one
 	// push's show does not answer for another's.
-	let settled = false;
+	const state = {settled: false, shown: false, fellBack: false};
 	let deadline = null;
-	const run = enqueuePush(() => handlePushNow(raw)).finally(() => {
-		settled = true;
+	const run = enqueuePush(async () => {
+		activePush = state;
+
+		try {
+			return await handlePushNow(raw, state);
+		} finally {
+			activePush = null;
+		}
+	}).finally(() => {
+		state.settled = true;
 		clearTimeout(deadline);
 	});
 
+	// Only a push that has shown nothing yet: one stuck after its show (on
+	// the badge's store, say) has answered WebKit already.
 	deadline = setTimeout(() => {
-		if (!settled) {
+		if (!state.settled && !state.shown) {
+			state.fellBack = true;
 			void showFallback(raw);
 		}
 	}, STRICT_SHOW_DEADLINE_MS);
@@ -1199,18 +1217,25 @@ function pushTarget(raw) {
 	}
 
 	if (parsed.command === "PRIVMSG" || parsed.command === "NOTICE") {
-		return {target: isChannelName(parsed.target) ? parsed.target : parsed.nick, read: false};
+		return {target: conversationOf(parsed), read: false};
 	}
 
 	return {target: undefined, read: false};
 }
 
+/** The conversation a message belongs to: its channel, or the sender's query. */
+function conversationOf(parsed) {
+	return isChannelName(parsed.target) ? parsed.target : parsed.nick;
+}
+
 /**
  * A strict push whose handler has not finished by the deadline (storage
- * stalled): show something under its conversation's own tag, so the real
- * notification, if it comes, replaces it — what is already shown there,
- * again and silently, else the generic notification (or, for a read relay,
- * the stub).
+ * stalled): show something now, silently, under a tag of its own
+ * (`push-<network>/fallback/<conversation>`) — never the conversation's, so
+ * it cannot overwrite the real notification should that land meanwhile.
+ * The real notification, or the quiet stub of a push that should not alert,
+ * closes it once it is shown (closeFallbacks); a read relay's is a stub that
+ * closes itself. A store that never answers leaves the silent "New activity".
  */
 async function showFallback(raw) {
 	let about = {target: undefined, read: false};
@@ -1221,23 +1246,20 @@ async function showFallback(raw) {
 		// shown as the generic notification
 	}
 
-	const tag = about.target
-		? tagFor(knownNetwork, about.target)
-		: tagFor(knownNetwork, "activity");
+	const tag = tagFor(knownNetwork, "fallback/" + foldName(about.target || "activity"));
 
-	try {
-		const live = await self.registration.getNotifications({tag});
-
-		if (live[0]) {
-			await reshowQuietly(live[0]);
-		} else if (about.read) {
-			await showStub(tag, "read", about.target, knownNetwork);
-		} else {
-			await showGeneric(tag, about.target);
-		}
-	} catch (e) {
-		await showGeneric(tag, about.target);
+	if (about.read) {
+		await showStub(tag, "read", about.target, knownNetwork, true);
+		return;
 	}
+
+	await showSafely(appName, {
+		tag,
+		silent: true,
+		icon: "img/icon-192.png",
+		body: "New activity while you were away.",
+		data: {kind: "generic", target: about.target, fallback: true},
+	});
 }
 
 /** A page's message (see the "message" listener), in the same queue as the
@@ -1321,7 +1343,7 @@ function fromJson(json) {
 	};
 }
 
-async function handlePushNow(raw) {
+async function handlePushNow(raw, state = {fellBack: false}) {
 	let json = null;
 
 	// RFC 8188 says the decrypter strips the aes128gcm padding delimiter
@@ -1369,8 +1391,13 @@ async function handlePushNow(raw) {
 		await showGeneric();
 		await updateBadge();
 	} catch (e) {
-		await showGeneric();
-		await updateBadge();
+		// The deadline's fallback already stands for this push: a second
+		// generic would be a second alert for it.
+		if (!state.fellBack) {
+			await showGeneric();
+		}
+
+		await updateBadge().catch(() => undefined);
 	}
 }
 
@@ -1423,13 +1450,13 @@ async function showReadStub(target, ts) {
  * because WebKit must see one) — closed once WebKit lets it. Its title names
  * no conversation: it sits on a lock screen. A tap still opens the
  * conversation (`data`, routeFor). */
-async function showStub(tag, kind, target, network) {
-	await showSafely("Seance", {
+async function showStub(tag, kind, target, network, fallback = false) {
+	await showSafely(appName, {
 		tag,
 		silent: true,
 		icon: "img/icon-192.png",
 		body: kind === "read" ? "Marked as read" : "New message",
-		data: {kind, target, network: network || undefined},
+		data: {kind, target, network: network || undefined, fallback: fallback || undefined},
 	});
 
 	setTimeout(() => {
@@ -1503,7 +1530,7 @@ async function showMessage(P, parsed, checkSeen, mustShow = false) {
 	const seenKey = line ? seenId + "#" + line.index : msgid;
 
 	const isChannel = isChannelName(parsed.target);
-	const replyTo = isChannel ? parsed.target : parsed.nick;
+	const replyTo = conversationOf(parsed);
 	// The payload names no network: a push-only worker serves exactly
 	// one (its scope says which); the root worker, which only ever
 	// held the pre-per-network subscription, falls back to the first
@@ -1516,10 +1543,11 @@ async function showMessage(P, parsed, checkSeen, mustShow = false) {
 	// default (markdown on, nothing muted).
 	const prefs = (await idbGet("prefs")) || {};
 	const markdown = prefs.markdown !== false;
+	const muteKey = typeof replyTo === "string" ? foldName(network + "/" + replyTo) : undefined;
 	const muted =
 		Array.isArray(prefs.muted) &&
-		typeof replyTo === "string" &&
-		prefs.muted.includes(network + "/" + replyTo.toLowerCase());
+		muteKey !== undefined &&
+		prefs.muted.some((key) => typeof key === "string" && foldName(key) === muteKey);
 
 	if (checkSeen && seenId) {
 		const seen = await idbGet("seen");
@@ -1539,8 +1567,9 @@ async function showMessage(P, parsed, checkSeen, mustShow = false) {
 	}
 
 	// A conversation muted on this device alerts nothing, here as on the
-	// page; under WebKit the push still shows, quietly and without its text.
-	if (mustShow && muted) {
+	// page; a push still shows (WebKit counts one that does not), quietly
+	// and without its text. The page never hands a muted message over.
+	if (muted) {
 		await showQuiet(tag, replyTo, network);
 		return;
 	}
@@ -1549,7 +1578,12 @@ async function showMessage(P, parsed, checkSeen, mustShow = false) {
 	// data so it survives the worker being killed between pushes, and a
 	// multiline message grows in place, one line per push.
 	const existing = await self.registration.getNotifications({tag});
-	const prev = existing[0] && existing[0].data;
+	// An older worker showed it under the tag without the network: carry
+	// its messages and count over, and close it once this one is up.
+	const legacyTag = "push-" + (replyTo || "activity");
+	const legacy =
+		legacyTag === tag ? [] : await self.registration.getNotifications({tag: legacyTag});
+	const prev = (existing[0] && existing[0].data) || (legacy[0] && legacy[0].data);
 	const added = P.addMessage(
 		(prev && prev.messages) || [],
 		{
@@ -1616,24 +1650,35 @@ async function showMessage(P, parsed, checkSeen, mustShow = false) {
 		await idbAppend("seen", seenKey, SEEN_CAP);
 	}
 
-	// A stub for this conversation under a tag of its own (a read relay that
-	// kept a newer notification), or a stalled push's fallback shown before
-	// this worker knew its network, has had its say. WebKit refuses a close
-	// within 30 s of the show, so it is tried again once that has passed —
-	// outside `waitUntil`, like a stub's own close: a worker stopped before
-	// then leaves it to the next message or the app-opened sweep.
+	// Shown by an older worker, before tags carried the network: merged in
+	// above, and gone now.
+	for (const n of legacy) {
+		n.close();
+	}
+
+	await closeFallbacks(tag, replyTo);
+	await updateBadge();
+}
+
+/**
+ * The conversation's notification is up under `tag`: a stub for it under a
+ * tag of its own (a read relay that kept a newer notification) or a stalled
+ * push's fallback has had its say. WebKit refuses a close within 30 s of the
+ * show, so it is tried again once that has passed — outside `waitUntil`,
+ * like a stub's own close: a worker stopped before then leaves it to the
+ * next message or the app-opened sweep.
+ */
+async function closeFallbacks(tag, target) {
 	for (const n of await self.registration.getNotifications()) {
 		if (
 			(isStub(n) || (n.data && n.data.kind === "generic")) &&
 			n.tag !== tag &&
-			sameName(n.data.target, replyTo)
+			sameName(n.data.target, target)
 		) {
 			n.close();
 			setTimeout(() => n.close(), READ_STUB_LIFETIME_MS);
 		}
 	}
-
-	await updateBadge();
 }
 
 /** A push WebKit must see shown but that should not alert (see showMessage):
@@ -1648,6 +1693,7 @@ async function showQuiet(tag, target, network) {
 		await showStub(tag, "quiet", target, network);
 	}
 
+	await closeFallbacks(tag, target);
 	await updateBadge();
 }
 
@@ -1680,6 +1726,11 @@ async function handlePageMessageNow(payload) {
  * then bare.  A delivered push that renders nothing is the worst outcome
  * there is, so every path here ends in a visible notification. */
 async function showSafely(title, options) {
+	// A fallback runs beside the queue, for another push than the one in it.
+	if (activePush && !(options.data && options.data.fallback)) {
+		activePush.shown = true;
+	}
+
 	try {
 		await self.registration.showNotification(title, options);
 		return;

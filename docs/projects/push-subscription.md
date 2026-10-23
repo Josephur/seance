@@ -1014,12 +1014,14 @@ What ships (`client/service-worker.js`, `client/js/webpush.ts`,
   worker's user agent (`AppleWebKit/` without `Chrome/`: WebKit on iOS and
   macOS, Chromium carries both, Firefox neither). A new message is shown as
   on every browser. A push the page already took or the user already
-  dismissed (a seen-ring hit, a redelivery) and a push for a conversation
-  muted on this device (the page mirrors `thelounge.muted` into the worker's
-  `prefs`, `client/js/mute.ts`) are shown **quietly** (`showQuiet`): the
-  conversation's notification again, silently and unchanged, or, with
-  nothing up for it, a silent "New message" stub with no message text —
-  never a second alert, a sound or a badge count. A read relay closes what
+  dismissed (a seen-ring hit, a redelivery) is shown **quietly**
+  (`showQuiet`): the conversation's notification again, silently and
+  unchanged (its text and count with it), or, with nothing up for it, a
+  silent "New message" stub with no message text — never a second alert, a
+  sound or a badge count. A push for a conversation muted on this device
+  (the page mirrors `thelounge.muted` into the worker's `prefs`,
+  `client/js/mute.ts`, one update at a time, compared under IRC's case
+  folding) is shown the same quiet way on every browser. A read relay closes what
   it would have closed and puts a silent "Marked as read" stub in the
   target's notification's place (found by name whatever the relay's
   spelling, so a close WebKit refused is replaced too); a notification the
@@ -1029,17 +1031,26 @@ What ships (`client/service-worker.js`, `client/js/webpush.ts`,
   (they sit on a lock screen) and a tap opens the conversation; the worker
   closes one itself 31 s later — outside `waitUntil`, since the event must
   not outlive WebKit's handler lifetime — and a worker killed before then
-  leaves it to the next message or the page's app-opened sweep. A push whose
-  handler has not finished `STRICT_SHOW_DEADLINE_MS` (20 s) after it
-  arrived — a stalled IndexedDB, a push stuck behind one — shows something
-  under its conversation's own tag (read from the payload without
-  IndexedDB): what is already shown there, again and silently, else the
-  generic notification, so the real one replaces it if it comes. Each push
-  has its own deadline, timed from the event ahead of the push queue, because
-  WebKit's clock is. Chrome and Firefox keep the old paths exactly.
-- **Tags carry the network** (`push-<uuid>/<conversation>`): tags are per
-  origin, so the networks' push workers would otherwise replace each other's
-  same-named channels.
+  leaves it to the next message or the page's app-opened sweep. A push that has
+  shown nothing `STRICT_SHOW_DEADLINE_MS` (20 s) after it arrived — a
+  stalled IndexedDB, a push stuck behind one — shows a fallback, silently,
+  under a tag of its own (`push-<uuid>/fallback/<conversation>`, read from
+  the payload without IndexedDB): the generic notification, or for a read
+  relay a stub that closes itself. Never the conversation's own tag, so it
+  cannot overwrite the real notification should that land meanwhile; the
+  real notification, or the quiet stub of a push that should not alert,
+  closes it (`closeFallbacks`), and a store that fails after the deadline
+  adds no second generic. Each push has its own deadline, timed from the
+  event ahead of the push queue, because WebKit's clock is. Other browsers
+  keep the lenient paths: no deadline, and a seen push shows nothing.
+- **Tags carry the network** (`push-<uuid>/<conversation>`), on every
+  browser: tags are per origin, so the networks' push workers would
+  otherwise replace each other's same-named channels. A notification an
+  older worker showed under `push-<conversation>` is merged into the next one
+  for that conversation and closed.
+- **Every notification that names no conversation is titled with the
+  deploy's name** (the generic notification, the stubs): `config.json`
+  `appName`, written into the worker at build time (`webpack.config.ts`).
 - **A subscription the browser dropped is unregistered from the server.**
   `syncStoredWithBrowser` queues the lost entry's endpoint
   (`queueUnregister`, as the Android shell's reconciliation does) and the
