@@ -34,6 +34,8 @@ export type SharedNetworkStatus = {
 	 * connected, and when nothing is being tried. The UI counts it down.
 	 */
 	retryAt?: number;
+	/** That wait is the server's connection throttle (client/js/irc/dialLedger.ts). */
+	retryThrottled?: boolean;
 };
 
 /** The services packages the client knows how to talk to (irc/services/). */

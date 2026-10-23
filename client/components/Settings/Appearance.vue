@@ -334,6 +334,14 @@
 					>
 				</label>
 			</div>
+			<h2 id="label-ps-words">Words over the plains</h2>
+			<div role="group" aria-labelledby="label-ps-words" class="scene-motion-options">
+				<label v-for="w in psWords" :key="w" class="opt">
+					<input :checked="psWordsValue === w" type="radio" name="psWords" :value="w" />
+					{{ psWordsLabels[w] }}
+					<span class="opt-hint">{{ psWordsHints[w] }}</span>
+				</label>
+			</div>
 			<h2 id="label-ps-layout">Message layout</h2>
 			<div role="group" aria-labelledby="label-ps-layout" class="scene-motion-options">
 				<label class="opt">
@@ -463,6 +471,7 @@ textarea#user-specified-css-input {
 import {computed, defineComponent, ref} from "vue";
 import {useStore} from "../../js/store";
 import {normalizeSceneMotion, SCENE_MOTIONS, type SceneMotion} from "../../js/themeScene";
+import {normalizePsWords, psWords, psWordsHints, psWordsLabels} from "../../js/helpers/psWords";
 import {
 	describeThemePairs,
 	effectiveTheme,
@@ -545,6 +554,8 @@ export default defineComponent({
 
 		// The ps theme's Scene animation levels (themeScene.ts SceneMotion).
 		const psAnimation = computed(() => normalizeSceneMotion(store.state.settings.psAnimation));
+		// The ps theme's Words over the plains (helpers/psWords.ts).
+		const psWordsValue = computed(() => normalizePsWords(store.state.settings.psWords));
 		const sceneMotionLabels: Record<SceneMotion, string> = {
 			auto: "Auto",
 			full: "Full",
@@ -663,6 +674,10 @@ export default defineComponent({
 			psAnimation,
 			sceneMotionLabels,
 			sceneMotionHints,
+			psWords,
+			psWordsValue,
+			psWordsLabels,
+			psWordsHints,
 			store,
 			systemTextSize,
 			matchingSystemTextSize,

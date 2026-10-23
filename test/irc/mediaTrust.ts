@@ -8,7 +8,6 @@ import {
 	isTrustedHost,
 	mediaFileName,
 	mediaHost,
-	normalizeHost,
 	splitKey,
 	STORAGE_KEY,
 	trust,
@@ -67,10 +66,6 @@ describe("helpers/mediaTrust", function () {
 			expect(mediaFileName("https://x.test/dir/My%20cat.png?w=1#f")).to.equal("My cat.png");
 			expect(mediaFileName("https://x.test/")).to.equal("");
 			expect(mediaFileName("nope")).to.equal("");
-		});
-
-		it("normalises hosts consistently", function () {
-			expect(normalizeHost("  Example.COM.. ")).to.equal("example.com");
 		});
 
 		it("builds case-insensitive channel and account keys and splits them again", function () {

@@ -40,6 +40,12 @@ function openQuery({client, chan}: CommandContext, targetName: string): boolean 
 		return false;
 	}
 
+	// The user asked for it back: a reopen, here and on the other devices
+	// (before the login read, too: a close may still arrive with it).
+	if (client.closed.reopen(targetName, client.closedReadAhead)) {
+		client.writeClosed();
+	}
+
 	client.announceChannel(targetName, ChanType.QUERY, {shouldOpen: true});
 	return true;
 }

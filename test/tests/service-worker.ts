@@ -31,6 +31,9 @@ interface Rec {
 		messages?: Array<{from: string; text: string; msgid?: string}>;
 	};
 	actions?: Array<{action: string; type?: string; title: string}>;
+	silent?: boolean;
+	renotify?: boolean;
+	shownAt?: number;
 	closed: boolean;
 	close(): void;
 }
@@ -332,12 +335,24 @@ interface HarnessOptions {
 	/** Make `indexedDB.open` throw synchronously — the worker must still
 	 * show something rather than let handlePush reject silently. */
 	failIndexedDB?: boolean;
+	/** Make `indexedDB.open` never answer — a worker stalled on storage,
+	 * which under WebKit's 30 s clock is a silent push. */
+	hangIndexedDB?: boolean;
+	/** The worker's `navigator.userAgent` (default a browser that is neither
+	 * WebKit nor Chromium: the lenient path). */
+	userAgent?: string;
 	/** The registration's scope (default the app root; `push/<uuid>/` for a push-only worker). */
 	scope?: string;
 	/** Run the worker's timers a hundred times faster (its delays are seconds long). */
 	fastTimers?: boolean;
 	/** Replace the stash the page wrote. */
 	stash?: Stash;
+	/** Refuse `close()` on a notification shown under 30 s ago, as WebKit does
+	 * (bug 309940). */
+	refuseYoungClose?: boolean;
+	/** Hold every `indexedDB.open` until this settles: storage that is slow,
+	 * not stalled (or, if it rejects, that fails once it answers). */
+	idbGate?: Promise<void>;
 }
 
 const SCOPE = "https://app.test/";
@@ -366,7 +381,7 @@ function makeSW(options: HarnessOptions = {}): SWHarness {
 		TextEncoder,
 		btoa: (s: string) => Buffer.from(s, "binary").toString("base64"),
 		navigator: {
-			userAgent: "Mozilla/5.0 (X11; Linux x86_64)",
+			userAgent: options.userAgent ?? "Mozilla/5.0 (X11; Linux x86_64)",
 			setAppBadge() {},
 			clearAppBadge() {},
 		},
@@ -406,8 +421,15 @@ function makeSW(options: HarnessOptions = {}): SWHarness {
 					body: opts.body,
 					data: opts.data,
 					actions: opts.actions,
+					silent: opts.silent,
+					renotify: opts.renotify,
+					shownAt: Date.now(),
 					closed: false,
 					close() {
+						if (options.refuseYoungClose && Date.now() - rec.shownAt! < 30000) {
+							return;
+						}
+
 						rec.closed = true;
 					},
 				};
@@ -445,7 +467,19 @@ function makeSW(options: HarnessOptions = {}): SWHarness {
 				}
 
 				const req: FakeReq = {};
-				queueMicrotask(() => {
+
+				if (options.hangIndexedDB) {
+					return req; // neither onsuccess nor onerror, ever
+				}
+
+				const gate = options.idbGate ?? Promise.resolve();
+
+				// A gate that rejects is storage that stalled, then failed.
+				gate.catch(() => {
+					(req as {error?: Error}).error = new Error("connection lost");
+					req.onerror?.();
+				});
+				void gate.then(() => {
 					req.result = {
 						transaction() {
 							// The worker awaits the TRANSACTION's oncomplete
@@ -993,7 +1027,7 @@ describe("service worker push notifications", function () {
 
 		expect(sw.shown).to.have.lengthOf(1);
 		expect(sw.shown[0].title).to.equal("bob in &local");
-		expect(sw.shown[0].tag).to.equal("push-&local");
+		expect(sw.shown[0].tag).to.equal("push-net-1/&local");
 	});
 
 	it("shows the generic notification when IndexedDB rejects", async function () {
@@ -1004,6 +1038,399 @@ describe("service worker push notifications", function () {
 		expect(sw.shown).to.have.lengthOf(1);
 		expect(sw.shown[0].tag).to.equal("push-activity");
 		expect(sw.shown[0].body).to.equal("New activity while you were away.");
+	});
+});
+
+describe("service worker push notifications under WebKit (every push shows)", function () {
+	// WebKit (an iPhone's Home Screen web app, Safari) counts a push event
+	// that ends without a showNotification on its registration as silent,
+	// never resets the count, and at the third removes every subscription of
+	// the origin without a word — so the paths that drop a push (the seen
+	// ring, a redelivery, a read relay) must show something there; the
+	// lenient browsers keep their behaviour (service-worker.js § WebKit).
+	const IOS_UA =
+		"Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148";
+	const CHROME_UA =
+		"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36";
+
+	/** Fire a push without waiting for its handler (one that will never finish). */
+	function firePushUnawaited(sw: SWHarness, raw: string): void {
+		const ev = {data: {text: () => raw}, waitUntil: () => undefined};
+
+		for (const h of sw.handlers.push) {
+			h(ev);
+		}
+	}
+
+	it("re-shows, same tag and count, a message its notification already holds", async function () {
+		const sw = makeSW({userAgent: IOS_UA});
+
+		await firePush(sw, msgPayload("alice", "pushtest", "hello there", "m1"));
+		await firePush(sw, msgPayload("alice", "pushtest", "hello there", "m1"));
+
+		expect(sw.shown, "shown twice").to.have.lengthOf(2);
+
+		const live = sw.records.filter((n) => !n.closed);
+		expect(live, "one notification").to.have.lengthOf(1);
+		expect(live[0].title).to.equal("alice");
+		expect(live[0].body).to.equal("hello there");
+		expect(live[0].data.count).to.equal(1);
+	});
+
+	it("a Chromium worker still drops what the page saw (AppleWebKit with Chrome/ is not WebKit)", async function () {
+		const sw = makeSW({userAgent: CHROME_UA});
+		const msgid = "BjAAAaBjzZ0";
+
+		sw.kv.set("seen", [msgid]);
+		await firePush(sw, msgPayload("alice", "pushtest", "hello there", msgid));
+
+		expect(sw.shown).to.have.lengthOf(0);
+	});
+
+	it("a read relay replaces the target's notification with a silent stub, closed once WebKit allows", async function () {
+		const sw = makeSW({userAgent: IOS_UA, fastTimers: true});
+
+		await firePush(sw, msgPayload("alice", "pushtest", "hello there"));
+
+		const ts = new Date(Date.now() + 5000).toISOString();
+		await firePush(sw, `{"t":"read","target":"alice","ts":"${ts}"}`);
+
+		expect(sw.shown, "the stub was shown").to.have.lengthOf(2);
+
+		const stub = sw.shown[1];
+		expect(stub.tag).to.equal("push-net-1/alice");
+		expect(stub.silent).to.be.true;
+		expect(stub.body).to.equal("Marked as read");
+		expect(stub.data.kind).to.equal("read");
+		expect(stub.data.target).to.equal("alice");
+		expect(
+			sw.records.filter((n) => !n.closed),
+			"the message's notification is gone, the stub stands"
+		).to.deep.equal([stub]);
+
+		// 31 s, a hundred times faster: the worker closes the stub itself.
+		await new Promise((r) => setTimeout(r, 450));
+		expect(stub.closed, "stub closed after the minimum lifetime").to.be.true;
+	});
+
+	it("a MARKREAD line is the same relay", async function () {
+		const sw = makeSW({userAgent: IOS_UA});
+
+		await firePush(sw, msgPayload("alice", "pushtest", "hello there"));
+		await firePush(
+			sw,
+			`:irc.testnet.local MARKREAD alice timestamp=${new Date(
+				Date.now() + 5000
+			).toISOString()}`
+		);
+
+		const live = sw.records.filter((n) => !n.closed);
+		expect(live).to.have.lengthOf(1);
+		expect(live[0].data.kind).to.equal("read");
+		expect(live[0].tag).to.equal("push-net-1/alice");
+	});
+
+	it("a read relay that keeps a newer notification puts the stub beside it", async function () {
+		const sw = makeSW({userAgent: IOS_UA});
+
+		// the payload's time is fixed in the past; the read marker predates it
+		await firePush(sw, msgPayload("alice", "pushtest", "arrived later"));
+		await firePush(sw, `{"t":"read","target":"alice","ts":"2026-09-01T00:00:00.000Z"}`);
+
+		const live = sw.records.filter((n) => !n.closed);
+		expect(live.map((n) => n.tag).sort()).to.deep.equal([
+			"push-net-1/alice",
+			"push-net-1/read/alice",
+		]);
+		expect(live.find((n) => n.tag === "push-net-1/alice")?.body).to.equal("arrived later");
+	});
+
+	it("a read relay with nothing to close still shows the stub", async function () {
+		const sw = makeSW({userAgent: IOS_UA});
+
+		await firePush(sw, `{"t":"read","target":"alice","ts":"${new Date().toISOString()}"}`);
+
+		expect(sw.shown).to.have.lengthOf(1);
+		expect(sw.shown[0].tag).to.equal("push-net-1/alice");
+		expect(sw.shown[0].silent).to.be.true;
+	});
+
+	it("the next push on the target replaces its stub", async function () {
+		const sw = makeSW({userAgent: IOS_UA});
+
+		await firePush(sw, msgPayload("alice", "pushtest", "hello there"));
+		await firePush(
+			sw,
+			`{"t":"read","target":"alice","ts":"${new Date(Date.now() + 5000).toISOString()}"}`
+		);
+		await firePush(sw, msgPayload("alice", "pushtest", "and again"));
+
+		const live = sw.records.filter((n) => !n.closed);
+		expect(live).to.have.lengthOf(1);
+		expect(live[0].body).to.equal("and again");
+		expect(live[0].data.count, "the stub held no messages").to.equal(1);
+	});
+
+	it("a stalled handler shows the generic notification before WebKit's 30 s clock runs out", async function () {
+		const sw = makeSW({
+			userAgent: IOS_UA,
+			fastTimers: true,
+			hangIndexedDB: true,
+			scope: SCOPE + "push/net-1/",
+		});
+
+		firePushUnawaited(sw, msgPayload("alice", "pushtest", "hello there"));
+
+		// 20 s, a hundred times faster: silent, under a tag of its own, so
+		// it can never overwrite the real notification should that land.
+		await new Promise((r) => setTimeout(r, 350));
+		expect(sw.shown).to.have.lengthOf(1);
+		expect(sw.shown[0].tag).to.equal("push-net-1/fallback/alice");
+		expect(sw.shown[0].silent).to.equal(true);
+		expect(sw.shown[0].title).to.equal("Seance");
+		expect(sw.shown[0].body).to.not.include("hello there");
+	});
+
+	it("shows a push the page already took quietly: silent, no text, not counted, closed after 31 s", async function () {
+		const sw = makeSW({userAgent: IOS_UA, fastTimers: true});
+		const msgid = "BjAAAaBjzZq1";
+
+		sw.kv.set("seen", [msgid]);
+		await firePush(sw, msgPayload("alice", "pushtest", "hello there", msgid));
+
+		expect(sw.shown).to.have.lengthOf(1);
+		const quiet = sw.shown[0];
+		expect(quiet.silent).to.equal(true);
+		expect(quiet.renotify).to.not.equal(true);
+		expect(quiet.body).to.not.include("hello there");
+		expect(quiet.data.kind).to.equal("quiet");
+		await new Promise((r) => setTimeout(r, 450));
+		expect(quiet.closed).to.equal(true);
+	});
+
+	it("re-shows the notification the page already put up, silently and unchanged", async function () {
+		const sw = makeSW({userAgent: IOS_UA});
+
+		await firePush(sw, msgPayload("alice", "pushtest", "hello there", "m-seen"));
+		sw.kv.set("seen", ["m-seen"]);
+		await firePush(sw, msgPayload("alice", "pushtest", "hello there", "m-seen"));
+
+		const live = sw.records.filter((n) => !n.closed);
+		expect(live).to.have.lengthOf(1);
+		expect(live[0].body).to.equal("hello there");
+		expect(sw.shown[1].silent).to.equal(true);
+		expect(sw.shown[1].renotify).to.not.equal(true);
+	});
+
+	it("a redelivery after the user dismissed the notification comes back quiet, without its text", async function () {
+		const sw = makeSW({userAgent: IOS_UA});
+		const payload = msgPayload("alice", "pushtest", "secret text", "m-again");
+
+		await firePush(sw, payload);
+		sw.records.forEach((n) => n.close());
+		await firePush(sw, payload);
+
+		expect(sw.shown).to.have.lengthOf(2);
+		expect(sw.shown[1].silent).to.equal(true);
+		expect(sw.shown[1].body).to.not.include("secret text");
+	});
+
+	it("a conversation muted on this device is shown quietly, without its text", async function () {
+		const sw = makeSW({userAgent: IOS_UA});
+
+		sw.kv.set("prefs", {muted: ["net-1/#help"]});
+		await firePush(sw, msgPayload("alice", "#help", "pushtest: secret", "m-mute"));
+
+		expect(sw.shown).to.have.lengthOf(1);
+		expect(sw.shown[0].silent).to.equal(true);
+		expect(sw.shown[0].body).to.not.include("secret");
+	});
+
+	it("each stalled push gets its own show, under its conversation's tag", async function () {
+		const sw = makeSW({
+			userAgent: IOS_UA,
+			fastTimers: true,
+			hangIndexedDB: true,
+			scope: SCOPE + "push/net-1/",
+		});
+
+		firePushUnawaited(sw, msgPayload("alice", "pushtest", "one"));
+		firePushUnawaited(sw, msgPayload("bob", "pushtest", "two"));
+
+		await new Promise((r) => setTimeout(r, 350));
+		expect(sw.shown.map((n) => n.tag).sort()).to.deep.equal([
+			"push-net-1/fallback/alice",
+			"push-net-1/fallback/bob",
+		]);
+		expect(sw.shown.every((n) => !n.body.includes("one") && !n.body.includes("two"))).to.equal(
+			true
+		);
+	});
+
+	it("a slow store's fallback goes once the real notification lands, on a root worker too", async function () {
+		let release!: () => void;
+		const gate = new Promise<void>((r) => (release = r));
+		const sw = makeSW({userAgent: IOS_UA, fastTimers: true, idbGate: gate});
+		const done = firePush(sw, msgPayload("alice", "pushtest", "hello"));
+
+		await new Promise((r) => setTimeout(r, 250)); // 25 s, a hundred times faster
+		expect(sw.shown, "the fallback went up").to.have.lengthOf(1);
+		release();
+		await done;
+
+		expect(sw.shown).to.have.lengthOf(2);
+		const live = sw.records.filter((n) => !n.closed);
+		expect(live.map((n) => n.body)).to.deep.equal(["hello"]);
+	});
+
+	it("a store that stalls past the deadline and then fails alerts nobody twice", async function () {
+		let fail!: () => void;
+		const gate = new Promise<void>((resolve, reject) => (fail = () => reject(new Error("x"))));
+		const sw = makeSW({
+			userAgent: IOS_UA,
+			fastTimers: true,
+			idbGate: gate,
+			scope: SCOPE + "push/net-1/",
+		});
+		const done = firePush(sw, msgPayload("alice", "pushtest", "hello")).catch(() => undefined);
+
+		await new Promise((r) => setTimeout(r, 250));
+		fail();
+		await done;
+
+		expect(sw.shown).to.have.lengthOf(1);
+		expect(sw.shown.filter((n) => !n.silent)).to.deep.equal([]);
+	});
+
+	it("a muted push on a slow store leaves only a quiet stub, which goes", async function () {
+		let release!: () => void;
+		const gate = new Promise<void>((r) => (release = r));
+		const sw = makeSW({
+			userAgent: IOS_UA,
+			fastTimers: true,
+			idbGate: gate,
+			scope: SCOPE + "push/net-1/",
+		});
+
+		sw.kv.set("prefs", {muted: ["net-1/#help"]});
+		const done = firePush(sw, msgPayload("alice", "#help", "pushtest: secret", "m-slow"));
+		await new Promise((r) => setTimeout(r, 250));
+		release();
+		await done;
+
+		expect(
+			sw.shown.filter((n) => !n.silent),
+			"nothing alerted"
+		).to.deep.equal([]);
+		await new Promise((r) => setTimeout(r, 450)); // past 31 s
+		expect(sw.records.filter((n) => !n.closed)).to.deep.equal([]);
+	});
+
+	it("a stalled read relay's stub closes itself", async function () {
+		const sw = makeSW({
+			userAgent: IOS_UA,
+			fastTimers: true,
+			hangIndexedDB: true,
+			scope: SCOPE + "push/net-1/",
+		});
+
+		firePushUnawaited(sw, `{"t":"read","target":"alice"}`);
+		await new Promise((r) => setTimeout(r, 250));
+		expect(sw.shown).to.have.lengthOf(1);
+		expect(sw.shown[0].data.kind).to.equal("read");
+		await new Promise((r) => setTimeout(r, 450));
+		expect(sw.shown[0].closed).to.equal(true);
+	});
+
+	it("merges a notification an older worker showed without the network, and closes it", async function () {
+		const sw = makeSW({userAgent: IOS_UA, scope: SCOPE + "push/net-1/"});
+
+		await sw.sandbox.registration.showNotification("alice", {
+			tag: "push-alice",
+			body: "earlier",
+			data: {
+				kind: "push",
+				count: 1,
+				target: "alice",
+				messages: [{from: "alice", text: "earlier", msgid: "m-old"}],
+			},
+		});
+		await firePush(sw, msgPayload("alice", "pushtest", "later", "m-new"));
+
+		const live = sw.records.filter((n) => !n.closed);
+		expect(live.map((n) => n.tag)).to.deep.equal(["push-net-1/alice"]);
+		expect(live[0].data.count).to.equal(2);
+		expect(live[0].body).to.include("earlier");
+	});
+
+	it("matches a muted conversation under IRC's case folding", async function () {
+		const sw = makeSW({userAgent: IOS_UA});
+
+		sw.kv.set("prefs", {muted: ["net-1/nick{x}"]});
+		await firePush(sw, msgPayload("Nick[x]", "pushtest", "secret", "m-fold"));
+
+		expect(sw.shown).to.have.lengthOf(1);
+		expect(sw.shown[0].silent).to.equal(true);
+		expect(sw.shown[0].body).to.not.include("secret");
+	});
+
+	it("shows a muted conversation quietly on Chrome too", async function () {
+		const sw = makeSW({userAgent: CHROME_UA});
+
+		sw.kv.set("prefs", {muted: ["net-1/#help"]});
+		await firePush(sw, msgPayload("alice", "#help", "pushtest: secret", "m-chrome"));
+
+		expect(sw.shown).to.have.lengthOf(1);
+		expect(sw.shown[0].silent).to.equal(true);
+		expect(sw.shown[0].body).to.not.include("secret");
+	});
+
+	it("a read relay spelled in another case still replaces the message, even when WebKit refuses the close", async function () {
+		const sw = makeSW({userAgent: IOS_UA, refuseYoungClose: true});
+
+		await firePush(sw, msgPayload("Alice", "pushtest", "hi"));
+		await firePush(
+			sw,
+			`{"t":"read","target":"alice","ts":"${new Date(Date.now() + 5000).toISOString()}"}`
+		);
+
+		const live = sw.records.filter((n) => !n.closed);
+		expect(live).to.have.lengthOf(1);
+		expect(live[0].data.kind).to.equal("read");
+	});
+
+	it("the next message for a conversation closes a stub left beside a newer notification", async function () {
+		const sw = makeSW({userAgent: IOS_UA});
+
+		await firePush(sw, msgPayload("alice", "pushtest", "arrived later"));
+		await firePush(sw, `{"t":"read","target":"alice","ts":"2026-09-01T00:00:00.000Z"}`);
+		await firePush(sw, msgPayload("alice", "pushtest", "and more"));
+
+		const live = sw.records.filter((n) => !n.closed);
+		expect(live.map((n) => n.data.kind)).to.deep.equal(["push"]);
+	});
+
+	it("tags carry the network, and the stub's title names no conversation", async function () {
+		const sw = makeSW({userAgent: IOS_UA});
+
+		await firePush(sw, msgPayload("alice", "pushtest", "hello"));
+		await firePush(
+			sw,
+			`{"t":"read","target":"alice","ts":"${new Date(Date.now() + 5000).toISOString()}"}`
+		);
+
+		expect(sw.shown[0].tag).to.equal("push-net-1/alice");
+		expect(sw.shown[1].tag).to.equal("push-net-1/alice");
+		expect(sw.shown[1].title).to.not.include("alice");
+	});
+
+	it("a lenient worker shows nothing for a stalled handler (Chrome has its own budget)", async function () {
+		const sw = makeSW({fastTimers: true, hangIndexedDB: true});
+
+		firePushUnawaited(sw, msgPayload("alice", "pushtest", "hello there"));
+
+		await new Promise((r) => setTimeout(r, 350));
+		expect(sw.shown).to.have.lengthOf(0);
 	});
 });
 
@@ -1656,7 +2083,7 @@ describe("service worker page notifications on a push worker", function () {
 
 		expect(sw.shown).to.have.lengthOf(1);
 		const rec = sw.shown[0];
-		expect(rec.tag).to.equal("push-#seance");
+		expect(rec.tag).to.equal("push-net-1/#seance");
 		expect(rec.title).to.equal("alice in #seance");
 		expect(rec.body).to.equal("alice: hi seance");
 		expect(rec.data.kind).to.equal("push");
@@ -1671,7 +2098,7 @@ describe("service worker page notifications on a push worker", function () {
 
 		await fireMessage(sw, pageNote("alice", "alice", "psst", "pm-2"));
 
-		expect(sw.shown[0].tag).to.equal("push-alice");
+		expect(sw.shown[0].tag).to.equal("push-net-1/alice");
 		expect(sw.shown[0].title).to.equal("alice");
 		expect(sw.shown[0].data.target).to.equal("alice");
 	});
@@ -1752,7 +2179,7 @@ describe("service worker page notifications on a push worker", function () {
 		await fireMessage(sw, {type: "read", target: "#seance"});
 
 		const open = sw.records.filter((n) => !n.closed);
-		expect(open.map((n) => n.tag)).to.deep.equal(["push-alice"]);
+		expect(open.map((n) => n.tag)).to.deep.equal(["push-net-1/alice"]);
 	});
 
 	it("the page's read closes a conversation however either side spells it", async function () {

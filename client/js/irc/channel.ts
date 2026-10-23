@@ -12,6 +12,28 @@ import type {HistorySpec} from "./history";
 
 export type Casefold = (s: string) => string;
 
+/**
+ * Lines someone says. Our own mean we read the channel (draft/read-marker);
+ * someone else's count as unread, live or caught up.
+ */
+export const SAID_TYPES: ReadonlySet<MessageType> = new Set([
+	MessageType.MESSAGE,
+	MessageType.ACTION,
+	MessageType.NOTICE,
+]);
+
+/**
+ * A line delivered without a live `pushMessage` (a history page, a restored
+ * query log) counts as unread past the read marker when a live one would
+ * have: something someone else said, not an edit, or a highlight.
+ */
+export function countsAsUnread(msg: SharedMsg): boolean {
+	return (
+		!msg.self &&
+		((SAID_TYPES.has(msg.type ?? MessageType.MESSAGE) && !msg.editOf) || !!msg.highlight)
+	);
+}
+
 /** What a CHATHISTORY request can point at: a message's msgid and/or time. */
 export interface MsgRef {
 	msgid?: string;
@@ -84,8 +106,28 @@ export class Channel {
 	readonly idByMsgid = new Map<string, number>();
 	/** The newest message we have seen; a reconnect asks for history AFTER it. */
 	newestRef: MsgRef | undefined = undefined;
+	/**
+	 * A query opened by a line or a restored log rather than by the user, and
+	 * not yet opened, read or written in: a close another device or tab made
+	 * may still take it away (irc/closedQueries.ts applyClosed).
+	 */
+	autoOpened = false;
+	/**
+	 * Unix ms of the newest line the server sent here (one with a msgid): a
+	 * close's boundary (irc/closedQueries.ts). Lines this device made carry its
+	 * clock, so they never move it.
+	 */
+	newestServerAt: number | undefined = undefined;
 	/** History has been requested at least once (so `newestRef` is a valid catch-up reference). */
 	historyRequested = false;
+	/**
+	 * Everything up to the newest line the server stamped is held: the
+	 * JOIN's fill (or a reconnect's walk) was answered in full, or TARGETS
+	 * said nothing was new. Cleared when a JOIN's catch-up is scheduled and
+	 * set again when it completes, so a catch-up the socket cut short is
+	 * never taken for one that finished (catchup.ts).
+	 */
+	historyFilled = false;
 	/** A `more` page the connection died on; asked again once we are back (history.ts). */
 	lostMore: HistorySpec | undefined = undefined;
 	/**
@@ -94,11 +136,18 @@ export class Channel {
 	 * at or before it never count as unread.
 	 */
 	readMarker: Date | undefined = undefined;
+	/**
+	 * The server has told us this channel's marker at least once, `*` (none
+	 * stored) included: asking again would only cost fake lag.
+	 */
+	markerAnswered = false;
 	/** Pending debounced `MARKREAD` send (handlers/markread.ts). */
 	markReadTimer: ReturnType<typeof setTimeout> | null = null;
 	/** A debounced `MARKREAD` came due while the connection was not
 	 * registered; sent once it is (`flushDeferredMarkRead`). */
 	markReadDeferred = false;
+	/** When this channel's marker last went ahead of the catch-up (ms; handlers/markread.ts). */
+	markReadJumpedAt = 0;
 	private readonly fold: Casefold;
 
 	constructor(
@@ -153,6 +202,7 @@ export class Channel {
 		if (msg.msgid) {
 			ref.msgid = msg.msgid;
 			this.idByMsgid.set(msg.msgid, msg.id);
+			this.newestServerAt = Math.max(this.newestServerAt ?? 0, ref.time.getTime());
 		}
 
 		if (msg.type === MessageType.MESSAGE || msg.type === MessageType.ACTION) {
@@ -198,6 +248,28 @@ export class Channel {
 	/** msgids already shown (history deduplication). */
 	get msgids(): IterableIterator<string> {
 		return this.idByMsgid.keys();
+	}
+
+	/**
+	 * The newest message the server stamped — one with a msgid, whose time is
+	 * the server's. `newestRef` can be a local line on our own clock (an
+	 * error while the socket was dead), later than lines the server stored
+	 * that we never got: never vouch for "nothing new" by that one.
+	 */
+	newestServerRef(): MsgRef | undefined {
+		if (this.newestRef?.msgid) {
+			return this.newestRef;
+		}
+
+		let best: MsgRef | undefined;
+
+		for (const ref of this.msgRefs.values()) {
+			if (ref.msgid && (!best || ref.time.getTime() > best.time.getTime())) {
+				best = ref;
+			}
+		}
+
+		return best;
 	}
 
 	/**

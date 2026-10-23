@@ -9,6 +9,7 @@ import {MARKREAD_DEBOUNCE_MS} from "../../client/js/irc/handlers/markread";
 import type {Transport} from "../../client/js/irc/types";
 import type {TransportEvent, TransportState} from "../../client/js/irc/transport";
 import type {SharedMsg} from "../../shared/types/msg";
+import {NO_FAKE_LAG} from "../../client/js/irc/fakelag";
 
 class FakeTransport implements Transport {
 	state: TransportState = "closed";
@@ -122,7 +123,7 @@ interface Harness {
 const BASE_CAPS = "batch message-tags server-time echo-message extended-join draft/chathistory";
 
 /** A registered client (not yet in any channel). */
-function setup(opts: {readMarker?: boolean} = {}): Harness {
+function setup(opts: {readMarker?: boolean; account?: string} = {}): Harness {
 	const transport = new FakeTransport();
 	const client = new IrcClient({
 		host: "irc.test",
@@ -131,11 +132,12 @@ function setup(opts: {readMarker?: boolean} = {}): Harness {
 		nick: "alice",
 		join: "#seance",
 		sasl: "",
-		saslAccount: "",
+		saslAccount: opts.account ?? "",
 		saslPassword: "",
 		ids: new IdAllocator(),
 		transportFactory: () => transport,
 		highlights: () => ({keywords: [], exceptions: []}),
+		fakeLag: NO_FAKE_LAG,
 	});
 	let mark = 0;
 	const caps = opts.readMarker === false ? BASE_CAPS : `${BASE_CAPS} draft/read-marker`;
@@ -337,12 +339,17 @@ describe("Read markers (handlers/markread.ts)", function () {
 		clock.tick(1);
 		expect(h.sent()).to.deep.equal(["MARKREAD #seance timestamp=2026-08-25T12:02:00.000Z"]);
 
-		// Nothing newer: opening again sends nothing, even after the server echo.
+		// Nothing newer: the server's echo moves nothing, and opening again
+		// sends nothing (each open only tells the page it is read).
+		const told = payloads("markread").length;
 		h.transport.line(":irc.test MARKREAD #seance timestamp=2026-08-25T12:02:00.000Z");
+		expect(payloads("markread")).to.have.length(told);
 		socket.emit("open", chanId);
 		clock.tick(MARKREAD_DEBOUNCE_MS);
 		expect(h.sent()).to.deep.equal([]);
-		expect(payloads("markread")).to.have.length(0);
+		expect(payloads<{unread: number}>("markread").map((p) => p.unread)).to.deep.equal(
+			Array(told + 1).fill(0)
+		);
 	});
 
 	it("marks messages read as they arrive in the open channel, one send per second", function () {
@@ -421,6 +428,25 @@ describe("Read markers (handlers/markread.ts)", function () {
 			]);
 		});
 
+		for (const account of ["alice", ""]) {
+			it(`${account ? "asks" : "does not ask"} again after a reconnect for ${
+				account ? "an account (read elsewhere meanwhile)" : "a guest"
+			}`, function () {
+				const h = setup({account});
+				expect(join(h)).to.include("MARKREAD #seance");
+				marker(h, "timestamp=*");
+
+				h.transport.drop();
+				reopen(h);
+				welcome(h);
+				// The server says nothing after the re-JOIN: an account's is asked.
+				const out = [...h.sent(), ...join(h)];
+				clock.tick(30_000);
+				out.push(...h.sent());
+				expect(markreads(out).includes("MARKREAD #seance")).to.equal(!!account);
+			});
+		}
+
 		it("asks for no marker or history page before 001", function () {
 			const h = setup();
 			joined(h);
@@ -474,16 +500,28 @@ describe("Read markers (handlers/markread.ts)", function () {
 		expect(h.transport.sent.some((l) => l.startsWith("MARKREAD"))).to.equal(false);
 	});
 
-	it("asks for the stored marker after our JOIN, after the history request", function () {
+	it("asks for the stored marker after our JOIN, before the history it counts", function () {
 		const h = setup();
 		const lines = join(h);
 		const history = lines.findIndex((l) => l.includes("CHATHISTORY LATEST #seance"));
 		const fetch = lines.indexOf("MARKREAD #seance");
-		expect(history, "CHATHISTORY LATEST").to.be.at.least(0);
-		expect(fetch, "MARKREAD fetch").to.be.greaterThan(history);
+		expect(fetch, "MARKREAD fetch").to.be.at.least(0);
+		expect(history, "CHATHISTORY LATEST").to.be.greaterThan(fetch);
 
 		const without = setup({readMarker: false});
 		expect(join(without)).to.not.include("MARKREAD #seance");
+	});
+
+	it("asks once: an answer of `*` (no marker stored) is still an answer", function () {
+		const h = setup();
+		expect(join(h)).to.include("MARKREAD #seance");
+		h.transport.line(":irc.test MARKREAD #seance timestamp=*");
+		const chan = h.client.findChannel("#seance")!;
+		expect(chan.markerAnswered).to.equal(true);
+
+		// The same channel joined again on the next connection: not asked.
+		h.transport.line(":alice!alice@host KICK #seance alice :bye");
+		expect(join(h)).to.not.include("MARKREAD #seance");
 	});
 
 	describe("a marker asked for by the page (the `markread` emit — a notification's Mark read)", function () {
@@ -499,6 +537,14 @@ describe("Read markers (handlers/markread.ts)", function () {
 				time: "2026-08-25T12:02:00.000Z",
 			});
 			expect(h.sent()).to.deep.equal(["MARKREAD #seance timestamp=2026-08-25T12:02:00.000Z"]);
+			// …and the badge with it: the server's echo of the same marker
+			// changes nothing, so it is applied here.
+			const chan = h.client.findChannel("#seance")!;
+			expect(chan.shared.unread).to.equal(0);
+			expect(payloads<{chan: number; unread: number}>("markread").pop()).to.include({
+				chan: chanId,
+				unread: 0,
+			});
 
 			// The channel's marker moved with it: opening it has nothing newer to send.
 			socket.emit("open", chanId);

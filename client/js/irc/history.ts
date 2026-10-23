@@ -12,7 +12,9 @@
  *   `socket-events/more.ts` as one `more` event, oldest first, with ids
  *   below everything the channel already shows (`IdAllocator.historyIds`).
  *   A replayed mention keeps `highlight` (the line renders highlighted),
- *   but history never notifies and never counts as unread.
+ *   but history never notifies; what it holds past a known read marker
+ *   counts as unread (the first page after a JOIN is often all the
+ *   catch-up there is).
  * - **Catch-up** (re-JOIN after a reconnect): the spec's own gap-filling
  *   loop (chathistory.md, "Client pseudocode"): `CHATHISTORY LATEST`, then
  *   `BEFORE <oldest of the page>` back until a page overlaps what we already
@@ -24,9 +26,9 @@
  *   by an anchor the server can no longer see (a presence gap, retention,
  *   a clock disagreement): it stops where the server's history meets ours.
  *   The pages are gathered and appended once, oldest first, as ordinary
- *   `msg` events flagged `replay` (shown with their highlights, but no
- *   unread / notification side effects). The server
- *   can drive the same thing itself off a `PERSISTENCE ATTACH` cursor, in
+ *   `msg` events flagged `replay`: counted as unread like live ones
+ *   (`IrcClient.pushMessage`), but no notification or mention entry. The
+ *   server can drive the same thing itself off a `PERSISTENCE ATTACH` cursor, in
  *   which case its `chathistory` batches arrive unasked inside a
  *   `evilnet.github.io/bouncer-replay` wrapper and take the same path
  *   (persistence.ts).
@@ -42,6 +44,8 @@ import type {SharedMsg} from "../../../shared/types/msg";
 import type {Channel, MsgRef} from "./channel";
 import type {IrcClient, ReplayCollection} from "./client";
 import type {BatchHandler} from "./handlers/batch";
+import {countPageUnread, scheduleMarkRead} from "./handlers/markread";
+import {enqueueMarkerFetch} from "./catchup";
 import {formatLine, IrcMessage} from "./message";
 import {settlePendingLabel} from "./pending";
 import {inBouncerReplay, inServerCatchup} from "./persistence";
@@ -49,6 +53,9 @@ import type {Handler} from "./types";
 
 /** How long to wait for the server before answering `more` with nothing. */
 export const HISTORY_TIMEOUT_MS = 15_000;
+
+/** One `CHATHISTORY BEFORE` page of the catch-up walk: a command. */
+const PAGE_COST_MS = 2000;
 /** Page size for `more` (the old server also paged by 100). */
 export const MORE_PAGE_SIZE = 100;
 /** Page size for the LATEST request on first JOIN. */
@@ -58,6 +65,14 @@ const MAX_CATCHUP_PAGES = 5;
 /** Clock-skew allowance when deciding a page has reached what we already
  * held (the spec's FUZZ_INTERVAL, "perhaps 1 to 10 seconds"). */
 export const CATCHUP_FUZZ_MS = 5_000;
+
+/** The open channel's next page goes at once while the server's clock stays under this (ms). */
+const PAGE_NOW_LIMIT_MS = 6_000;
+
+/** A page for the channel being looked at can go now without nearing the ceiling. */
+export function pageFitsNow(client: IrcClient): boolean {
+	return client.fakeLag.ahead() + PAGE_COST_MS <= PAGE_NOW_LIMIT_MS;
+}
 
 export type HistorySubcommand = "LATEST" | "BEFORE" | "AFTER";
 
@@ -297,6 +312,11 @@ export function abortHistory(client: IrcClient): void {
 
 		resolve(client, request, null, "timeout");
 	}
+	// A walk waiting for its next page in the background queue (which the
+	// close empties) is dropped whole, its pages undelivered: what the
+	// channel holds has not moved, so the next connection walks the same gap
+	// from the same floor. Landing its newest pages would have moved it, and
+	// that walk would stop at them with the older part never fetched.
 }
 
 /**
@@ -404,8 +424,8 @@ function replay(client: IrcClient, chan: Channel, lines: IrcMessage[]): Replayed
 		}
 
 		// msg.highlight is kept: a replayed mention renders highlighted.
-		// Delivery is what stays silent (no counters, no notification) —
-		// deliverAppend pushes with `replay` and `more` never notifies.
+		// Delivery is what stays silent (no notification) — deliverAppend
+		// pushes with `replay` and `more` never notifies.
 		messages.push(msg);
 	}
 
@@ -433,10 +453,18 @@ function deliverPrepend(
 ): void {
 	const ids = client.historyIds(messages.length);
 	let lastRef: MsgRef | undefined;
+	// The first page after a JOIN is the only catch-up when the server had
+	// no cursor to replay from, and the read marker (sent right after the
+	// JOIN) is known by then: what someone else said past it is unread.
+	const marker = chan.readMarker;
+	const looking = chan.id === client.activeChannelId && client.presence.attended;
+	const page: Array<[SharedMsg, MsgRef]> = [];
 
 	messages.forEach((msg, i) => {
 		msg.id = ids[i];
 		lastRef = chan.remember(msg);
+		page.push([msg, lastRef]);
+
 		// Older by definition, but a LATEST fill can still hold the newest
 		// line we have seen; noteCursor only ever moves forward.
 		client.noteCursor(msg);
@@ -450,6 +478,11 @@ function deliverPrepend(
 		chan.newestRef = lastRef;
 	}
 
+	if (looking && messages.length > 0) {
+		// Shown to someone looking: read, as a live line would be.
+		scheduleMarkRead(client, chan);
+	}
+
 	chan.shared.totalMessages += messages.length;
 	// `moreAvailable` is the decision (end tag / full page / retryable
 	// timeout); it used to travel as totalMessages+1 and be re-derived by
@@ -460,14 +493,25 @@ function deliverPrepend(
 	// other way. Send the boolean; totalMessages stays for other readers.
 	const totalMessages = chan.shared.totalMessages + (moreAvailable ? 1 : 0);
 	client.dispatch("more", {chan: chan.id, messages, totalMessages, moreAvailable});
+
+	if (marker && !looking) {
+		countPageUnread(client, chan, page, marker);
+	}
 }
 
-/** Append catch-up messages as live ones, without unread / notification effects. */
+/** Append catch-up messages as live ones: counted as unread, never notified. */
 function deliverAppend(client: IrcClient, chan: Channel, messages: SharedMsg[]): void {
 	for (const msg of messages) {
 		// pushMessage copies; write the id back so post-replay work
 		// (`afterReplay` closures hold the collected objects) can find it.
 		msg.id = client.pushMessage(chan, msg, false, {replay: true}).id;
+	}
+
+	// Unread against this device's read point only: another device may have
+	// read it. The autojoin's ask for the query's marker may already have
+	// been skipped, with nothing unread then (catchup.ts).
+	if (chan.type === ChanType.QUERY && chan.shared.unread > 0) {
+		enqueueMarkerFetch(client, chan);
 	}
 }
 
@@ -491,6 +535,8 @@ function resolve(
 	clearTimeout(request.timer);
 
 	const {chan} = request;
+	const answered = outcome === "batch" || outcome === "ack";
+
 	const {messages, after} =
 		lines && lines.length > 0 ? replay(client, chan, lines) : {messages: [], after: []};
 	const fullPage = lines !== null && lines.length >= request.limit;
@@ -532,25 +578,58 @@ function resolve(
 		request.gapAfter.unshift(...after);
 
 		if (!reached && !end && fullPage && request.pagesLeft > 0 && oldest) {
-			const next = requestHistory(client, chan, {
+			// The next page back is background work like the rest of the
+			// catch-up (fakelag.ts): asked for as soon as each reply landed,
+			// a busy channel's walk alone put the server's clock 10 s ahead.
+			// At the front, so a channel finishes its walk before the next
+			// channel starts one.
+			const spec: HistorySpec = {
 				subcommand: "BEFORE",
 				ref: oldest,
 				limit: request.limit,
 				mode: "append",
 				pagesLeft: request.pagesLeft - 1,
 				floor: request.floor,
-			});
+			};
+			const {gap, gapAfter} = request;
+			const job = {
+				key: `page:${chan.id}`,
+				cost: PAGE_COST_MS,
+				run() {
+					const next = requestHistory(client, chan, spec);
 
-			if (next) {
-				next.gap = request.gap;
-				next.gapAfter = request.gapAfter;
-				return;
+					if (next) {
+						next.gap = gap;
+						next.gapAfter = gapAfter;
+						return;
+					}
+
+					deliverAppend(client, chan, gap);
+					runAfter(gapAfter);
+				},
+			};
+
+			// The channel being looked at is the user waiting: its pages go at
+			// once while the clock stays clear of the ceiling (two lines'
+			// room); anyone else's, and that one past it, wait their turn.
+			if (chan.id === client.activeChannelId && pageFitsNow(client)) {
+				job.run();
+			} else {
+				client.background.add(job, {front: true});
 			}
+
+			return;
 		}
 
 		// Done (or the next page could not be asked for): deliver what we
 		// gathered, in order. A FAIL or timeout mid-walk still lands the
-		// newer pages already received.
+		// newer pages already received. Only a walk that met what we hold, or
+		// that the server said is the end, vouches for the whole gap: the page
+		// cap and a short page (nefarious2 filters pages) stop it short.
+		if (answered && (reached || end)) {
+			chan.historyFilled = true;
+		}
+
 		deliverAppend(client, chan, request.gap);
 		runAfter(request.gapAfter);
 		return;
@@ -565,6 +644,10 @@ function resolve(
 	// reading fullness stopped the scrollback where the server had more
 	// (2026-09-06). An older server that never sends the tag ends with an
 	// empty page, which still closes the button.
+	if (answered && request.mode === "prepend" && request.subcommand === "LATEST") {
+		chan.historyFilled = true;
+	}
+
 	const more = outcome === "timeout" || (lines !== null && lines.length > 0 && !end) || fullPage;
 	deliverPrepend(client, chan, messages, more);
 	runAfter(after);
@@ -609,9 +692,9 @@ export const chathistoryBatch: BatchHandler = (client, batch) => {
 
 /**
  * One inner batch of the server-driven catch-up (persistence.ts): appended
- * like the gathered pages of our own catch-up — highlights kept but silent
- * (`replay`), no unread, msgid dedupe against what the channel already shows. A PM from someone we have
- * no window for opens one, as a live message would.
+ * like the gathered pages of our own catch-up — counted as unread but silent
+ * (`replay`), msgid dedupe against what the channel already shows. A PM from
+ * someone we have no window for opens one, as a live message would.
  */
 function deliverCatchup(client: IrcClient, target: string, lines: IrcMessage[]): void {
 	if (!target) {
@@ -621,7 +704,15 @@ function deliverCatchup(client: IrcClient, target: string, lines: IrcMessage[]):
 	let chan = client.findChannel(target);
 
 	if (!chan && !client.isChannelName(target)) {
-		chan = client.announceChannel(target, ChanType.QUERY);
+		// A query the user closed: only what was said since opens it again,
+		// and only that is shown (irc/closedQueries.ts).
+		lines = lines.filter((line) => !client.closed.suppresses(target, client.timeOf(line)));
+
+		if (lines.length === 0) {
+			return;
+		}
+
+		chan = client.openAutoQuery(target, client.timeOf(lines[lines.length - 1]));
 	}
 
 	if (!chan || (chan.type !== ChanType.CHANNEL && chan.type !== ChanType.QUERY)) {

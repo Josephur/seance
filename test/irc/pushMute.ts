@@ -231,9 +231,43 @@ describe("push mute on the wire (irc/pushMute.ts)", function () {
 		expect(metadata()).to.deep.equal([]);
 		clock.tick(1);
 		expect(metadata()).to.deep.equal([
-			"METADATA * SUB draft/webpush/mute seance/presence seance/mode",
-			"METADATA * GET draft/webpush/mute seance/presence seance/mode",
+			"METADATA * SUB draft/webpush/mute seance/presence seance/mode seance/closed",
+			"METADATA * GET draft/webpush/mute seance/presence seance/mode draft/webpush/payload seance/closed",
 		]);
+	});
+
+	it("asks for the payload tier in the login read", function () {
+		const h = connect();
+		clock.tick(MUTE_READ_DELAY_MS);
+		const get = h.transport.sent.find((l) => l.startsWith("METADATA * GET "));
+		expect(get).to.match(/ draft\/webpush\/payload seance\/closed$/);
+	});
+
+	it("rewrites a public payload tier as private, keeping its value", function () {
+		const h = connect();
+		clock.tick(MUTE_READ_DELAY_MS);
+		h.sent();
+		h.transport.line(":irc.test 761 alice alice draft/webpush/payload * :route");
+		expect(h.transport.sent.slice(-1)).to.deep.equal([
+			"METADATA * SET draft/webpush/payload private :route",
+		]);
+		expect(h.sent()).to.deep.equal(["METADATA * SET draft/webpush/payload private :route"]);
+	});
+
+	it("leaves a private payload tier alone", function () {
+		const h = connect();
+		clock.tick(MUTE_READ_DELAY_MS);
+		const before = h.transport.sent.length;
+		h.transport.line(":irc.test 761 alice alice draft/webpush/payload private :full");
+		expect(h.transport.sent.slice(before)).to.deep.equal([]);
+	});
+
+	it("ignores another user's public payload tier", function () {
+		const h = connect();
+		clock.tick(MUTE_READ_DELAY_MS);
+		const before = h.transport.sent.length;
+		h.transport.line(":irc.test 761 alice bob draft/webpush/payload * :full");
+		expect(h.transport.sent.slice(before)).to.deep.equal([]);
 	});
 
 	it("does not read the key on a connection closed before the delay", function () {

@@ -378,7 +378,10 @@ const config: webpack.Configuration = {
 					from: path.resolve(__dirname, "./client/service-worker.js"),
 					to: "[name][ext]",
 					transform(content) {
-						return content.toString().replace("__HASH__", buildToken);
+						return content
+							.toString()
+							.replace("__HASH__", buildToken)
+							.replace('"__APP_NAME__"', JSON.stringify(branding.appName));
 					},
 				},
 				{

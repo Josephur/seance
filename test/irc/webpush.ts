@@ -12,6 +12,7 @@ import {expect} from "chai";
 import sinon from "ts-sinon";
 import socket from "../../client/js/socket";
 import {SEANCE_CAPS, webpushVapidOf} from "../../client/js/irc/caps";
+import {registerBusHandlers} from "../../client/js/irc/bus";
 import {ALL_CAPS, register, setup, stubStorage} from "./support";
 
 const VAPID =
@@ -103,6 +104,29 @@ describe("Web Push subscription (draft/webpush)", function () {
 			);
 
 			expect(h.client.isupport.vapid).to.equal("BLB6-4OioBPa__W4w93qeXLpdHYwSr8xONZjy_");
+		});
+	});
+
+	describe("payload tier metadata (webpush:metadata)", function () {
+		it("writes the push payload tier private, so WHOIS does not list it", function () {
+			const h = setup();
+			register(h, `${ALL_CAPS} draft/webpush=vapid=${VAPID}`);
+			registerBusHandlers(socket, {
+				clientForChannel: () => h.client,
+				clientForNetwork: () => h.client,
+				allClients: () => [h.client],
+				createNetwork: () => h.client,
+				remove: () => undefined,
+			});
+			h.sent();
+
+			socket.emit("webpush:metadata", {
+				network: h.client.uuid,
+				key: "draft/webpush/payload",
+				value: "full",
+			});
+
+			expect(h.sent()).to.deep.equal(["METADATA * SET draft/webpush/payload private :full"]);
 		});
 	});
 

@@ -68,6 +68,7 @@ import {
 	ALPHA_SHADOW,
 	checkedGrounds,
 	CODE_BOX,
+	dayGlassGrounds,
 	GLASS,
 	glassGround,
 	INK,
@@ -84,6 +85,11 @@ import {
 	type LightSweep,
 	smallStepSweep,
 	SMALL_STEPS_ROOT,
+	SURFACE,
+	SURFACE_NIGHT_ROOT,
+	SURFACE_ROOT,
+	surfaceGround,
+	surfaceWash,
 	type Text,
 } from "./legibility";
 import {hexToOklch, oklchToHex} from "./oklch";
@@ -94,6 +100,10 @@ const MESSAGE = {
 	end: "/* ps:message-palette:end */",
 };
 const GLASS_MARKERS = {start: "/* ps:glass-palette:start", end: "/* ps:glass-palette:end */"};
+const SURFACE_MARKERS = {
+	start: "/* ps:surface-palette:start",
+	end: "/* ps:surface-palette:end */",
+};
 /** Where the message block goes the first time: the end of the scene section. */
 const FIRST_ANCHOR = "/* ---- animals ---- */";
 
@@ -349,6 +359,21 @@ export interface GlassSolved {
 	worst: CheckedGround[];
 }
 
+/**
+ * The surface family's palette for one light (docs/projects/ps-words.md §5):
+ * the column's tokens and nicks on the card, the glass column and the scrim.
+ */
+export interface SurfaceSolved {
+	/** The declared tint by day; at night the lowest at which the ink holds and the soft fits rule 2, up to the cap. */
+	alpha: number;
+	tokens: Record<string, string>;
+	nicks: string[];
+	/** The lightest colour held at 4.5 in the day rule (the one the page's card tint is solved for, with the faint ink at 3) — null at night. */
+	lightest: {name: string; hex: string} | null;
+	/** The worst five grounds under the surface at `alpha`, worst first. */
+	worst: CheckedGround[];
+}
+
 export interface Solved {
 	sweep: LightSweep;
 	column: {
@@ -364,6 +389,7 @@ export interface Solved {
 		small: {sweep: LightSweep; nicks: string[]; against: CheckedGround} | null;
 	};
 	glass: Record<Light, GlassSolved>;
+	surface: Record<Light, SurfaceSolved>;
 	pins: {dusk: {where: string; dark: number}; moon: CheckedGround};
 }
 
@@ -453,6 +479,168 @@ function solveGlass(light: Light, raw: CheckedGround[]): GlassSolved {
 		nicks,
 		worst: worstFive(text, grounds),
 	};
+}
+
+/** The ground under a surface's flat tint, with its luminance, at `alpha`. */
+function underSurface(raw: CheckedGround[], light: Light, alpha: number): CheckedGround[] {
+	return raw.map((g) => {
+		const hex = surfaceGround(g.hex, light, alpha);
+		return {...g, hex, lum: luminance(hex)};
+	});
+}
+
+/** The ground under a mention's wash at `alpha` on the surface, with its luminance. */
+function underWash(raw: CheckedGround[], light: Light, alpha: number): CheckedGround[] {
+	return raw.map((g) => {
+		const hex = surfaceWash(g.hex, light, alpha);
+		return {...g, hex, name: `${g.name} under a mention`, lum: luminance(hex)};
+	});
+}
+
+/** Whether rule 2 can carry `colour` to `floor` over `grounds` (a move of at most RULE_TWO_MAX). */
+function fitsRuleTwo(colour: string, text: Text, grounds: CheckedGround[], floor: number): boolean {
+	try {
+		ruleTwo(colour, text, grounds, floor, "");
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * The surface palette of one light (docs/projects/ps-words.md §5). By day the
+ * tint is the declared one (the mock-up's 0.66, flat) and the grounds are
+ * every ground under it plus the glass column's (`lifted`: the float surface
+ * through the lift at the scene's own tints); at night the tint is the lowest
+ * from the declared one at which the ink holds and the glass soft fits rule 2
+ * — the chrome's own criterion, so the night surface sits at the night
+ * chrome's density — up to the cap. Every token is then solved against the
+ * worst ground as the message block's are: the ink fixed, the faint ink under
+ * rule 2 by day (the ink at 80 % at night), the semantic bases and the nick
+ * hues solved in lightness alone, the code tokens against their box.
+ */
+function solveSurface(light: Light, raw: CheckedGround[], lifted: CheckedGround[]): SurfaceSolved {
+	const spec = SURFACE[light];
+	const text: Text = light === "day" ? "ink" : "light";
+	let alpha = spec.cap;
+
+	if (light === "day") {
+		alpha = spec.base;
+	} else {
+		for (let k = Math.round(spec.base * 100); k <= Math.round(spec.cap * 100); k++) {
+			const under = [...underSurface(raw, light, k / 100), ...underWash(raw, light, k / 100)];
+
+			if (
+				lowest(spec.ink, under).ratio >= TEXT &&
+				fitsRuleTwo(GLASS.night.soft, text, under, TEXT)
+			) {
+				alpha = k / 100;
+				break;
+			}
+		}
+	}
+
+	const grounds = [
+		...underSurface(raw, light, alpha),
+		...underWash(raw, light, alpha),
+		...lifted,
+	];
+	hold(spec.ink, grounds, TEXT, `${light} surface ink at opacity ${alpha}`);
+	const worst = worstFor(text, grounds);
+	const tokens: Record<string, string> = {
+		"--chat-fg": spec.ink,
+		"--body-color": spec.ink,
+		"--md-code-color": spec.ink,
+	};
+
+	if (light === "day") {
+		tokens["--chat-fg-faint"] = ruleTwo(
+			INK_FAINT,
+			"ink",
+			grounds,
+			FAINT,
+			"faint surface ink"
+		).now;
+	} else {
+		const faint = lowestFaintOf(spec.ink, grounds);
+
+		if (faint.ratio < FAINT) {
+			throw new Error(
+				`rule 3: faint night surface ink is ${faint.ratio.toFixed(3)}:1 at ${
+					faint.ground.where
+				}`
+			);
+		}
+
+		const [r, g, b] = [1, 3, 5].map((i) => parseInt(spec.ink.slice(i, i + 2), 16));
+		tokens["--chat-fg-faint"] = `rgb(${r} ${g} ${b} / 80%)`;
+	}
+
+	Object.assign(
+		tokens,
+		{"--ps-code-bg": CODE_BOX[text]},
+		solveAll(SEMANTIC, text, worst.hex),
+		solveAll(CODE, text, CODE_BOX[text])
+	);
+	const nicks = nickBases().map((base) => solve(base, text, worst.hex));
+
+	for (const [name, hex] of Object.entries(tokens)) {
+		if (
+			/^#[0-9a-f]{6}$/.test(hex) &&
+			name !== "--ps-code-bg" &&
+			!/^--tok-|^--md-code-color$/.test(name)
+		) {
+			hold(
+				hex,
+				grounds,
+				name === "--chat-fg-faint" ? FAINT : TEXT,
+				`${light} surface ${name}`
+			);
+		}
+	}
+
+	for (const [i, hex] of nicks.entries()) {
+		hold(hex, grounds, TEXT, `${light} surface nick ${i + 1}`);
+	}
+
+	let lightest: SurfaceSolved["lightest"] = null;
+
+	if (light === "day") {
+		const candidates = [
+			...Object.entries(tokens).filter(
+				([name, hex]) =>
+					/^#[0-9a-f]{6}$/.test(hex) &&
+					name !== "--ps-code-bg" &&
+					name !== "--chat-fg-faint" &&
+					!/^--tok-|^--md-code-color$/.test(name)
+			),
+			...nicks.map((hex, i) => [`.user.color-${i + 1}`, hex] as [string, string]),
+		];
+		const [name, hex] = candidates.reduce((a, b) =>
+			luminance(b[1]) > luminance(a[1]) ? b : a
+		);
+		lightest = {name, hex};
+	}
+
+	return {alpha, tokens, nicks, lightest, worst: worstFive(text, grounds)};
+}
+
+/** `ink` at 80 % over its own ground, against that ground, at its worst. */
+function lowestFaintOf(
+	ink: string,
+	grounds: CheckedGround[]
+): {ratio: number; ground: CheckedGround} {
+	let best = {ratio: Infinity, ground: grounds[0]};
+
+	for (const g of grounds) {
+		const ratio = contrast(mix(g.hex, ink, 0.8), g.hex);
+
+		if (ratio < best.ratio) {
+			best = {ratio, ground: g};
+		}
+	}
+
+	return best;
 }
 
 /**
@@ -569,6 +757,14 @@ export function solvePalettes(options: Partial<Options> = {}): Solved {
 			small,
 		},
 		glass: {day: solveGlass("day", g.glass.day), night: solveGlass("night", g.glass.night)},
+		surface: {
+			day: solveSurface(
+				"day",
+				g.glass.day,
+				dayGlassGrounds("dense").filter((x) => x.surface === "float")
+			),
+			night: solveSurface("night", g.glass.night, []),
+		},
 		pins: {dusk: duskPin(), moon},
 	};
 }
@@ -768,6 +964,61 @@ export function glassBlock(s: Solved): string {
 	].join("\n");
 }
 
+/** The surface block, markers included. */
+export function surfaceBlock(s: Solved): string {
+	const day = s.surface.day;
+	const night = s.surface.night;
+	const rule = (root: string, x: SurfaceSolved) => [
+		`${root} {`,
+		`\t--ps-s-tint: ${x.alpha};`,
+		...declarations(x.tokens),
+		"}",
+	];
+
+	return [
+		`${SURFACE_MARKERS.start} — generated by`,
+		" * `npx tsx tools/ps/palette-blocks.ts --write`; edit the generator, not",
+		" * this block. The surface family of the Words over the plains setting",
+		" * (docs/projects/ps-words.md §4, §5: bubbles, glass, scrim; Bubbles when the",
+		" * attribute is missing): every token the message column reads, solved for",
+		" * the words standing plain on a translucent surface rather than carrying a",
+		" * shadow — by day the paper tint, flat, at the mock-up's declared opacity",
+		" * over every ground of the dense sweep (the sky, the bodies, the plains,",
+		" * the veil), and the glass column's float tint through the lift at the",
+		" * scene's own tints; at night the dark tint at the lowest opacity from the",
+		" * declared one at which the ink holds and the glass soft fits rule 2 (the",
+		" * night chrome's own criterion), up to the cap. The ink is the chrome's;",
+		" * every other colour keeps its base's hue and chroma and is solved to 4.6",
+		" * in lightness alone against the worst ground, the code tokens against",
+		" * their box. The page solves the day card tint per 5-minute step at or",
+		" * under the declared one (client/js/scenes/ps/glass.ts: the card holds the",
+		" * lightest text named here at 4.6), and the scrim's far edge, 0.3 of it, is",
+		" * pinned rather than held (ps-theme.md §11).",
+		` *   day: opacity ${day.alpha} (declared, the mock-up's), lightest text ${
+			day.lightest!.name
+		} ${day.lightest!.hex}, faint ink ${day.tokens["--chat-fg-faint"]} (held at 3)`,
+		` *   night: opacity ${night.alpha} (spec ${SURFACE.night.base}, cap ${SURFACE.night.cap})`,
+		" * The worst grounds under the day surface, darkest first, at its opacity:",
+		...day.worst.map(groundLine),
+		" * The worst under the night surface, brightest first:",
+		...night.worst.map(groundLine),
+		" * Six-digit hex throughout: the floors test reads every colour in that form. */",
+		"/* stylelint-disable color-hex-length, no-duplicate-selectors, max-line-length */",
+		...rule(SURFACE_ROOT, day),
+		"",
+		...rule(SURFACE_NIGHT_ROOT, night),
+		"",
+		...day.nicks.map((hex, i) => `${SURFACE_ROOT} .user.color-${i + 1} { color: ${hex}; }`),
+		"",
+		...night.nicks.map(
+			(hex, i) => `${SURFACE_NIGHT_ROOT} .user.color-${i + 1} { color: ${hex}; }`
+		),
+		"/* stylelint-enable color-hex-length, no-duplicate-selectors, max-line-length */",
+		"",
+		SURFACE_MARKERS.end,
+	].join("\n");
+}
+
 /** `css` with a block in place: replacing the old one, or at `anchor` (before or after it) the first time. */
 function withBlock(
 	css: string,
@@ -798,10 +1049,17 @@ function withBlock(
 	return anchor.after ? `${before}\n\n${block}${after}` : `${before}${block}\n\n${after}`;
 }
 
-/** ps.css with both blocks in place: the message block at the end of the scene section, the glass block after it. */
+/** ps.css with the three blocks in place: the message block at the end of the scene section, the glass block after it, the surface block after that. */
 export function withBlocks(css: string, s: Solved): string {
 	const next = withBlock(css, messageBlock(s), MESSAGE, {text: FIRST_ANCHOR, after: false});
-	return withBlock(next, glassBlock(s), GLASS_MARKERS, {text: MESSAGE.end, after: true});
+	const withGlass = withBlock(next, glassBlock(s), GLASS_MARKERS, {
+		text: MESSAGE.end,
+		after: true,
+	});
+	return withBlock(withGlass, surfaceBlock(s), SURFACE_MARKERS, {
+		text: GLASS_MARKERS.end,
+		after: true,
+	});
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
@@ -833,6 +1091,6 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
 			next === css ? "ps.css: the blocks are already current" : "ps.css: blocks written"
 		);
 	} else {
-		console.log(`${messageBlock(solved)}\n\n${glassBlock(solved)}`);
+		console.log(`${messageBlock(solved)}\n\n${glassBlock(solved)}\n\n${surfaceBlock(solved)}`);
 	}
 }

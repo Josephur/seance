@@ -13,6 +13,7 @@
  * successful `createNetwork` saves/updates the entry and marks it last used.
  */
 
+import {CLOSED_STORAGE_KEY, closedStorageChanged, onClosedSharingStopped} from "./closedQueries";
 import socket from "../socket";
 import {store} from "../store";
 import {parseKeywordList} from "../highlight";
@@ -130,6 +131,13 @@ export function createNetwork(options: CreateNetworkOptions): IrcClient {
 		client.setGlobalMode(globalMode);
 		client.setGlobalDnd(globalDnd.active, globalDnd.until);
 
+		// A client starts attended and foreground.ts only reports changes:
+		// a page that boots hidden (a shell relaunched in the background,
+		// a background tab) would otherwise read whatever it opens.
+		if (document.visibilityState === "hidden") {
+			client.setAttended(false);
+		}
+
 		if (entry.name) {
 			client.setNetworkName(entry.name);
 		}
@@ -221,6 +229,21 @@ if (typeof window !== "undefined") {
 	// it out whenever the page may not come back — a phone kills a hidden
 	// page without a pagehide.
 	window.addEventListener("pagehide", flushQueryLogs);
+	// Private conversations no longer kept: every connected network deletes
+	// the account's list of closed ones (a network down meanwhile does so at
+	// its next login read).
+	onClosedSharingStopped(() => {
+		for (const client of allClients()) {
+			client.unshareClosed();
+		}
+	});
+	// Another tab closed a query: a window this one opened by itself for
+	// that conversation goes too (irc/closedQueries.ts).
+	window.addEventListener("storage", (ev: StorageEvent) => {
+		if (ev.key === CLOSED_STORAGE_KEY) {
+			closedStorageChanged(allClients());
+		}
+	});
 	document.addEventListener("visibilitychange", () => {
 		if (document.visibilityState === "hidden") {
 			flushQueryLogs();
@@ -236,6 +259,9 @@ if (typeof window !== "undefined") {
 			if (client.isConnected) {
 				client.send("QUIT :page closed");
 			}
+
+			// Registering or still dialling, the server has counted it too.
+			client.noteUnload();
 		}
 	});
 }

@@ -348,6 +348,17 @@ const INSTALL_SHIM = `(() => {
  * scene reads `new Date()` when it mounts. It seeds no setting: the run picks
  * the theme itself.
  */
+/** Every inherited check reads the outline: seed it unless a choice is stored already (the words passes store their own and put outline back). */
+const WORDS_SEED = `(() => {
+	try {
+		const s = JSON.parse(localStorage.getItem("settings") || "{}");
+		if (!("psWords" in s)) {
+			s.psWords = "outline";
+			localStorage.setItem("settings", JSON.stringify(s));
+		}
+	} catch (e) {}
+})()`;
+
 const CLOCK_SHIM = `(() => {
 	const RealDate = Date;
 	const realNow = RealDate.now.bind(RealDate);
@@ -1825,6 +1836,104 @@ async function chooseTheme(page, name) {
 	await page.sleep(700);
 }
 
+/**
+ * The Words over the plains setting (docs/projects/ps-words.md), by its radio
+ * in Appearance. Every check this scenario inherited from plans 1 to 4 reads
+ * the outline (today's words), so the run seeds `outline` (WORDS_SEED) and
+ * the six-treatment passes below choose each in turn and put outline back.
+ */
+async function chooseWords(page, words) {
+	await openAppearance(page);
+	await page.click(`#settings input[name="psWords"][value="${words}"]`);
+	await closeSettings(page);
+	await page.sleep(600);
+}
+
+const WORDS = ["bubbles", "glass", "scrim", "outline", "rim", "glow"];
+
+/** What the page shows under a words treatment: the attribute and the probe its CSS proves it by. */
+const WORDS_PROBE = `(() => {
+	const html = document.documentElement;
+	const column = document.querySelector("#chat .chat-content > .chat");
+	// A plain message row of someone else's (not a pending copy, not a condensed group): the card is on every row, this one is the probe.
+	const row =
+		[...document.querySelectorAll('#chat .chat .msg[data-type="message"]:not(.pending)')].at(-1) ??
+		[...document.querySelectorAll("#chat .chat .msg")].at(-1);
+	const cs = getComputedStyle(row);
+	const shadow = cs.textShadow;
+	return {
+		words: html.dataset.psWords ?? null,
+		row: row.dataset.type + " " + row.className,
+		rowWidth: row.getBoundingClientRect().width,
+		columnWidth: column.getBoundingClientRect().width,
+		rowFill: cs.backgroundColor,
+		columnBlur: getComputedStyle(column).backdropFilter,
+		columnImage: getComputedStyle(column).backgroundImage,
+		shadow,
+		rings78: shadow.split("0.78)").length - 1,
+		rings60: shadow.split("0.6)").length - 1,
+		rings28: shadow.split("0.28)").length - 1,
+		layers: shadow === "none" ? 0 : shadow.split(/,\\s*(?![^()]*\\))/).length,
+	};
+})()`;
+
+/** Each of the six, chosen through Settings at the clock's moment: the attribute, the proof, a screenshot. */
+async function wordsPass(page, when) {
+	const seen = {};
+
+	for (const w of WORDS) {
+		await chooseWords(page, w);
+		seen[w] = await page.evaluate(WORDS_PROBE);
+		await page.screenshot(`ps-words-${w}-${when}`);
+	}
+
+	const transparent = (fill) => /^rgba\(\d+, \d+, \d+, 0\)$|^transparent$/.test(fill);
+	page.check(
+		`words at ${when}, bubbles: a row is a card narrower than the column with a fill (${seen.bubbles.rowWidth} of ${seen.bubbles.columnWidth}px, ${seen.bubbles.rowFill}; the row ${seen.bubbles.row}), no shadow on the words`,
+		seen.bubbles.words === "bubbles" &&
+			seen.bubbles.rowWidth < seen.bubbles.columnWidth - 40 &&
+			!transparent(seen.bubbles.rowFill) &&
+			seen.bubbles.shadow === "none"
+	);
+	page.check(
+		`words at ${when}, glass: the column carries the backdrop blur (${seen.glass.columnBlur}), the rows are plain`,
+		seen.glass.words === "glass" &&
+			seen.glass.columnBlur.includes("blur") &&
+			transparent(seen.glass.rowFill) &&
+			seen.glass.shadow === "none"
+	);
+	page.check(
+		`words at ${when}, scrim: the column carries the gradient and no blur (${seen.scrim.columnBlur})`,
+		seen.scrim.words === "scrim" &&
+			seen.scrim.columnImage.startsWith("linear-gradient") &&
+			seen.scrim.columnBlur === "none" &&
+			seen.glass.columnImage === "none"
+	);
+	page.check(
+		`words at ${when}, outline: eight 1px offsets at 78 % and the 28 % ring (${seen.outline.rings78}/${seen.outline.rings28}), no card`,
+		seen.outline.words === "outline" &&
+			seen.outline.rings78 === 8 &&
+			seen.outline.rings28 === 8 &&
+			transparent(seen.outline.rowFill)
+	);
+	page.check(
+		`words at ${when}, rim: eight offsets at 60 % in the rim's colour, no 28 % and no 78 % ring (${seen.rim.rings60}/${seen.rim.rings28}/${seen.rim.rings78})`,
+		seen.rim.words === "rim" &&
+			seen.rim.rings60 === 8 &&
+			seen.rim.rings28 === 0 &&
+			seen.rim.rings78 === 0 &&
+			!seen.rim.shadow.includes("rgba(0, 0, 0")
+	);
+	page.check(
+		`words at ${when}, glow: four layers and no ring (${seen.glow.layers} layers, ${seen.glow.rings78}/${seen.glow.rings60} ring offsets)`,
+		seen.glow.words === "glow" &&
+			seen.glow.layers === 4 &&
+			seen.glow.rings78 === 0 &&
+			seen.glow.rings60 === 0
+	);
+	await chooseWords(page, "outline");
+}
+
 /** Settings is a modal over the whole app: nothing behind its backdrop
  * takes a click, so leave through Done before touching the sidebar. */
 async function closeSettings(page) {
@@ -1870,6 +1979,36 @@ const GLYPH_MIN_RING = 40;
 const GLYPH_MIN_ELEMENTS = 4;
 /** How far past an element's text boxes its ring is gathered, in CSS px. */
 const GLYPH_REACH = 3;
+/** The glyph samples' two days: a clear summer day and a snowy winter one. */
+const GLYPH_DAYS = [
+	["summer, 4 August", 8, 4, 216, "clear"],
+	["snowy winter, 8 January", 1, 8, 8, "snow"],
+];
+/** The shadow treatments sampled: the outline over both days, the rim and the glow over the summer one (docs/projects/ps-words.md §5). */
+const GLYPH_WORDS = ["outline", "rim", "glow"];
+/**
+ * What the rim and the glow are held to at the glyphs (docs/projects/ps-words.md
+ * §5): pinned a little under the worst figures of the first two runs over the
+ * summer day's six moments (noon's: the rim words 3.86–3.90, time 2.03–2.43,
+ * nick 2.18–2.34, faint 3.50–3.51; the glow words 2.00–2.01, time 1.14–1.19,
+ * nick 1.07–1.09, faint 1.79), since the clouds' phase differs run to run and
+ * moves the grounds under the words — never the outline's floors, which the
+ * user traded for a softer look. A treatment losing a layer drops these by far
+ * more than the slack.
+ */
+const GLYPH_PINNED = {
+	rim: {words: 3.5, time: 1.8, nick: 2.0, faint: 3.2},
+	glow: {words: 1.8, time: 1.0, nick: 1.0, faint: 1.6},
+};
+
+/** Each kind's floor at a sample: the outline's by the sweep, the rim's and the glow's pinned. */
+function glyphFloors(words, text, large) {
+	if (words !== "outline") {
+		return GLYPH_PINNED[words];
+	}
+
+	return {words: 4.5, time: 4.5, nick: text === "light" && large ? 3 : 4.5, faint: 3};
+}
 /** The wait after the last change before a frame is shot. */
 const GLYPH_SETTLE_MS = 300;
 
@@ -2276,6 +2415,7 @@ async function sendLine(page, text) {
 export default async function run(page) {
 	// The real clock until the plains' fixed days move it.
 	await page.addInitScript(CLOCK_SHIM);
+	await page.addInitScript(WORDS_SEED);
 	// A ?host link only pre-fills the connect form (a link is a suggestion,
 	// boot.ts handleQueryParams); connect for real.
 	await page.goto(page.url, {waitForSelector: "#connect form"});
@@ -2867,6 +3007,7 @@ export default async function run(page) {
 	checkAccent(page, noonChrome, "noon");
 	await checkComposer(page, "noon");
 	await page.screenshot("ps-noon");
+	await wordsPass(page, "noon");
 	// A send's embers at noon, still, over the row and the rows above it.
 	const noonSparks = await emberFrame(page, `embers at noon ${RUN}`, "ps-embers-noon");
 	page.check(
@@ -3233,127 +3374,136 @@ export default async function run(page) {
 		{label: "the neighbour's phrase"}
 	);
 
-	for (const [season, month, day, doy, want] of [
-		["summer, 4 August", 8, 4, 216, "clear"],
-		["snowy winter, 8 January", 1, 8, 8, "snow"],
-	]) {
-		const sun = sunTimes(doy);
+	for (const words of GLYPH_WORDS) {
+		if (words !== "outline") {
+			await chooseWords(page, words);
+		}
 
-		for (const [moment, minute] of [
-			["noon", 750],
-			["golden hour", sun.set - 60],
-			["sunset", sun.set],
-			["dusk", sun.set + 45],
-			["midnight", 0],
-			["first light", sun.rise - 60],
-		]) {
-			const slug = `${month === 8 ? "summer" : "winter"}-${moment.replace(" ", "-")}`;
-			const {s, frozen, easing, sample, m} = await glyphSample(
-				page,
-				Date.UTC(2026, month - 1, day, 0, Math.round(minute)),
-				slug
-			);
-			const where = `glyphs, ${season}, ${moment} (${hhmm(s.minute)}, ${s.weather}, ${
-				s.text
-			} words, ${s.light} glass)`;
-			const measured = (m.results ?? []).filter((r) => !r.skipped);
-			const kinds = {words: [], time: [], nick: [], faint: []};
+		for (const [season, month, day, doy, want] of GLYPH_DAYS.filter(
+			([, month]) => words === "outline" || month === 8
+		)) {
+			const sun = sunTimes(doy);
 
-			for (const r of measured) {
-				kinds[r.kind].push(r);
+			for (const [moment, minute] of [
+				["noon", 750],
+				["golden hour", sun.set - 60],
+				["sunset", sun.set],
+				["dusk", sun.set + 45],
+				["midnight", 0],
+				["first light", sun.rise - 60],
+			]) {
+				const slug = `${words === "outline" ? "" : `${words}-`}${
+					month === 8 ? "summer" : "winter"
+				}-${moment.replace(" ", "-")}`;
+				const {s, frozen, easing, sample, m} = await glyphSample(
+					page,
+					Date.UTC(2026, month - 1, day, 0, Math.round(minute)),
+					slug
+				);
+				const where = `glyphs under ${words}, ${season}, ${moment} (${hhmm(s.minute)}, ${
+					s.weather
+				}, ${s.text} words, ${s.light} glass)`;
+				const measured = (m.results ?? []).filter((r) => !r.skipped);
+				const kinds = {words: [], time: [], nick: [], faint: []};
+
+				for (const r of measured) {
+					kinds[r.kind].push(r);
+				}
+
+				const worst = (list) => list.reduce((w, r) => (!w || r.p10 < w.p10 ? r : w), null);
+				const large = ["large", "xlarge", "huge"].includes(sample.step);
+				const floors = glyphFloors(words, sample.text, large);
+				page.check(
+					`${where}: the sample stands — the day's weather, the scene frozen (${
+						frozen.running
+					} running, ${frozen.cssAnims} CSS animations, psng-frozen ${
+						frozen.frozen
+					}, ${easing} easing), the frames ${m.W}×${m.H} and ${m.BW}×${m.BH} for a ${
+						sample.clip.width
+					}×${sample.clip.height} clip at DPR ${
+						sample.dpr
+					}, the frame still (shot twice, ${
+						m.moved
+					} px apart by more than ${GLYPH_CORE_DIFF} levels${
+						m.moved ? ` at ${JSON.stringify(m.movedAt)}` : ""
+					}; ${
+						m.rounding
+					} by the raster's rounding), the twin elsewhere within the raster's rounding (${
+						m.off
+					} px more than 2 px from a glyph, by up to ${m.offMax}), ${Object.entries(kinds)
+						.map(([k, v]) => `${v.length} ${k}`)
+						.join(", ")} measured (${sample.cut} outside the band or cut by its edges)`,
+					s.doy === doy &&
+						s.weather === want &&
+						frozen.frozen &&
+						frozen.running === 0 &&
+						frozen.cssAnims === 0 &&
+						easing === 0 &&
+						m.W === sample.clip.width * sample.dpr &&
+						m.H === sample.clip.height * sample.dpr &&
+						m.BW === m.W &&
+						m.BH === m.H &&
+						m.moved === 0 &&
+						m.offMax <= GLYPH_CORE_DIFF &&
+						Object.values(kinds).every((v) => v.length >= GLYPH_MIN_ELEMENTS)
+				);
+				const figure = (k) => {
+					const w = worst(kinds[k]);
+					return w
+						? `${k} ${w.p10.toFixed(2)} (floor ${floors[k]}; min ${w.min.toFixed(
+								2
+						  )}, median ${w.median.toFixed(2)}, "${w.label}")`
+						: `${k} none`;
+				};
+				page.check(
+					`${where}: every glyph holds its floor at the 10th percentile of its ring, worst element each — ${[
+						"words",
+						"time",
+						"nick",
+						"faint",
+					]
+						.map(figure)
+						.join("; ")} (faint: ${sample.faintProbe} composited over the words' ring)`,
+					Object.entries(kinds).every(
+						([k, v]) => v.length > 0 && v.every((r) => r.p10 >= floors[k])
+					)
+				);
+				console.log(
+					`glyphs ${JSON.stringify({
+						words,
+						season,
+						moment,
+						at: hhmm(s.minute),
+						weather: s.weather,
+						text: s.text,
+						light: s.light,
+						step: sample.step,
+						dpr: sample.dpr,
+						kinds: Object.fromEntries(
+							Object.entries(kinds).map(([k, v]) => {
+								const w = worst(v);
+								const all = v.map((r) => r.min);
+								return [
+									k,
+									{
+										n: v.length,
+										worstP10: w && +w.p10.toFixed(3),
+										worstLabel: w && w.label,
+										worstMedian: w && +w.median.toFixed(3),
+										minOverAll: all.length
+											? +Math.min(...all).toFixed(3)
+											: null,
+									},
+								];
+							})
+						),
+					})}`
+				);
 			}
-
-			const worst = (list) => list.reduce((w, r) => (!w || r.p10 < w.p10 ? r : w), null);
-			const large = ["large", "xlarge", "huge"].includes(sample.step);
-			const floors = {
-				words: 4.5,
-				time: 4.5,
-				nick: sample.text === "light" && large ? 3 : 4.5,
-				faint: 3,
-			};
-			page.check(
-				`${where}: the sample stands — the day's weather, the scene frozen (${
-					frozen.running
-				} running, ${frozen.cssAnims} CSS animations, psng-frozen ${
-					frozen.frozen
-				}, ${easing} easing), the frames ${m.W}×${m.H} and ${m.BW}×${m.BH} for a ${
-					sample.clip.width
-				}×${sample.clip.height} clip at DPR ${sample.dpr}, the frame still (shot twice, ${
-					m.moved
-				} px apart by more than ${GLYPH_CORE_DIFF} levels${
-					m.moved ? ` at ${JSON.stringify(m.movedAt)}` : ""
-				}; ${
-					m.rounding
-				} by the raster's rounding), the twin elsewhere within the raster's rounding (${
-					m.off
-				} px more than 2 px from a glyph, by up to ${m.offMax}), ${Object.entries(kinds)
-					.map(([k, v]) => `${v.length} ${k}`)
-					.join(", ")} measured (${sample.cut} outside the band or cut by its edges)`,
-				s.doy === doy &&
-					s.weather === want &&
-					frozen.frozen &&
-					frozen.running === 0 &&
-					frozen.cssAnims === 0 &&
-					easing === 0 &&
-					m.W === sample.clip.width * sample.dpr &&
-					m.H === sample.clip.height * sample.dpr &&
-					m.BW === m.W &&
-					m.BH === m.H &&
-					m.moved === 0 &&
-					m.offMax <= GLYPH_CORE_DIFF &&
-					Object.values(kinds).every((v) => v.length >= GLYPH_MIN_ELEMENTS)
-			);
-			const figure = (k) => {
-				const w = worst(kinds[k]);
-				return w
-					? `${k} ${w.p10.toFixed(2)} (floor ${floors[k]}; min ${w.min.toFixed(
-							2
-					  )}, median ${w.median.toFixed(2)}, "${w.label}")`
-					: `${k} none`;
-			};
-			page.check(
-				`${where}: every glyph holds its floor at the 10th percentile of its ring, worst element each — ${[
-					"words",
-					"time",
-					"nick",
-					"faint",
-				]
-					.map(figure)
-					.join("; ")} (faint: ${sample.faintProbe} composited over the words' ring)`,
-				Object.entries(kinds).every(
-					([k, v]) => v.length > 0 && v.every((r) => r.p10 >= floors[k])
-				)
-			);
-			console.log(
-				`glyphs ${JSON.stringify({
-					season,
-					moment,
-					at: hhmm(s.minute),
-					weather: s.weather,
-					text: s.text,
-					light: s.light,
-					step: sample.step,
-					dpr: sample.dpr,
-					kinds: Object.fromEntries(
-						Object.entries(kinds).map(([k, v]) => {
-							const w = worst(v);
-							const all = v.map((r) => r.min);
-							return [
-								k,
-								{
-									n: v.length,
-									worstP10: w && +w.p10.toFixed(3),
-									worstLabel: w && w.label,
-									worstMedian: w && +w.median.toFixed(3),
-									minOverAll: all.length ? +Math.min(...all).toFixed(3) : null,
-								},
-							];
-						})
-					),
-				})}`
-			);
 		}
 	}
+
+	await chooseWords(page, "outline");
 
 	// ---- reduced motion on fixed days (spec §9)
 
@@ -3540,6 +3690,7 @@ export default async function run(page) {
 		inRain.sets.length === 1 && inRain.sets[0].clouds === 4 && inRain.clouds === 9
 	);
 	await page.screenshot("ps-midnight-sep26");
+	await wordsPass(page, "midnight");
 
 	// A rainy 26 September into a clear 27th, by the scene's own minute timer:
 	// no visibility poke once the clock is set. The tick is due at 00:00:00.02.

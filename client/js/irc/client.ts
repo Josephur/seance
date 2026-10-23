@@ -16,6 +16,7 @@
 
 import socket, {EventBus} from "../socket";
 import {brandingFeatures} from "../branding";
+import {dialGateFor, type DialGate} from "./dialLedger";
 import {createHighlightTester} from "../highlight";
 import {ChanState, ChanType} from "../../../shared/types/chan";
 import {MessageType, SharedMsg, TypingState} from "../../../shared/types/msg";
@@ -29,13 +30,15 @@ import type {
 import type {PushSession, ServerToClientEvents} from "../../../shared/types/socket-events";
 import {CapNegotiator, SEANCE_CAPS, webpushVapidOf, WEBPUSH_CAP} from "./caps";
 import {casefold, namesEqual} from "./casemap";
-import {Channel, MsgRef} from "./channel";
+import {Channel, MsgRef, SAID_TYPES, countsAsUnread} from "./channel";
 import {QueryLog} from "./querylog";
 import {commandNames, dispatchInput} from "./commands";
 import {describeClose} from "./disconnect";
 import {handlers, unhandled} from "./handlers";
 import {FILEHOST_SERVICE, TokenRequests, filehostUrlOf} from "./authtoken";
 import {interceptBatchLine, resetBatches} from "./handlers/batch";
+import {PAYLOAD_KEY} from "./handlers/metadata";
+import {CLOSED_KEY, ClosedQueries, closedQueriesKept, encodeClosed} from "./closedQueries";
 import {
 	CONCAT_LINE_TAG_BYTES,
 	MULTILINE_CAP,
@@ -47,9 +50,12 @@ import {
 	sendMultiline,
 } from "./multiline";
 import {
+	applyReadMarker,
 	cancelMarkRead,
+	countPageUnread,
 	flushDeferredMarkRead,
 	markReadAt,
+	readNow,
 	scheduleMarkRead,
 } from "./handlers/markread";
 import {
@@ -78,8 +84,12 @@ import {
 	cancelCatchup,
 	dropFromCatchup,
 	enqueueCatchup,
+	noteJoinsSent,
+	enqueueMarkerFetch,
+	releaseMarkers,
 	prefetchCatchup,
 	prioritiseCatchup,
+	queueModes,
 } from "./catchup";
 import {
 	attachCursorLine,
@@ -88,6 +98,7 @@ import {
 	cancelRestoration,
 	persistenceEnableLine,
 	PERSISTENCE_CAP,
+	RESTORE_QUIET_MS,
 	serverReplayCovers,
 } from "./persistence";
 import {IdAllocator, sharedIds} from "./ids";
@@ -120,6 +131,7 @@ import {
 import {channelOrder, get as getSavedNetwork, NetworkCursor, setCursor} from "./saved-networks";
 import {noteServiceReply, resetServiceReplies} from "./services";
 import {dropQuietLine} from "./quiet";
+import {BackgroundQueue, FakeLagClock, type FakeLagModel} from "./fakelag";
 import {ReconnectOptions, TransportEvent, TransportOptions, WsTransport} from "./transport";
 import type {ConnectOptions, InputOptions, IrcClientState, Transport} from "./types";
 import {
@@ -208,6 +220,8 @@ export interface IrcClientOptions extends ConnectOptions {
 	ids?: IdAllocator;
 	/** Build the transport (tests inject a fake); defaults to `new WsTransport(opts)`. */
 	transportFactory?: (opts: TransportOptions) => Transport;
+	/** The server's flood rule as we model it (fakelag.ts); ircu's by default. */
+	fakeLag?: FakeLagModel;
 	reconnect?: ReconnectOptions;
 	/** Custom highlight keywords (from the settings store). */
 	highlights?: () => HighlightKeywords;
@@ -245,12 +259,8 @@ export const SASL_REQUIRED_HINT =
 /** Prefix characters a channel name may start with when the user omits one. */
 const CHANNEL_PREFIXES = "#&!+";
 
-/** Own messages of these types mean the user read the channel (draft/read-marker). */
-const SELF_READ_TYPES: ReadonlySet<MessageType> = new Set([
-	MessageType.MESSAGE,
-	MessageType.ACTION,
-	MessageType.NOTICE,
-]);
+/** A `+typing` TAGMSG: one command of fake lag. */
+const TYPING_COST_MS = 2000;
 
 export class IrcClient {
 	readonly uuid: string;
@@ -358,6 +368,17 @@ export class IrcClient {
 	readonly lobby: Channel;
 	/** Private conversations kept on this device (querylog.ts). */
 	readonly queryLog: QueryLog;
+	/** The queries the user closed: a line from before the close never reopens one. */
+	readonly closed: ClosedQueries;
+	/** This connection's GET of the shared closes answered (irc/closedQueries.ts). */
+	closedKnown = false;
+	/** A close waits for that answer before it is written. */
+	closedPending = false;
+
+	/** This connection will read the account's closed queries but has not yet. */
+	get closedReadAhead(): boolean {
+		return !this.closedKnown && !!this.account && this.caps.hasCapability("draft/metadata-2");
+	}
 	/** Server notices and WALLOPS kept on the device (noticelog.ts). */
 	readonly noticeLog: NoticeLog;
 	/** Being an oper here (oper.ts): level, privileges, snomask. */
@@ -394,6 +415,8 @@ export class IrcClient {
 	account = "";
 	/** The server holds our session across disconnects (`PERSISTENCE STATUS ON`, see persistence.ts). */
 	persistenceHold = false;
+	/** This network's host in the dial ledger (irc/dialLedger.ts). */
+	private dialLedger: DialGate | null = null;
 	/** The user's setting from the last `PERSISTENCE STATUS` line (`ON`,
 	 * `OFF`, `DEFAULT`), undefined before one. An alias of another device's
 	 * session reads `ON OFF`: not held itself, though the session is. */
@@ -435,6 +458,15 @@ export class IrcClient {
 	private connected = false;
 	/** 001 seen on this connection: the server takes commands (`isWelcomed`). */
 	private welcomed = false;
+	/** The server's fake-lag clock as we reckon it (fakelag.ts). */
+	readonly fakeLag: FakeLagClock;
+	/**
+	 * Work nobody is waiting for — catch-up, read markers, mode queries,
+	 * push renewal — sent only while {@link fakeLag} leaves the user room.
+	 */
+	readonly background: BackgroundQueue;
+	/** Tells {@link whenRoom}'s jobs apart. */
+	private roomWaits = 0;
 	private announced = false;
 	private quitting = false;
 	/** Last transport error text for the close report; browsers say nothing useful. */
@@ -445,6 +477,8 @@ export class IrcClient {
 	private closeExplained = false;
 	/** When the transport's next automatic dial is due; only while waiting for a retry. */
 	private retryAt: number | undefined;
+	/** That wait is the server's connection throttle, not the backoff (irc/dialLedger.ts). */
+	private retryThrottled = false;
 	private activeChanId = 0;
 	/** Set while a history batch is replayed through the handlers (see `collectReplay`). */
 	private replayContext: {target: Channel; collected: ReplayCollection} | null = null;
@@ -458,6 +492,8 @@ export class IrcClient {
 	constructor(options: IrcClientOptions) {
 		const host = options.host.trim();
 		this.options = {...options, host};
+		this.fakeLag = new FakeLagClock(options.fakeLag);
+		this.background = new BackgroundQueue(this.fakeLag, () => this.isWelcomed);
 		this.nick = options.nick;
 		this.ident = options.username || sanitizeIdent(options.nick);
 		this.uuid = options.uuid ?? deriveUuid(host, options.port, options.nick);
@@ -498,10 +534,21 @@ export class IrcClient {
 		);
 
 		this.noticeLog = new NoticeLog(this.uuid, () => getSavedNetwork(this.uuid) !== undefined);
+		this.closed = new ClosedQueries(this.uuid, (s) => this.casefold(s));
 
 		for (const name of this.queryLog.names()) {
+			const newest = this.queryLog.newestAt(name);
+
+			// Closed in another tab since this log was written.
+			if (newest !== undefined && this.closed.suppresses(name, new Date(newest))) {
+				this.queryLog.forget(name);
+				continue;
+			}
+
 			if (!this.findChannel(name) && !this.isChannelName(name)) {
-				this.restoredQueries.push(this.createChannel(name, ChanType.QUERY).channel);
+				const {channel} = this.createChannel(name, ChanType.QUERY);
+				channel.autoOpened = true;
+				this.restoredQueries.push(channel);
 			}
 		}
 	}
@@ -533,6 +580,8 @@ export class IrcClient {
 	/** The 001 handler: see {@link isWelcomed}. */
 	markWelcomed(): void {
 		this.welcomed = true;
+		this.fakeLag.start();
+		this.background.pump(); // anything queued before 001 can go now
 	}
 
 	get name(): string {
@@ -594,6 +643,7 @@ export class IrcClient {
 			connecting: this._state === "connecting" || this._state === "registering",
 			secure: this.options.tls,
 			...(this.retryAt !== undefined ? {retryAt: this.retryAt} : {}),
+			...(this.retryThrottled ? {retryThrottled: true} : {}),
 		};
 	}
 
@@ -670,6 +720,7 @@ export class IrcClient {
 		this.quitting = false;
 		this.closeHintShown = false;
 		this.retryAt = undefined;
+		this.retryThrottled = false;
 		this._state = "connecting";
 		this.bus.dispatch("connecting");
 		this.announceStatus();
@@ -699,6 +750,7 @@ export class IrcClient {
 
 		this.transport.close();
 		this.retryAt = undefined;
+		this.retryThrottled = false;
 
 		if (state === "reconnect-wait") {
 			// The socket is already gone, so no close event follows: settle here.
@@ -795,6 +847,22 @@ export class IrcClient {
 			transportOptions.reconnect = this.options.reconnect;
 		}
 
+		// Never dial into the server's connection throttle (irc/dialLedger.ts).
+		// A drop counts there only when the server lets the connection go: a
+		// session the bouncer holds stays counted (bounce_hold_client never
+		// calls IPcheck_disconnect), so its drop restarts nothing.
+		const ledger = dialGateFor(this.options.host);
+		this.dialLedger = ledger;
+		transportOptions.gate = {
+			waitMs: (now) => ledger.waitMs(now),
+			record: (at) => ledger.record(at),
+			closed: (at) => {
+				if (!this.persistenceHold) {
+					ledger.closed(at);
+				}
+			},
+		};
+
 		return this.options.transportFactory
 			? this.options.transportFactory(transportOptions)
 			: new WsTransport(transportOptions);
@@ -886,16 +954,30 @@ export class IrcClient {
 			case "reconnecting":
 				this._state = "connecting";
 				this.bus.dispatch("connecting");
+
+				// The server's throttle, waited out (irc/dialLedger.ts): a
+				// connect() that never dialled has no close to carry its due time.
+				if (ev.throttled) {
+					this.retryAt = Date.now() + ev.delayMs;
+					this.retryThrottled = true;
+					this.announceStatus();
+				}
+
 				this.pushMessage(
 					this.lobby,
 					{
 						// A stable connection's loss retries at once (transport.ts).
-						text:
-							ev.delayMs < 500
-								? `Reconnecting now (attempt ${ev.attempt})…`
-								: `Reconnecting in ${Math.round(ev.delayMs / 1000)}s (attempt ${
-										ev.attempt
-								  })…`,
+						text: ev.throttled
+							? `Waiting ${Math.round(
+									ev.delayMs / 1000
+							  )}s: the server limits how often a device can reconnect (attempt ${
+									ev.attempt
+							  })…`
+							: ev.delayMs < 500
+							? `Reconnecting now (attempt ${ev.attempt})…`
+							: `Reconnecting in ${Math.round(ev.delayMs / 1000)}s (attempt ${
+									ev.attempt
+							  })…`,
 					},
 					true
 				);
@@ -904,6 +986,7 @@ export class IrcClient {
 				// The scheduled retry is dialling now: no due time any more.
 				this._state = "connecting";
 				this.retryAt = undefined;
+				this.retryThrottled = false;
 				this.announceStatus();
 				this.pushMessage(
 					this.lobby,
@@ -925,7 +1008,9 @@ export class IrcClient {
 		this._state = "registering";
 		this.connected = false;
 		this.welcomed = false;
+		this.fakeLag.stop();
 		this.retryAt = undefined;
+		this.retryThrottled = false;
 		this.closeHintShown = false;
 		this.isupport.reset();
 		this.learnedNickLen = undefined;
@@ -1118,7 +1203,7 @@ export class IrcClient {
 					Math.max(this.syncLineAt ?? -Infinity, lastInSync(this.uuid) ?? -Infinity),
 					Date.now()
 				);
-				lines.push(`METADATA * SUB ${MUTE_KEY} ${PRESENCE_KEY} ${MODE_KEY}`);
+				lines.push(`METADATA * SUB ${MUTE_KEY} ${PRESENCE_KEY} ${MODE_KEY} ${CLOSED_KEY}`);
 			}
 
 			const line = registrationAwayLine(this);
@@ -1240,6 +1325,9 @@ export class IrcClient {
 		this._state = "disconnected";
 		this.connected = false;
 		this.welcomed = false;
+		this.fakeLag.stop();
+		this.background.clear();
+
 		this.clearMuteRead();
 
 		if (this.syncLineAt !== null) {
@@ -1252,12 +1340,15 @@ export class IrcClient {
 		this.presenceServer = null;
 		this.globalKnown = false;
 		this.globalServer = null;
+		this.closedKnown = false;
 		this.metadataSubscribed = false;
 		this.metadataBeforeConnect = false;
 		this.mutePending.length = 0;
 		presenceClosed(this);
 		// The wait before the transport's retry, for the UI to count down;
-		// an immediate retry has nothing worth counting.
+		// an immediate retry has nothing worth counting. Whether it is the
+		// server's throttle comes with the `reconnecting` that follows.
+		this.retryThrottled = false;
 		this.retryAt =
 			willReconnect && delayMs !== undefined && delayMs > 0
 				? Date.now() + delayMs
@@ -1299,6 +1390,13 @@ export class IrcClient {
 
 			cancelMarkRead(chan);
 
+			// An account may read it on another device meanwhile: a `*`
+			// answer no longer holds (a server that volunteers the marker
+			// after JOIN still drops the query, catchup.ts).
+			if (this.options.saslAccount) {
+				chan.markerAnswered = false;
+			}
+
 			if (chan.type === ChanType.CHANNEL) {
 				// Dropped, not our QUIT: the re-JOIN is state, not news (Channel.rejoining).
 				chan.rejoining = chan.state === ChanState.JOINED && !this.quitting;
@@ -1312,6 +1410,7 @@ export class IrcClient {
 			connecting: willReconnect,
 			secure: this.options.tls,
 			...(this.retryAt !== undefined ? {retryAt: this.retryAt} : {}),
+			...(this.retryThrottled ? {retryThrottled: true} : {}),
 		});
 
 		if (wasUp) {
@@ -1400,18 +1499,6 @@ export class IrcClient {
 			}
 		}
 
-		// Opt this connection into session persistence: `PERSISTENCE SET ON`
-		// creates the server's bouncer session and turns its hold on, which
-		// is what draft/webpush triggers fire against. It needs the account
-		// flag, so it only goes out post-registration (a SET sent before CAP
-		// END is answered FAIL ACCOUNT_REQUIRED), and it is idempotent.
-		if (this.caps.hasCapability(PERSISTENCE_CAP) && this.options.saslAccount) {
-			// Flag the ack + STATUS echo as ours: handlers/persistence.ts
-			// swallows them (the user never typed anything).
-			this.persistenceAutoSetPending = true;
-			this.send(persistenceEnableLine());
-		}
-
 		// Web Push availability (draft/webpush): announce the server's VAPID
 		// key (or its absence) so webpush.ts can re-register a stored
 		// subscription and the Settings UI can tell the two cases apart. The
@@ -1429,9 +1516,47 @@ export class IrcClient {
 			// the replay our ATTACH cursor asked for): JOIN only what it does
 			// not restore, once that batch is in.
 			awaitRestoration(this);
+		} else if (this.persistenceSetting === "ON") {
+			// A setting of ON that is not in force (`STATUS ON OFF`) is most
+			// often an alias of another device's live session, which nefarious2
+			// only says after the MOTD (`NOTE BOUNCER ALIAS_ATTACHED`), in the
+			// same call that sent the MOTD and right before the channels
+			// (bounce_setup_local_alias): it is already on the wire, and the
+			// note extends the wait. Otherwise nothing comes, so a short wait.
+			awaitRestoration(this, RESTORE_QUIET_MS);
 		} else {
-			this.autojoin();
+			this.restorationSettled();
 		}
+	}
+
+	/**
+	 * Registration's restoration is in, or was never coming: opt into
+	 * session persistence if that still does something, then JOIN what the
+	 * server did not give back. Once per connection (persistence.ts).
+	 */
+	restorationSettled(): void {
+		// `PERSISTENCE SET ON` creates the server's bouncer session and turns
+		// its hold on, which is what draft/webpush triggers fire against. It
+		// needs the account flag, so it only goes out post-registration (a SET
+		// sent before CAP END is answered FAIL ACCOUNT_REQUIRED), and it is
+		// idempotent — so it is skipped when it would change nothing: every
+		// command after 001 costs fake lag (fakelag.ts).
+		if (
+			this.caps.hasCapability(PERSISTENCE_CAP) &&
+			this.options.saslAccount &&
+			// The setting is ON and in force, or this connection is an alias of
+			// a session that is (it reads `ON OFF`: the alias is not held, the
+			// session is). A setting of ON not in force otherwise (no session,
+			// bouncer off) still asks, since SET ON is what creates the session.
+			!(this.persistenceSetting === "ON" && (this.persistenceHold || this.bouncerAlias))
+		) {
+			// Flag the ack + STATUS echo as ours: handlers/persistence.ts
+			// swallows them (the user never typed anything).
+			this.persistenceAutoSetPending = true;
+			this.send(persistenceEnableLine());
+		}
+
+		this.autojoin();
 	}
 
 	/**
@@ -1446,15 +1571,21 @@ export class IrcClient {
 				chan.type === ChanType.CHANNEL && chan.autoJoin && chan.state === ChanState.PARTED
 		);
 
-		if (joining.length === 0) {
-			return;
+		if (joining.length > 0) {
+			this.joinChannels(joining.map((chan) => ({name: chan.name, key: chan.shared.key})));
+			const active = joining.find((chan) => chan.id === this.activeChanId);
+
+			if (active) {
+				prefetchCatchup(this, active);
+			}
 		}
 
-		this.joinChannels(joining.map((chan) => ({name: chan.name, key: chan.shared.key})));
-		const active = joining.find((chan) => chan.id === this.activeChanId);
-
-		if (active) {
-			prefetchCatchup(this, active);
+		// A logged query with unread lines asks for its read marker behind
+		// the channels (catchup.ts): held until their JOINs have echoed.
+		for (const chan of this.channels) {
+			if (chan.type === ChanType.QUERY) {
+				enqueueMarkerFetch(this, chan);
+			}
 		}
 	}
 
@@ -1479,9 +1610,15 @@ export class IrcClient {
 	 * subscription with this account. The endpoint must be https (the server
 	 * rejects anything else) and the keys are the `PushSubscription.toJSON()`
 	 * material (`p256dh`, `auth`). Registration is idempotent per endpoint —
-	 * re-registering on every connect is the draft's renewal mechanism.
+	 * re-registering on every connect is the draft's renewal mechanism. That
+	 * renewal is background work (nefarious2 keeps a registration 90 days):
+	 * it waits in {@link background} until the fake-lag clock has room.
 	 */
-	webpushRegister(endpoint: string, keys: {p256dh: string; auth: string}): boolean {
+	webpushRegister(
+		endpoint: string,
+		keys: {p256dh: string; auth: string},
+		{renewal = false}: {renewal?: boolean} = {}
+	): boolean {
 		const line = `WEBPUSH REGISTER ${endpoint} p256dh=${keys.p256dh};auth=${keys.auth}`;
 
 		// A REGISTER split in two would be two garbage commands: endpoints are
@@ -1495,6 +1632,15 @@ export class IrcClient {
 			return false;
 		}
 
+		if (renewal) {
+			this.background.add({
+				key: `webpush:${endpoint}`,
+				cost: this.fakeLag.cost(line),
+				run: () => void this.send(line),
+			});
+			return true;
+		}
+
 		return this.send(line);
 	}
 
@@ -1504,10 +1650,38 @@ export class IrcClient {
 	 * the endpoint was not registered.
 	 */
 	webpushUnregister(endpoint: string): boolean {
+		// A renewal still waiting for the clock must not re-register it after.
+		this.background.take(`webpush:${endpoint}`);
 		return this.send(`WEBPUSH UNREGISTER ${endpoint}`);
 	}
 
 	// --------------------------------------------------------------- sending
+
+	/**
+	 * Resolves when the fake-lag clock has room for `cost` ms more of
+	 * background work (fakelag.ts), for a sender that awaits a reply — the
+	 * oper-up queries. Ahead of the catch-up: the oper panel and its menus
+	 * wait on these, other channels' history on nobody. Never resolves if
+	 * the connection closes first.
+	 */
+	whenRoom(key: string, cost = 2000): Promise<void> {
+		return new Promise((resolve) => {
+			this.background.add(
+				{
+					// Never in place of an earlier wait on the same key: that
+					// promise would never resolve.
+					key: `${key}#${++this.roomWaits}`,
+					cost,
+					run: () => {
+						resolve();
+						// The caller's line goes out in a microtask: let it be charged first.
+						this.background.yieldTurn();
+					},
+				},
+				{ahead: (k) => /^(catchup|mode|page|targets):/.test(k)}
+			);
+		});
+	}
 
 	/** Send one raw line. Reports an ERROR message in the lobby instead of throwing. */
 	send(line: string): boolean {
@@ -1518,6 +1692,7 @@ export class IrcClient {
 
 		try {
 			this.transport.send(line);
+			this.fakeLag.charge(line);
 			return true;
 		} catch (err: unknown) {
 			const message = err instanceof Error ? err.message : String(err);
@@ -1536,6 +1711,12 @@ export class IrcClient {
 		// The message itself ends the typing session on the receiver's side:
 		// forget ours (no `done`), and let the next `active` go out at once.
 		this.resetTyping(target);
+		const written = this.findChannel(target);
+
+		if (written) {
+			written.autoOpened = false; // the user wrote in it
+		}
+
 		const command = opts.notice ? "NOTICE" : "PRIVMSG";
 		const firstTags: ClientTags | undefined =
 			opts.tags || opts.firstTags ? {...opts.firstTags, ...opts.tags} : undefined;
@@ -1762,7 +1943,11 @@ export class IrcClient {
 				this.cancelTypingTimer(entry);
 			}
 
-			if (wait <= 0) {
+			// Each notice costs as much fake lag as the message it announces,
+			// and one the server reads seconds late is worse than none: it
+			// goes only when nothing else is waiting and the clock has room
+			// (fakelag.ts), never ahead of the catch-up.
+			if (wait <= 0 && this.background.fits(TYPING_COST_MS)) {
 				this.sendTyping(chan.name, key, state);
 			}
 
@@ -1797,6 +1982,16 @@ export class IrcClient {
 	}
 
 	private sendTyping(target: string, key: string, state: TypingState): void {
+		// A transition is held to the same room as `active` (typing above);
+		// the other side lets an unended session lapse on its own.
+		if (state !== "active" && !this.background.fits(TYPING_COST_MS)) {
+			if (state === "done") {
+				this.typingState.delete(key);
+			}
+
+			return;
+		}
+
 		if (!this.connected || !this.sendTagmsg(target, {[TYPING_TAG]: state})) {
 			return;
 		}
@@ -2034,6 +2229,7 @@ export class IrcClient {
 
 		const flush = () => {
 			if (names.length > 0) {
+				noteJoinsSent(this, names);
 				this.send(lineFor(names, keys));
 				names = [];
 				keys = [];
@@ -2163,10 +2359,17 @@ export class IrcClient {
 			if (this.isWelcomed && this.transport.state === "open") {
 				if (!this.metadataSubscribed) {
 					this.metadataSubscribed = true;
-					this.send(`METADATA * SUB ${MUTE_KEY} ${PRESENCE_KEY} ${MODE_KEY}`);
+					this.send(
+						`METADATA * SUB ${MUTE_KEY} ${PRESENCE_KEY} ${MODE_KEY} ${CLOSED_KEY}`
+					);
 				}
 
-				this.send(`METADATA * GET ${MUTE_KEY} ${PRESENCE_KEY} ${MODE_KEY}`);
+				// The payload tier rides along: an account that wrote it public
+				// before it was written private (WHOIS listed it) is told so in
+				// the answer, and handlers/metadata.ts rewrites it private.
+				this.send(
+					`METADATA * GET ${MUTE_KEY} ${PRESENCE_KEY} ${MODE_KEY} ${PAYLOAD_KEY} ${CLOSED_KEY}`
+				);
 			}
 		}, MUTE_READ_DELAY_MS);
 		// Never what keeps a process (mocha) alive.
@@ -2214,19 +2417,22 @@ export class IrcClient {
 		const chan = this.channelById(chanId);
 
 		if (chan) {
-			chan.shared.unread = 0;
-			chan.shared.highlight = 0;
-			scheduleMarkRead(this, chan);
+			chan.autoOpened = false; // the user has it now
+
+			// Only a person looking reads it: a page that lands here hidden
+			// (a cold start, a deep link) leaves that to attention returning
+			// (presence.ts).
+			if (this.presence.attended) {
+				readNow(this, chan);
+			}
+
 			prioritiseCatchup(this, chan);
 
-			if (
-				chan.type === ChanType.CHANNEL &&
-				chan.state === ChanState.JOINED &&
-				!chan.modesKnown &&
-				this.transport.state === "open"
-			) {
-				chan.modesKnown = true;
-				this.send(formatLine({command: "MODE", params: [chan.name]}));
+			// The modes only feed the "Channel modes" line: background work,
+			// so clicking through channels during the catch-up costs the user
+			// nothing (catchup.ts).
+			if (chan.type === ChanType.CHANNEL && chan.state === ChanState.JOINED) {
+				queueModes(this, chan);
 			}
 		}
 	}
@@ -2291,6 +2497,10 @@ export class IrcClient {
 		const joinName = selfJoin ? msg.params[0] ?? "" : "";
 		const joined = selfJoin ? this.findChannel(joinName) : undefined;
 		const beforeJoin: MsgRef | undefined = selfJoin ? joined?.newestRef : undefined;
+		// Only once history has filled it: before that, its newest stamped line
+		// can be our own previous JOIN, with the scrollback never fetched.
+		const heldBeforeJoin: MsgRef | undefined =
+			selfJoin && joined?.historyFilled ? joined.newestServerRef() : undefined;
 		// A JOIN for a channel we are already in repeats a membership we have
 		// (see handlers/join.ts): its history and modes are not asked again.
 		const alreadyJoined = joined?.state === ChanState.JOINED;
@@ -2316,12 +2526,16 @@ export class IrcClient {
 				// History + read marker, paced (catchup.ts): the active channel
 				// now, the rest one at a time so the server's flood penalty
 				// never queues the user's own lines.
-				enqueueCatchup(this, chan, beforeJoin);
+				enqueueCatchup(this, chan, beforeJoin, heldBeforeJoin);
 			} else if (chan) {
 				// The replay fills the gap, not a `more` page the last
 				// connection died on: that one is asked again here.
 				retryLostHistory(this, chan);
 			}
+
+			// The last autojoin echo lets the queries' markers queue behind
+			// the channels (enqueueMarkerFetch).
+			releaseMarkers(this);
 		}
 	}
 
@@ -2530,6 +2744,112 @@ export class IrcClient {
 		return {channel, index};
 	}
 
+	/**
+	 * Open the query with `nick` for a line it did not ask for (a message, a
+	 * catch-up), unless the user closed that conversation after `time`:
+	 * then nothing opens (irc/closedQueries.ts). A `live` line — not in a
+	 * replay, not in the settling window where a reattach replays unwrapped —
+	 * is news whatever its time: another server stamps it with its own clock,
+	 * and a reply that crossed ours can carry a time before our last line.
+	 * It opens the window, and the close gives way to a reopen so a reload
+	 * keeps it open.
+	 */
+	openAutoQuery(nick: string, time: Date, live = false): Channel | undefined {
+		if (this.closed.suppresses(nick, time)) {
+			if (!live) {
+				return undefined;
+			}
+
+			if (this.closed.reopen(nick)) {
+				this.writeClosed();
+			}
+		}
+
+		const chan = this.announceChannel(nick, ChanType.QUERY);
+		chan.autoOpened = true;
+		return chan;
+	}
+
+	/**
+	 * Write the closes this device knows to the account's private
+	 * {@link CLOSED_KEY} (irc/closedQueries.ts), once this connection's read
+	 * of it has answered; until then the write waits for it.
+	 */
+	writeClosed(): void {
+		// Private conversations not kept: nothing is shared (closedQueries.ts).
+		if (!closedQueriesKept()) {
+			this.closedPending = false;
+			return;
+		}
+
+		if (!this.closedKnown) {
+			this.closedPending = true;
+			return;
+		}
+
+		this.closedPending = false;
+
+		if (!this.isWelcomed || this.transport.state !== "open") {
+			return;
+		}
+
+		// What the server keeps, and what fits one line after the command
+		// (MAX_LINE_BYTES): a server allowing more must not get an unsendable line.
+		const prefix = `METADATA * SET ${CLOSED_KEY} private :`;
+		const room = MAX_LINE_BYTES - new TextEncoder().encode(prefix).length;
+		const value = encodeClosed(
+			this.closed.entries(),
+			Math.min(this.metadataMaxValueBytes(), room),
+			Date.now()
+		);
+		this.send(value ? `${prefix}${value}` : `METADATA * SET ${CLOSED_KEY}`);
+	}
+
+	/**
+	 * Sharing stopped (closedQueries.ts setClosedQueriesKept, or a login read
+	 * that finds a list while it is off): delete the account's list of closed
+	 * conversations, which the network's operators can read, if this
+	 * connection can. The server answers the delete with a 766, the same
+	 * "key not set" a read gets, and that (closedQueries.ts onClosedValue)
+	 * is what marks the network done: a delete lost with the socket or
+	 * refused (`FAIL METADATA RATE_LIMITED`) is tried again at the next read.
+	 */
+	unshareClosed(): void {
+		this.closedPending = false;
+
+		if (
+			this.isWelcomed &&
+			this.transport.state === "open" &&
+			this.account &&
+			this.caps.hasCapability("draft/metadata-2")
+		) {
+			this.send(`METADATA * SET ${CLOSED_KEY}`);
+		}
+	}
+
+	/**
+	 * The page is going away (manager.ts sends a registered connection its
+	 * QUIT): an open or dialling socket drops without a close the transport
+	 * would see, so the drop goes into the dial ledger here — unless the
+	 * bouncer holds the session, which the server keeps counted.
+	 */
+	noteUnload(): void {
+		const live = this.transport.state === "open" || this.transport.state === "connecting";
+
+		if (live && !this.persistenceHold) {
+			this.dialLedger?.closed(Date.now());
+		}
+	}
+
+	/** The server's `max-value-bytes` (draft/metadata-2): a plain number, else nefarious2's 300. */
+	private metadataMaxValueBytes(): number {
+		const token = (this.caps.value("draft/metadata-2") ?? "")
+			.split(",")
+			.find((t) => t.startsWith("max-value-bytes="));
+		const value = token?.slice("max-value-bytes=".length) ?? "";
+		return /^[1-9]\d*$/.test(value) ? Number(value) : 300;
+	}
+
 	/** Create + announce (`join` event) a channel or query. */
 	announceChannel(
 		name: string,
@@ -2566,10 +2886,21 @@ export class IrcClient {
 
 			const ids = this.historyIds(messages.length);
 			let lastRef: MsgRef | undefined;
+			// Lines this device had not read when the page went away count
+			// again; in a log from before the read point was kept, nothing does.
+			const read = this.queryLog.readUpTo(chan.name);
+			const page: Array<[SharedMsg, MsgRef]> = [];
+			let lastRead = 0;
 
 			messages.forEach((msg, i) => {
 				msg.id = ids[i];
-				lastRef = chan.remember(msg);
+				const ref = chan.remember(msg);
+				lastRef = ref;
+				page.push([msg, ref]);
+
+				if (read && ref.time.getTime() <= read.getTime()) {
+					lastRead = msg.id;
+				}
 			});
 
 			for (const [msgid, index] of this.queryLog.aliases(chan.name)) {
@@ -2586,6 +2917,14 @@ export class IrcClient {
 				totalMessages: chan.shared.totalMessages,
 				moreAvailable: false,
 			});
+
+			if (read && read.getTime() > 0) {
+				chan.readMarker = read;
+			}
+
+			if (read) {
+				countPageUnread(this, chan, page, read, lastRead);
+			}
 		}
 	}
 
@@ -2650,10 +2989,10 @@ export class IrcClient {
 	/**
 	 * Allocate an id, keep the unread counters and dispatch `msg`. Mirrors
 	 * `Chan.pushMessage` in the old server. With `replay` (history catch-up
-	 * appends) the message is delivered — highlight included, so a replayed
-	 * mention renders as one — but stays silent: no unread / highlight
-	 * counting here, and the flag travels on the `msg` event so the
-	 * consumer skips notifications and the mentions list.
+	 * appends) the message counts as unread as it would have live — what
+	 * someone else said, not an edit, newer than the read marker — and
+	 * `increasesUnread` is ignored; the flag travels on the `msg` event so
+	 * the consumer skips notifications and the mentions list.
 	 */
 	pushMessage(
 		chan: Channel,
@@ -2678,20 +3017,36 @@ export class IrcClient {
 		const ref = chan.remember(msg);
 		chan.newestRef = ref;
 		this.noteCursor(msg);
+
+		if (chan.type === ChanType.QUERY) {
+			// Before the counting below, which may move the read point it keeps.
+			this.queryLog.append(chan.name, msg);
+		}
+
 		const shared = chan.shared;
 		shared.totalMessages++;
 		// Already read on another session (draft/read-marker), e.g. a catch-up.
 		const read =
 			chan.readMarker !== undefined && ref.time.getTime() <= chan.readMarker.getTime();
+		const said = SAID_TYPES.has(msg.type ?? MessageType.MESSAGE);
 
 		if (msg.self) {
-			shared.unread = 0;
-			shared.highlight = 0;
-			shared.firstUnread = msg.id;
-
 			// Something we said is read by definition; our own JOIN/MODE
-			// echoes are not (a reconnect must not advance the marker).
-			if (SELF_READ_TYPES.has(msg.type ?? MessageType.MESSAGE)) {
+			// are not (a reconnect must not advance the read marker), and
+			// replayed by a catch-up they leave the counters and the
+			// new-messages line where the lines before them put them.
+			if (said || !replay) {
+				shared.firstUnread = msg.id;
+			}
+
+			if (said && replay) {
+				// An old line of ours in a catch-up read what came before it,
+				// not a live line that arrived while the catch-up was out. No
+				// MARKREAD: the server has the line, and the marker is now at it.
+				applyReadMarker(this, chan, ref.time);
+			} else if (said) {
+				shared.unread = 0;
+				shared.highlight = 0;
 				scheduleMarkRead(this, chan);
 			}
 		} else if (chan.id === this.activeChanId && this.presence.attended) {
@@ -2703,12 +3058,13 @@ export class IrcClient {
 				shared.firstUnread = msg.id;
 			}
 
-			if ((increasesUnread || msg.highlight) && !replay) {
+			// A catch-up line counts as privmsg.ts counts a live one.
+			if (replay ? countsAsUnread(msg) : increasesUnread || msg.highlight) {
 				shared.unread++;
 				ref.unread = true;
 			}
 
-			if (msg.highlight && !replay) {
+			if (msg.highlight) {
 				shared.highlight++;
 				ref.highlight = true;
 			}
@@ -2721,10 +3077,6 @@ export class IrcClient {
 			highlight: shared.highlight,
 			...(replay ? {replay: true} : {}),
 		});
-
-		if (chan.type === ChanType.QUERY) {
-			this.queryLog.append(chan.name, msg);
-		}
 
 		return msg;
 	}

@@ -18,13 +18,14 @@ import type {BatchHandler} from "./batch";
 import {sharedBurstRead} from "../presence";
 import {MUTE_KEY, onMuteValue} from "../pushMute";
 import {MODE_KEY, PRESENCE_KEY, onGlobalModeValue, onPresenceValue} from "../presenceShare";
+import {CLOSED_KEY, onClosedValue} from "../closedQueries";
 // index.ts imports this module too; `unhandled` is only called at run time.
 import {unhandled} from "./index";
 
 /** The webpush payload tier (webpush.ts writes it through `webpush:metadata`). */
 export const PAYLOAD_KEY = "draft/webpush/payload";
 
-const OWN_KEYS = new Set([MUTE_KEY, PAYLOAD_KEY, PRESENCE_KEY, MODE_KEY]);
+const OWN_KEYS = new Set([MUTE_KEY, PAYLOAD_KEY, PRESENCE_KEY, MODE_KEY, CLOSED_KEY]);
 
 /** The shared keys this client reads (irc/presenceShare.ts). */
 const SHARED: Record<string, (client: Parameters<Handler>[0], value: string) => void> = {
@@ -51,23 +52,44 @@ const metadata: Handler = (client, msg) => {
 	if (onShared && ours(client, msg.params[0] ?? "", msg.params[2] ?? "")) {
 		onShared(client, msg.params[3] ?? "");
 	}
+
+	// The closed queries (irc/closedQueries.ts): a notification is adopted
+	// but is not this connection's read.
+	if (msg.params[1] === CLOSED_KEY && ours(client, msg.params[0] ?? "", msg.params[2] ?? "")) {
+		onClosedValue(client, msg.params[3] ?? "", false);
+	}
 };
 
-// 761 <me> <target> <key> <visibility> :<value>
+// 761 <me> <target> <key> <visibility> :<value>: our own GET (`*` expands to our
+// nick) — never another user's value an oper asked for, private or not.
 const keyValue: Handler = (client, msg) => {
 	if (!ownKey(msg.params[2])) {
 		unhandled(client, msg);
 		return;
 	}
 
-	if (msg.params[2] === MUTE_KEY && ours(client, msg.params[1] ?? "", msg.params[3] ?? "")) {
+	if (msg.params[2] === MUTE_KEY && client.isSelf(msg.params[1] ?? "")) {
 		onMuteValue(client, msg.params[4] ?? "");
+	}
+
+	// Our own payload tier, still public from before it was written private:
+	// a public key is in everyone's WHOIS of us. Same value, private.
+	if (
+		msg.params[2] === PAYLOAD_KEY &&
+		client.isSelf(msg.params[1] ?? "") &&
+		msg.params[3] !== "private"
+	) {
+		client.send(`METADATA * SET ${PAYLOAD_KEY} private :${msg.params[4] ?? ""}`);
 	}
 
 	const onShared = SHARED[msg.params[2] ?? ""];
 
-	if (onShared && ours(client, msg.params[1] ?? "", msg.params[3] ?? "")) {
+	if (onShared && client.isSelf(msg.params[1] ?? "")) {
 		onShared(client, msg.params[4] ?? "");
+	}
+
+	if (msg.params[2] === CLOSED_KEY && client.isSelf(msg.params[1] ?? "")) {
+		onClosedValue(client, msg.params[4] ?? "", true);
 	}
 };
 
@@ -86,6 +108,10 @@ const keyNotSet: Handler = (client, msg) => {
 
 	if (onShared && client.isSelf(msg.params[1] ?? "")) {
 		onShared(client, "");
+	}
+
+	if (msg.params[2] === CLOSED_KEY && client.isSelf(msg.params[1] ?? "")) {
+		onClosedValue(client, "", true);
 	}
 };
 

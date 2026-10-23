@@ -5638,6 +5638,31 @@ html[data-shell="native"] #footer {
 	color: var(--tok-attr);
 }
 
+/* A masked link's real host after its text (helpers/linkSafety.ts): the
+ * only place a phone, which never shows a title, can see where it goes. */
+.md-link-host {
+	display: inline-block;
+	margin-inline-start: 0.25em;
+	font-size: 0.85em;
+	color: var(--body-color-muted);
+	text-decoration: none;
+}
+
+/* Its text names another address: warning-coloured, with a glyph, and a
+ * click asks first (parse.ts). */
+.md-link.mismatch,
+.md-link.mismatch .md-link-host {
+	color: var(--error-fg, #e74c3c);
+}
+
+.md-link.mismatch::before {
+	content: "\f071"; /* https://fontawesome.com/icons/triangle-exclamation?s=solid */
+	display: inline-block;
+	margin-inline-end: 0.25em;
+	font: normal normal normal 0.85em/1 FontAwesome;
+	text-decoration: none;
+}
+
 .md-spoiler {
 	/* Not currentcolor: `color` is transparent here, so it would resolve to
 	 * transparent too and the spoiler would be invisible rather than blacked out. */
@@ -7200,6 +7225,12 @@ html[data-reduce-motion] #chat .msg.actions-open .msg-actions {
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
+}
+
+/* The throttle's wait says why it waits: on a phone that is a second line,
+ * not an ellipsis over the reason. */
+#form .connection-bar-label.throttled {
+	white-space: normal;
 }
 
 #form .connection-bar-icon {
