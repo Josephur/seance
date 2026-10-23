@@ -26,9 +26,7 @@ Closing a query leaves a **tombstone** with two times:
 - its **boundary**, the time of the newest line the server sent in that window
   (`Channel.newestServerAt`: lines with a msgid). A line this device made, such
   as an error pushed into the query, carries the device clock and never counts,
-  so a clock that runs ahead cannot swallow a later message. A boundary may sit
-  up to the minute's skew allowance after this device's clock (the server's
-  may run ahead of it). A query with no line from the server leaves no
+  so a clock that runs ahead cannot swallow a later message. A boundary may sit up to 15 minutes after this device's clock (it is the server's time, and a device clock can run behind it); values read from the account keep to a minute. A query with no line from the server leaves no
   tombstone: there is nothing to replay.
 - its **event time**, when the close was made.
 

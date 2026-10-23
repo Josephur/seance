@@ -350,6 +350,9 @@ interface HarnessOptions {
 	/** Refuse `close()` on a notification shown under 30 s ago, as WebKit does
 	 * (bug 309940). */
 	refuseYoungClose?: boolean;
+	/** Hold every `indexedDB.open` until this settles: storage that is slow,
+	 * not stalled. */
+	idbGate?: Promise<void>;
 }
 
 const SCOPE = "https://app.test/";
@@ -469,7 +472,7 @@ function makeSW(options: HarnessOptions = {}): SWHarness {
 					return req; // neither onsuccess nor onerror, ever
 				}
 
-				queueMicrotask(() => {
+				void (options.idbGate ?? Promise.resolve()).then(() => {
 					req.result = {
 						transaction() {
 							// The worker awaits the TRANSACTION's oncomplete
@@ -1253,6 +1256,20 @@ describe("service worker push notifications under WebKit (every push shows)", fu
 		expect(sw.shown.every((n) => !n.body.includes("one") && !n.body.includes("two"))).to.equal(
 			true
 		);
+	});
+
+	it("a slow store's fallback goes once the real notification lands, on a root worker too", async function () {
+		let release!: () => void;
+		const gate = new Promise<void>((r) => (release = r));
+		const sw = makeSW({userAgent: IOS_UA, fastTimers: true, idbGate: gate});
+		const done = firePush(sw, msgPayload("alice", "pushtest", "hello"));
+
+		await new Promise((r) => setTimeout(r, 250)); // 25 s, a hundred times faster
+		release();
+		await done;
+
+		const live = sw.records.filter((n) => !n.closed);
+		expect(live.map((n) => n.body)).to.deep.equal(["hello"]);
 	});
 
 	it("a read relay spelled in another case still replaces the message, even when WebKit refuses the close", async function () {

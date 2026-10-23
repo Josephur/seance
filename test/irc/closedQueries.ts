@@ -257,10 +257,10 @@ describe("closed queries (irc/closedQueries.ts)", function () {
 			expect(closed.suppresses("bob", new Date(0))).to.equal(false);
 		});
 
-		it("never dates a close more than the skew allowance after now", function () {
+		it("never dates its own close more than 15 minutes after now", function () {
 			const closed = new ClosedQueries("net-g", (s) => s);
 			closed.close("bob", NOW + 3600000);
-			expect(closed.entries()[0].at).to.be.at.most(NOW + 60000);
+			expect(closed.entries()[0].at).to.be.at.most(NOW + 15 * 60000);
 		});
 
 		it("keeps tombstones per network across instances", function () {
@@ -511,6 +511,16 @@ describe("closed queries (irc/closedQueries.ts)", function () {
 			h.client.input(h.client.findChannel("bob")!.id, "/close");
 			h.dispatch.resetHistory();
 			h.transport.line(`@time=${ahead};msgid=p9 :bob!bob@host PRIVMSG alice :hi`);
+			expect(queryJoins(h, "bob")).to.deep.equal([]);
+		});
+
+		it("a device clock minutes behind the server does not cut a close's boundary short", function () {
+			const h = account();
+			const ahead = "2026-08-28T12:02:00.000Z"; // the server, two minutes ahead
+			h.transport.line(`@time=${ahead};msgid=p8 :bob!bob@host PRIVMSG alice :hi`);
+			h.client.input(h.client.findChannel("bob")!.id, "/close");
+			h.dispatch.resetHistory();
+			h.transport.line(`@time=${ahead};msgid=p8 :bob!bob@host PRIVMSG alice :hi`);
 			expect(queryJoins(h, "bob")).to.deep.equal([]);
 		});
 

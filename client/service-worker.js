@@ -1617,10 +1617,17 @@ async function showMessage(P, parsed, checkSeen, mustShow = false) {
 	}
 
 	// A stub for this conversation under a tag of its own (a read relay that
-	// kept a newer notification) has had its say.
+	// kept a newer notification), or a stalled push's fallback shown before
+	// this worker knew its network, has had its say. WebKit refuses a close
+	// within 30 s of the show, so it is tried again once that has passed.
 	for (const n of await self.registration.getNotifications()) {
-		if (isStub(n) && n.tag !== tag && sameName(n.data.target, replyTo)) {
+		if (
+			(isStub(n) || (n.data && n.data.kind === "generic")) &&
+			n.tag !== tag &&
+			sameName(n.data.target, replyTo)
+		) {
 			n.close();
+			setTimeout(() => n.close(), READ_STUB_LIFETIME_MS);
 		}
 	}
 

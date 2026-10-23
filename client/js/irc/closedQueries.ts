@@ -38,6 +38,11 @@ export const CLOSED_KEY = "seance/closed";
 export const CLOSED_TTL_MS = 30 * 24 * 3600 * 1000;
 /** How far ahead of this device's clock an entry may be dated and still be taken. */
 const CLOSED_SKEW_MS = 60_000;
+/** How far after this device's clock its own close's boundary may be: the
+ * boundary is the server's time (a line's), which a device clock running
+ * behind can trail by minutes. Only the account's values, which anyone who
+ * can set its metadata could write, keep to the minute. */
+const CLOSED_LOCAL_SKEW_MS = 15 * 60_000;
 /** Where the tombstones live on this device (the `storage` event names it). */
 export const CLOSED_STORAGE_KEY = "thelounge.state.closedQueries";
 
@@ -140,8 +145,9 @@ export function closedQueriesKept(): boolean {
 
 const newestFirst = (a: ClosedEntry, b: ClosedEntry) => b.when - a.when || b.at - a.at;
 const bytes = (s: string) => new TextEncoder().encode(s).length;
-const live = (e: ClosedEntry, now: number) =>
-	e.when >= now - CLOSED_TTL_MS && e.when <= now + CLOSED_SKEW_MS && e.at <= now + CLOSED_SKEW_MS;
+/** Not expired, and dated no later than `skew` after now. */
+const live = (e: ClosedEntry, now: number, skew = CLOSED_LOCAL_SKEW_MS) =>
+	e.when >= now - CLOSED_TTL_MS && e.when <= now + skew && e.at <= now + skew;
 
 function item(e: ClosedEntry): string {
 	if (e.open) {
@@ -192,7 +198,11 @@ export function decodeClosed(value: string, now: number): ClosedEntry[] {
 			entry = {nick, at, when: at + (after ? parseInt(after, 36) : 0)};
 		}
 
-		if (Number.isFinite(entry.at) && Number.isFinite(entry.when) && live(entry, now)) {
+		if (
+			Number.isFinite(entry.at) &&
+			Number.isFinite(entry.when) &&
+			live(entry, now, CLOSED_SKEW_MS)
+		) {
 			out.push(entry);
 		}
 	}
@@ -260,8 +270,8 @@ export class ClosedQueries {
 	close(nick: string, at: number): void {
 		const key = this.fold(nick);
 		// The server's clock may run ahead of this device's: a boundary up to
-		// the skew allowance past now is the server's, not a lie.
-		const boundary = Math.min(at, Date.now() + CLOSED_SKEW_MS);
+		// the local allowance past now is the server's, not a lie.
+		const boundary = Math.min(at, Date.now() + CLOSED_LOCAL_SKEW_MS);
 		const when = Math.max(this.after(key), boundary);
 		this.write(mergeClosed(this.entries(), [{nick: key, at: boundary, when}]));
 	}
