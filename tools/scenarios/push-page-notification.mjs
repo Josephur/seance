@@ -18,7 +18,7 @@
 // background. So the page shows it through the push worker instead.
 //
 // Claims:
-//   1. a PM from a bot shows as `push-<nick>` on `push/<uuid>/`, data kind
+//   1. a PM from a bot shows as `push-<uuid>/<nick>` on `push/<uuid>/`, data kind
 //      "push", the message's msgid in its messages, Mark read + Reply;
 //   2. the root registration shows nothing for it (no second notification);
 //   3. opening the query closes it (the server sends no read push for a
@@ -162,9 +162,11 @@ export default async function run(page) {
 		await page.sleep(200);
 	}
 
-	const rec = onPush.find((n) => n.tag === `push-${BOT}`);
+	const rec = onPush.find((n) => n.tag === `push-${UUID}/${BOT}`);
 	page.check(
-		`1. the push worker shows push-${BOT} (got ${JSON.stringify(onPush.map((n) => n.tag))})`,
+		`1. the push worker shows push-${UUID}/${BOT} (got ${JSON.stringify(
+			onPush.map((n) => n.tag)
+		)})`,
 		Boolean(rec)
 	);
 
