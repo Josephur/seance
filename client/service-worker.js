@@ -423,9 +423,31 @@ function strictUserVisible() {
 	return /AppleWebKit\//.test(ua) && !/Chrome\//.test(ua);
 }
 
-/** Notifications shown by this worker so far (showSafely): what a push's
- * deadline compares against. */
-let shownCount = 0;
+/** A notification's tag: per network, since tags are per origin and the
+ * networks' push workers would otherwise replace each other's same-named
+ * conversations. */
+function tagFor(network, name) {
+	return "push-" + (network ? network + "/" : "") + name;
+}
+
+/** The read stub and the quiet show: notifications that say nothing is
+ * unread, closed by the worker once WebKit lets it. */
+function isStub(n) {
+	return Boolean(n.data && (n.data.kind === "read" || n.data.kind === "quiet"));
+}
+
+/** This worker's network: its scope's, or (the root worker) the first one
+ * the page stashed, remembered for the push whose storage has stalled. */
+let knownNetwork = scopeNetwork;
+
+async function networkOf() {
+	if (!knownNetwork) {
+		const stash = await getStash();
+		knownNetwork = stash.networks[0] ? stash.networks[0].uuid : undefined;
+	}
+
+	return knownNetwork;
+}
 
 const IDB_NAME = "seance-push";
 const IDB_STORE = "kv";
@@ -1072,11 +1094,8 @@ async function getStash() {
  * the app opens. */
 async function updateBadge() {
 	const all = await self.registration.getNotifications();
-	// A read stub (showReadStub) says nothing is unread.
-	const mine = all.reduce(
-		(sum, n) => sum + (n.data && n.data.kind === "read" ? 0 : (n.data && n.data.count) || 1),
-		0
-	);
+	// A read stub or a quiet show (showStub) says nothing is unread.
+	const mine = all.reduce((sum, n) => sum + (isStub(n) ? 0 : (n.data && n.data.count) || 1), 0);
 	let total = mine;
 
 	try {
@@ -1105,11 +1124,12 @@ self.addEventListener("push", function (event) {
 /** The generic notification: what a push shows when nothing better can be
  * made of it, and what a strict push event shows when its handler has not
  * shown anything in time. */
-function showGeneric() {
+function showGeneric(tag = "push-activity", target = undefined) {
 	return showSafely("Seance", {
-		tag: "push-activity",
+		tag,
 		icon: "img/icon-192.png",
 		body: "New activity while you were away.",
+		data: target ? {kind: "generic", target} : undefined,
 	});
 }
 
@@ -1128,15 +1148,96 @@ function handlePush(raw) {
 
 	// WebKit's clock runs from the moment the push was handed over, so the
 	// deadline is timed from here, ahead of the queue — a push waiting
-	// behind a stalled one is just as silent.
-	const before = shownCount;
-	const deadline = setTimeout(() => {
-		if (shownCount === before) {
-			void showGeneric();
+	// behind a stalled one is just as silent. Each push has its own: one
+	// push's show does not answer for another's.
+	let settled = false;
+	let deadline = null;
+	const run = enqueuePush(() => handlePushNow(raw)).finally(() => {
+		settled = true;
+		clearTimeout(deadline);
+	});
+
+	deadline = setTimeout(() => {
+		if (!settled) {
+			void showFallback(raw);
 		}
 	}, STRICT_SHOW_DEADLINE_MS);
 
-	return enqueuePush(() => handlePushNow(raw)).finally(() => clearTimeout(deadline));
+	return run;
+}
+
+/** A push's payload as text, without the trailing padding delimiter some
+ * browsers leave (see handlePushNow). */
+function cleanPayload(raw) {
+	return raw.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]+$/, "");
+}
+
+/** What a push is about, read without IndexedDB: its conversation and
+ * whether it is a read relay (the stalled-push fallback, below). */
+function pushTarget(raw) {
+	const clean = cleanPayload(raw);
+	let json = null;
+
+	try {
+		json = JSON.parse(clean);
+	} catch (e) {
+		// the raw IRC line
+	}
+
+	if (json && json.t === "read") {
+		return {target: json.target, read: true};
+	}
+
+	const parsed = json ? fromJson(json) : push().parsePushLine(clean);
+
+	if (!parsed) {
+		return {target: undefined, read: false};
+	}
+
+	if (parsed.command === "MARKREAD") {
+		return {target: parsed.target, read: true};
+	}
+
+	if (parsed.command === "PRIVMSG" || parsed.command === "NOTICE") {
+		return {target: isChannelName(parsed.target) ? parsed.target : parsed.nick, read: false};
+	}
+
+	return {target: undefined, read: false};
+}
+
+/**
+ * A strict push whose handler has not finished by the deadline (storage
+ * stalled): show something under its conversation's own tag, so the real
+ * notification, if it comes, replaces it — what is already shown there,
+ * again and silently, else the generic notification (or, for a read relay,
+ * the stub).
+ */
+async function showFallback(raw) {
+	let about = {target: undefined, read: false};
+
+	try {
+		about = pushTarget(raw);
+	} catch (e) {
+		// shown as the generic notification
+	}
+
+	const tag = about.target
+		? tagFor(knownNetwork, about.target)
+		: tagFor(knownNetwork, "activity");
+
+	try {
+		const live = await self.registration.getNotifications({tag});
+
+		if (live[0]) {
+			await reshowQuietly(live[0]);
+		} else if (about.read) {
+			await showStub(tag, "read", about.target, knownNetwork);
+		} else {
+			await showGeneric(tag, about.target);
+		}
+	} catch (e) {
+		await showGeneric(tag, about.target);
+	}
 }
 
 /** A page's message (see the "message" listener), in the same queue as the
@@ -1228,7 +1329,7 @@ async function handlePushNow(raw) {
 	// ever delivers it unstripped, JSON.parse would throw and the push
 	// would degrade to the generic fallback. Trim trailing control bytes
 	// before parsing so the payload is always clean.
-	const clean = raw.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]+$/, "");
+	const clean = cleanPayload(raw);
 	// Under WebKit this event must end in a showNotification (above): the
 	// seen ring is not consulted and a read relay leaves a stub.
 	const strict = strictUserVisible();
@@ -1260,7 +1361,7 @@ async function handlePushNow(raw) {
 		}
 
 		if (parsed && (parsed.command === "PRIVMSG" || parsed.command === "NOTICE")) {
-			await showMessage(P, parsed, !strict, strict);
+			await showMessage(P, parsed, true, strict);
 			return;
 		}
 
@@ -1275,14 +1376,16 @@ async function handlePushNow(raw) {
 
 /** A read relay (`:server MARKREAD target timestamp=…`, or the JSON tier's
  * `t:"read"`): close what this worker shows for the target up to the
- * marker. Under WebKit (`strict`) that alone is a silent push, so the
- * target's notification is replaced with a silent "Marked as read" stub
- * under its own tag — a notification the marker leaves standing (it
- * postdates the marker) keeps its tag and the stub takes `push-read` — and
- * the worker closes the stub once WebKit lets it (READ_STUB_LIFETIME_MS;
- * a worker killed before then leaves it to the next push on the target or
- * the page's app-opened sweep, which replace or close it). Not inside
- * `waitUntil`: the event must not outlive WebKit's handler lifetime. */
+ * marker. Under WebKit (`strict`) that alone is a silent push, so a silent
+ * "Marked as read" stub takes the place of the target's notification (its
+ * tag, found by name whatever the relay's spelling, so a close WebKit
+ * refused within 30 s is replaced as well). A notification the marker
+ * leaves standing (it postdates the marker) keeps its place and the stub
+ * goes beside it, under a tag of its own the conversation's next message
+ * closes. The worker closes a stub once WebKit lets it
+ * (READ_STUB_LIFETIME_MS); one killed before then leaves it to the next
+ * message or the page's app-opened sweep. Not inside `waitUntil`: the event
+ * must not outlive WebKit's handler lifetime. */
 async function readRelay(target, ts, strict) {
 	await closeForTarget(target, ts);
 
@@ -1295,41 +1398,71 @@ async function readRelay(target, ts, strict) {
 
 async function showReadStub(target, ts) {
 	const cutoff = ts ? Date.parse(ts) : Infinity;
-	const targetTag = "push-" + (target || "read");
-	const live = await self.registration.getNotifications({tag: targetTag});
-	// A notification the relay kept (newer than the marker) stays; a close
-	// WebKit refused (shown under 30 s ago) is replaced by the stub as well.
-	const kept = live.some(
-		(n) => n.data && n.data.kind === "push" && n.data.time && Date.parse(n.data.time) > cutoff
+	const network = await networkOf();
+	const all = await self.registration.getNotifications();
+	const shown = all.filter(
+		(n) =>
+			n.tag &&
+			n.tag.startsWith("push-") &&
+			!isStub(n) &&
+			n.data &&
+			sameName(n.data.target, target)
 	);
-	const tag = kept ? "push-read" : targetTag;
+	const kept = shown.some((n) => n.data.time && Date.parse(n.data.time) > cutoff);
+	const tag = kept
+		? tagFor(network, "read/" + foldName(target || ""))
+		: shown[0]
+		? shown[0].tag
+		: tagFor(network, target || "read");
 
-	await showSafely(target || "Seance", {
+	await showStub(tag, "read", target, network);
+}
+
+/** A silent notification that says nothing is unread and carries no message
+ * text — "Marked as read" (a read relay) or "New message" (a push shown only
+ * because WebKit must see one) — closed once WebKit lets it. Its title names
+ * no conversation: it sits on a lock screen. A tap still opens the
+ * conversation (`data`, routeFor). */
+async function showStub(tag, kind, target, network) {
+	await showSafely("Seance", {
 		tag,
 		silent: true,
 		icon: "img/icon-192.png",
-		body: "Marked as read",
-		// network + target: a tap still opens the conversation (routeFor)
-		data: {kind: "read", target, network: scopeNetwork || undefined},
+		body: kind === "read" ? "Marked as read" : "New message",
+		data: {kind, target, network: network || undefined},
 	});
 
 	setTimeout(() => {
-		void closeReadStub(tag);
+		void closeStub(tag);
 	}, READ_STUB_LIFETIME_MS);
 }
 
-async function closeReadStub(tag) {
+async function closeStub(tag) {
 	try {
 		for (const n of await self.registration.getNotifications({tag})) {
-			if (n.data && n.data.kind === "read") {
+			if (isStub(n)) {
 				n.close();
 			}
 		}
 
 		await updateBadge();
 	} catch (e) {
-		// the next push on the target, or the page's sweep, takes it
+		// the next message on the target, or the page's sweep, takes it
 	}
+}
+
+/** Show a notification again exactly as it stands, silently: what WebKit
+ * needs to see, without a second alert for something already on screen. */
+function reshowQuietly(n) {
+	return showSafely(n.title, {
+		tag: n.tag,
+		silent: true,
+		renotify: false,
+		icon: "img/icon-192.png",
+		body: n.body,
+		data: n.data,
+		actions: n.actions,
+	});
 }
 
 /** Show (or merge) one message's notification: a pushed PRIVMSG/NOTICE, or
@@ -1369,6 +1502,25 @@ async function showMessage(P, parsed, checkSeen, mustShow = false) {
 	const seenId = batch || msgid;
 	const seenKey = line ? seenId + "#" + line.index : msgid;
 
+	const isChannel = isChannelName(parsed.target);
+	const replyTo = isChannel ? parsed.target : parsed.nick;
+	// The payload names no network: a push-only worker serves exactly
+	// one (its scope says which); the root worker, which only ever
+	// held the pre-per-network subscription, falls back to the first
+	// stashed network.
+	const network = await networkOf();
+	const tag = tagFor(network, replyTo || "activity");
+
+	// The page mirrors the reader's markdown setting and its muted
+	// conversations here (client/js/push-prefs.ts); absent means the app
+	// default (markdown on, nothing muted).
+	const prefs = (await idbGet("prefs")) || {};
+	const markdown = prefs.markdown !== false;
+	const muted =
+		Array.isArray(prefs.muted) &&
+		typeof replyTo === "string" &&
+		prefs.muted.includes(network + "/" + replyTo.toLowerCase());
+
 	if (checkSeen && seenId) {
 		const seen = await idbGet("seen");
 
@@ -1376,18 +1528,22 @@ async function showMessage(P, parsed, checkSeen, mustShow = false) {
 			Array.isArray(seen) &&
 			((msgid && seen.includes(msgid)) || seen.includes(seenId) || seen.includes(seenKey))
 		) {
+			// Under WebKit even this must show: quietly, never a second alert
+			// (the page took it, or the user already dismissed it).
+			if (mustShow) {
+				await showQuiet(tag, replyTo, network);
+			}
+
 			return;
 		}
 	}
 
-	const isChannel = isChannelName(parsed.target);
-	const replyTo = isChannel ? parsed.target : parsed.nick;
-	const tag = "push-" + (replyTo || "activity");
-
-	// The page mirrors the reader's markdown setting here (client/js/
-	// push-prefs.ts); absent means the app default, on.
-	const prefs = (await idbGet("prefs")) || {};
-	const markdown = prefs.markdown !== false;
+	// A conversation muted on this device alerts nothing, here as on the
+	// page; under WebKit the push still shows, quietly and without its text.
+	if (mustShow && muted) {
+		await showQuiet(tag, replyTo, network);
+		return;
+	}
 
 	// Merge per target: the message list rides on the notification's
 	// data so it survives the worker being killed between pushes, and a
@@ -1436,12 +1592,6 @@ async function showMessage(P, parsed, checkSeen, mustShow = false) {
 		{action: "reply", type: "text", title: "Reply", placeholder: "Reply…"},
 	];
 
-	// The payload names no network: a push-only worker serves exactly
-	// one (its scope says which); the root worker, which only ever
-	// held the pre-per-network subscription, falls back to the first
-	// stashed network.
-	const stash = await getStash();
-	const network = scopeNetwork || (stash.networks[0] ? stash.networks[0].uuid : undefined);
 	const time = typeof parsed.tags.time === "string" ? parsed.tags.time : undefined;
 
 	await showSafely(title, {
@@ -1464,6 +1614,29 @@ async function showMessage(P, parsed, checkSeen, mustShow = false) {
 
 	if (seenId) {
 		await idbAppend("seen", seenKey, SEEN_CAP);
+	}
+
+	// A stub for this conversation under a tag of its own (a read relay that
+	// kept a newer notification) has had its say.
+	for (const n of await self.registration.getNotifications()) {
+		if (isStub(n) && n.tag !== tag && sameName(n.data.target, replyTo)) {
+			n.close();
+		}
+	}
+
+	await updateBadge();
+}
+
+/** A push WebKit must see shown but that should not alert (see showMessage):
+ * the conversation's notification again, silently and unchanged, or — with
+ * nothing up for it — a silent stub with no message text. */
+async function showQuiet(tag, target, network) {
+	const live = await self.registration.getNotifications({tag});
+
+	if (live[0] && !isStub(live[0])) {
+		await reshowQuietly(live[0]);
+	} else {
+		await showStub(tag, "quiet", target, network);
 	}
 
 	await updateBadge();
@@ -1500,7 +1673,6 @@ async function handlePageMessageNow(payload) {
 async function showSafely(title, options) {
 	try {
 		await self.registration.showNotification(title, options);
-		shownCount++;
 		return;
 	} catch (e) {
 		// fall through to the reduced forms
@@ -1512,7 +1684,6 @@ async function showSafely(title, options) {
 			body: options.body,
 			silent: options.silent === true,
 		});
-		shownCount++;
 		return;
 	} catch (e) {
 		// fall through to the bare form
@@ -1520,7 +1691,6 @@ async function showSafely(title, options) {
 
 	try {
 		await self.registration.showNotification(title, {});
-		shownCount++;
 	} catch (e) {
 		// nothing else to try
 	}

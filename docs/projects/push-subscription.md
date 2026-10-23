@@ -1012,27 +1012,42 @@ What ships (`client/service-worker.js`, `client/js/webpush.ts`,
 
 - **Under WebKit every push event shows.** `strictUserVisible()` reads the
   worker's user agent (`AppleWebKit/` without `Chrome/`: WebKit on iOS and
-  macOS, Chromium carries both, Firefox neither). A message push there skips
-  the seen ring and is shown, or re-shown — same tag, same count, so a
-  redelivery or a message the page took first is still one notification
-  (`showMessage`'s `mustShow`). A read relay closes what it would have
-  closed and then replaces the target's notification with a silent "Marked
-  as read" stub under the target's own tag (`showReadStub`; a notification
-  the marker leaves standing keeps its tag and the stub takes `push-read`),
-  which the worker closes itself 31 s later — outside `waitUntil`, since the
-  event must not outlive WebKit's handler lifetime; a worker killed before
-  then leaves the stub to the next push on the target (same tag) or the
-  page's app-opened sweep. The stub carries no count (`updateBadge` skips
-  `kind: "read"`) and a tap opens the conversation. A push event that has
-  shown nothing `STRICT_SHOW_DEADLINE_MS` (20 s) after it arrived — a
-  stalled IndexedDB, a push stuck behind one — shows the generic
-  notification before WebKit's clock runs out; the deadline is timed from
-  the event, ahead of the push queue, because WebKit's clock is. Chrome and
-  Firefox keep the old paths exactly.
+  macOS, Chromium carries both, Firefox neither). A new message is shown as
+  on every browser. A push the page already took or the user already
+  dismissed (a seen-ring hit, a redelivery) and a push for a conversation
+  muted on this device (the page mirrors `thelounge.muted` into the worker's
+  `prefs`, `client/js/mute.ts`) are shown **quietly** (`showQuiet`): the
+  conversation's notification again, silently and unchanged, or, with
+  nothing up for it, a silent "New message" stub with no message text —
+  never a second alert, a sound or a badge count. A read relay closes what
+  it would have closed and puts a silent "Marked as read" stub in the
+  target's notification's place (found by name whatever the relay's
+  spelling, so a close WebKit refused is replaced too); a notification the
+  marker leaves standing keeps its place and the stub goes beside it under a
+  tag of its own, which the conversation's next message closes. Stubs carry
+  no count (`updateBadge` skips them), their title names no conversation
+  (they sit on a lock screen) and a tap opens the conversation; the worker
+  closes one itself 31 s later — outside `waitUntil`, since the event must
+  not outlive WebKit's handler lifetime — and a worker killed before then
+  leaves it to the next message or the page's app-opened sweep. A push whose
+  handler has not finished `STRICT_SHOW_DEADLINE_MS` (20 s) after it
+  arrived — a stalled IndexedDB, a push stuck behind one — shows something
+  under its conversation's own tag (read from the payload without
+  IndexedDB): what is already shown there, again and silently, else the
+  generic notification, so the real one replaces it if it comes. Each push
+  has its own deadline, timed from the event ahead of the push queue, because
+  WebKit's clock is. Chrome and Firefox keep the old paths exactly.
+- **Tags carry the network** (`push-<uuid>/<conversation>`): tags are per
+  origin, so the networks' push workers would otherwise replace each other's
+  same-named channels.
 - **A subscription the browser dropped is unregistered from the server.**
   `syncStoredWithBrowser` queues the lost entry's endpoint
   (`queueUnregister`, as the Android shell's reconciliation does) and the
-  next connect sends `WEBPUSH UNREGISTER` for it (`unregisterLegacy`). Before,
+  next connect sends `WEBPUSH UNREGISTER` for it (`unregisterLegacy`) — only
+  when this build's registration exists without a subscription: no
+  registration at all may be another build on the origin (a Pages preview
+  under `/pr<N>/` shares `thelounge.push` with the release app), whose live
+  endpoint must not be unregistered. Before,
   each revoke-and-resubscribe cycle left a dead endpoint on the account:
   `WEBPUSH_MAX_REGISTRATIONS` (30) would eventually refuse the phone for
   good, and Apple's answer for a revoked endpoint is not documented as the

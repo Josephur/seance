@@ -565,13 +565,20 @@ async function syncStoredWithBrowser(): Promise<void> {
 				// the next connect makes replaces it, and each such cycle used to
 				// leave one more dead endpoint on the account
 				// (WEBPUSH_MAX_REGISTRATIONS). Tell the network to forget it when
-				// it next connects (unregisterLegacy).
-				queued =
-					queueUnregister({
-						vapid: entry.vapid,
-						endpoint: entry.endpoint,
-						network: uuid,
-					}) || queued;
+				// it next connects (unregisterLegacy) — but only when this
+				// build's own registration is there without a subscription. No
+				// registration at all may mean another build on the same origin
+				// (a Pages preview under /pr<N>/ shares `thelounge.push` with the
+				// release app), whose live endpoint must not be unregistered.
+				if (registration) {
+					queued =
+						queueUnregister({
+							vapid: entry.vapid,
+							endpoint: entry.endpoint,
+							network: uuid,
+						}) || queued;
+				}
+
 				delete subs[uuid];
 				changed = true;
 				continue;
