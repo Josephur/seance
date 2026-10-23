@@ -1,6 +1,8 @@
 /**
- * The dial ledger: this device's own record of when it dialled each server,
- * so the transport never dials into nefarious2's connection throttle.
+ * The dial ledger: this device's own record of when it dialled each server
+ * and when its connections dropped, so the transport does not dial into
+ * nefarious2's connection throttle (as far as this device can know: other
+ * devices behind the same address count on the server too and are not seen).
  *
  * IPcheck (`ircd/IPcheck.c` `ip_registry_check_local`, at accept time, before
  * TLS or the WebSocket upgrade) counts the connections from an address: the
@@ -9,21 +11,23 @@
  * (4) is refused — and a refused one still counts as the last connection, so
  * dialling into a refusal renews it. `last_connect` also moves when the
  * address's last connection closes (`ip_registry_disconnect`), which resets
- * the count only when that is more than four windows after it; the server
- * counts whole seconds (`CurrentTime`). So the ledger keeps the closes of
- * sockets that had opened too, and replays both in whole seconds. Over a WebSocket the refusal looks like
- * any lost connection (1006). A phone whose OS drops the socket on every app
- * switch makes a new connection on every return; the fourth return inside the
- * chain was refused, and the reconnect schedule's quick retries (0, 1, 2, 4 s
- * …) each renewed it, a lockout of a minute or more. With the ledger the
- * transport waits out the gap instead: one wait of at most
- * `periodMs + marginMs` (docs/projects/reconnect-throttle.md).
+ * the count only when that is more than four windows after it — but not when
+ * the bouncer holds the session (`bounce_hold_client` never calls
+ * `IPcheck_disconnect`), so the client records a drop only for a session that
+ * is not held (`IrcClient.createTransport`, `noteUnload` for the unload the
+ * transport never sees). The server counts whole seconds (`CurrentTime`) on
+ * a clock a fraction of a second from this one, so the replay works in
+ * milliseconds with a whole second and a margin to spare (`throttleWaitMs`).
+ * Over a WebSocket a refusal looks like any lost connection (1006). A phone
+ * whose OS drops the socket on every app switch makes a new connection on
+ * every return; the fourth return inside the chain was refused, and the
+ * reconnect schedule's quick retries (0, 1, 2, 4 s …) each renewed it, a
+ * lockout of a minute or more. With the ledger the transport waits out the
+ * gap instead: one wait of at most 42 s (docs/projects/reconnect-throttle.md).
  *
- * Kept in `thelounge.state.dials` (`{host: {d: [dial ms…], c: [close ms…]}}`;
- * a bare array is an older record of dials only), so a reloaded or
- * reopened app and another tab see the same record. Other devices behind the
- * same address (home Wi-Fi, carrier NAT) count on the server too and are not
- * seen here. Vue-free and DOM-free; tests: test/irc/dialLedger.ts.
+ * Kept in `thelounge.state.dials` (`{host: {d: [dial ms…], c: [drop ms…]}}`),
+ * so a reloaded or reopened app and another tab see the same record.
+ * Vue-free and DOM-free; tests: test/irc/dialLedger.ts.
  */
 
 import storage from "../localStorage";
@@ -70,12 +74,14 @@ export function useStorageBackend(next: StorageBackend | null): void {
 	backend = next ?? storage;
 }
 
-const seconds = (ms: number) => Math.floor(ms / 1000);
-
 /**
- * Replay the server's count over this device's dials (and the closes of its
- * sockets): the wait before a dial at `now` would get in. Never more than one
- * window, whatever the record says.
+ * Replay the server's count over this device's dials (and the drops of its
+ * sockets): the wait before a dial at `now` would get in. IPcheck compares
+ * whole seconds, and the two clocks are a fraction of a second apart, so the
+ * replay is conservative in milliseconds: a gap restarts the count only when
+ * it is at least a whole second past the window plus the margin (42 s; 162 s
+ * after a drop), and a dial waits for the same. Events dated after `now` (a
+ * clock that has since gone back) say nothing about now.
  */
 export function throttleWaitMs(
 	dials: readonly number[],
@@ -83,64 +89,55 @@ export function throttleWaitMs(
 	rule: ThrottleRule,
 	closes: readonly number[] = []
 ): number {
-	const period = seconds(rule.periodMs);
+	const gap = rule.periodMs + 1000 + rule.marginMs;
+	const dropGap = rule.limit * rule.periodMs + 1000 + rule.marginMs;
 	const events = [
-		...dials.map((at) => ({at, dial: true})),
-		...closes.map((at) => ({at, dial: false})),
+		...dials.filter((at) => at <= now).map((at) => ({at, dial: true})),
+		...closes.filter((at) => at <= now).map((at) => ({at, dial: false})),
 	].sort((a, b) => a.at - b.at || Number(a.dial) - Number(b.dial));
 	let attempts = 0;
 	let last: number | undefined;
 
 	for (const {at, dial} of events) {
-		const gap = last === undefined ? Infinity : seconds(at) - seconds(last);
+		const since = last === undefined ? Infinity : at - last;
 
 		if (dial) {
-			if (gap > period) {
+			if (since >= gap) {
 				attempts = 0;
 			}
 
 			attempts++;
-		} else if (gap > rule.limit * period) {
+		} else if (since >= dropGap) {
 			attempts = 0;
 		}
 
 		last = at;
 	}
 
-	if (last === undefined || seconds(now) - seconds(last) > period || attempts + 1 < rule.limit) {
+	if (last === undefined || now - last >= gap || attempts + 1 < rule.limit) {
 		return 0;
 	}
 
-	// The first whole second past the window, plus the time the dial takes.
-	const wait = (seconds(last) + period + 1) * 1000 + rule.marginMs - now;
-	return Math.min(rule.periodMs + 1000 + rule.marginMs, Math.max(0, wait));
+	return last + gap - now;
 }
 
-function hostRecord(value: unknown, now: number): HostRecord {
-	const past = (list: unknown): number[] =>
-		Array.isArray(list)
-			? list.filter((t): t is number => typeof t === "number" && t <= now)
-			: [];
-
-	if (Array.isArray(value)) {
-		return {d: past(value), c: []};
-	}
-
+function hostRecord(value: unknown): HostRecord {
+	const numbers = (list: unknown): number[] =>
+		Array.isArray(list) ? list.filter((t): t is number => typeof t === "number") : [];
 	const record = value as Partial<HostRecord> | null;
-	return {d: past(record?.d), c: past(record?.c)};
+	return {d: numbers(record?.d), c: numbers(record?.c)};
 }
 
 /** The gate for one server host, over the shared record. */
-export function dialGateFor(host: string, rule: ThrottleRule = NEFARIOUS_RULE): DialGate {
+export function dialGateFor(host: string): DialGate {
+	const rule = NEFARIOUS_RULE;
 	const key = host.toLowerCase();
-	// An event "in the future" was recorded by a clock that has since gone
-	// back: it says nothing about now.
-	const read = (now: number) => hostRecord(readRecord(backend.get(STORAGE_KEY))[key], now);
+	const read = () => hostRecord(readRecord(backend.get(STORAGE_KEY))[key]);
 
 	const add = (at: number, field: keyof HostRecord) => {
 		// Older than a whole refused chain can reach: it no longer counts.
 		const horizon = at - rule.limit * rule.periodMs;
-		const record = read(at);
+		const record = read();
 		record[field] = [...record[field], at];
 		const all = {...readRecord(backend.get(STORAGE_KEY))};
 		all[key] = {d: record.d.filter((t) => t > horizon), c: record.c.filter((t) => t > horizon)};
@@ -149,7 +146,7 @@ export function dialGateFor(host: string, rule: ThrottleRule = NEFARIOUS_RULE): 
 
 	return {
 		waitMs(now) {
-			const record = read(now);
+			const record = read();
 			return throttleWaitMs(record.d, now, rule, record.c);
 		},
 		record: (at) => add(at, "d"),

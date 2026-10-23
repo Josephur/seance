@@ -36,10 +36,15 @@ lockout of a minute and a half where 42 s of quiet would have done.
 
 ## What the client does now
 
-`client/js/irc/dialLedger.ts` keeps this device's dials, and the closes of its
-sockets that had opened, per server host in `thelounge.state.dials`, so a
-reloaded or reopened app and its other tabs share the record, and replays them
-the way IPcheck counts, in whole seconds. Before any dial (a scheduled retry, the foreground poke, the
+`client/js/irc/dialLedger.ts` keeps this device's dials, and the drops of its
+connections that had opened, per server host in `thelounge.state.dials`, so a
+reloaded or reopened app and its other tabs share the record. A drop is kept
+only for a session the bouncer does not hold (a held one stays counted on the
+server, which then restarts nothing), and the drop a page unload makes, which
+the transport never sees, is kept from the unload's QUIT (`noteUnload`). The
+replay is conservative about the server's whole seconds and the clocks' small
+difference: a gap restarts the count only at 42 s (162 s after a drop), and a
+dial waits for the same. Before any dial (a scheduled retry, the foreground poke, the
 user's Connect) the transport asks it whether the server would refuse, and if
 so waits out the gap. The strip says "Reconnecting to <network> in Ns: the
 server limits quick reconnects.", and Connect now waits too, because dialling

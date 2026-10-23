@@ -136,18 +136,7 @@ export class WsTransport {
 		// The server would refuse this dial, and the refusal would renew its
 		// window: wait it out instead, whoever asked (a click included).
 		if (throttle > 0) {
-			this._state = "reconnect-wait";
-			this.emit({
-				type: "reconnecting",
-				attempt: this.attempt,
-				delayMs: throttle,
-				throttled: true,
-			});
-			this.timer = setTimeout(() => {
-				this.timer = null;
-				this.emit({type: "retry", attempt: this.attempt});
-				this.dial();
-			}, throttle);
+			this.scheduleRetry(throttle, true);
 			return;
 		}
 
@@ -420,18 +409,24 @@ export class WsTransport {
 
 		// A close listener may have called close(): then no retry is wanted.
 		if (delayMs !== undefined && this._state === "reconnect-wait") {
-			this.emit({
-				type: "reconnecting",
-				attempt: this.attempt,
-				delayMs,
-				...(throttled ? {throttled: true} : {}),
-			});
-			this.timer = setTimeout(() => {
-				this.timer = null;
-				this.emit({type: "retry", attempt: this.attempt});
-				this.dial();
-			}, delayMs);
+			this.scheduleRetry(delayMs, throttled);
 		}
+	}
+
+	/** Wait `delayMs`, then dial (which asks the gate again). */
+	private scheduleRetry(delayMs: number, throttled: boolean): void {
+		this._state = "reconnect-wait";
+		this.emit({
+			type: "reconnecting",
+			attempt: this.attempt,
+			delayMs,
+			...(throttled ? {throttled: true} : {}),
+		});
+		this.timer = setTimeout(() => {
+			this.timer = null;
+			this.emit({type: "retry", attempt: this.attempt});
+			this.dial();
+		}, delayMs);
 	}
 
 	/**

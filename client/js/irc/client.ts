@@ -16,7 +16,7 @@
 
 import socket, {EventBus} from "../socket";
 import {brandingFeatures} from "../branding";
-import {dialGateFor} from "./dialLedger";
+import {dialGateFor, type DialGate} from "./dialLedger";
 import {createHighlightTester} from "../highlight";
 import {ChanState, ChanType} from "../../../shared/types/chan";
 import {MessageType, SharedMsg, TypingState} from "../../../shared/types/msg";
@@ -411,6 +411,8 @@ export class IrcClient {
 	account = "";
 	/** The server holds our session across disconnects (`PERSISTENCE STATUS ON`, see persistence.ts). */
 	persistenceHold = false;
+	/** This network's host in the dial ledger (irc/dialLedger.ts). */
+	private dialLedger: DialGate | null = null;
 	/** The user's setting from the last `PERSISTENCE STATUS` line (`ON`,
 	 * `OFF`, `DEFAULT`), undefined before one. An alias of another device's
 	 * session reads `ON OFF`: not held itself, though the session is. */
@@ -624,7 +626,7 @@ export class IrcClient {
 			connecting: this._state === "connecting" || this._state === "registering",
 			secure: this.options.tls,
 			...(this.retryAt !== undefined ? {retryAt: this.retryAt} : {}),
-			...(this.retryAt !== undefined && this.retryThrottled ? {retryThrottled: true} : {}),
+			...(this.retryThrottled ? {retryThrottled: true} : {}),
 		};
 	}
 
@@ -701,6 +703,7 @@ export class IrcClient {
 		this.quitting = false;
 		this.closeHintShown = false;
 		this.retryAt = undefined;
+		this.retryThrottled = false;
 		this._state = "connecting";
 		this.bus.dispatch("connecting");
 		this.announceStatus();
@@ -730,6 +733,7 @@ export class IrcClient {
 
 		this.transport.close();
 		this.retryAt = undefined;
+		this.retryThrottled = false;
 
 		if (state === "reconnect-wait") {
 			// The socket is already gone, so no close event follows: settle here.
@@ -827,7 +831,20 @@ export class IrcClient {
 		}
 
 		// Never dial into the server's connection throttle (irc/dialLedger.ts).
-		transportOptions.gate = dialGateFor(this.options.host);
+		// A drop counts there only when the server lets the connection go: a
+		// session the bouncer holds stays counted (bounce_hold_client never
+		// calls IPcheck_disconnect), so its drop restarts nothing.
+		const ledger = dialGateFor(this.options.host);
+		this.dialLedger = ledger;
+		transportOptions.gate = {
+			waitMs: (now) => ledger.waitMs(now),
+			record: (at) => ledger.record(at),
+			closed: (at) => {
+				if (!this.persistenceHold) {
+					ledger.closed(at);
+				}
+			},
+		};
 
 		return this.options.transportFactory
 			? this.options.transportFactory(transportOptions)
@@ -975,6 +992,7 @@ export class IrcClient {
 		this.connected = false;
 		this.welcomed = false;
 		this.retryAt = undefined;
+		this.retryThrottled = false;
 		this.closeHintShown = false;
 		this.isupport.reset();
 		this.learnedNickLen = undefined;
@@ -1364,7 +1382,7 @@ export class IrcClient {
 			connecting: willReconnect,
 			secure: this.options.tls,
 			...(this.retryAt !== undefined ? {retryAt: this.retryAt} : {}),
-			...(this.retryAt !== undefined && this.retryThrottled ? {retryThrottled: true} : {}),
+			...(this.retryThrottled ? {retryThrottled: true} : {}),
 		});
 
 		if (wasUp) {
@@ -2675,6 +2693,18 @@ export class IrcClient {
 		) {
 			this.send(`METADATA * SET ${CLOSED_KEY}`);
 			markClosedUnshared(this.uuid);
+		}
+	}
+
+	/**
+	 * The page is going away with this connection open (manager.ts sends its
+	 * QUIT): the socket drops without a close the transport would see, so
+	 * the drop goes into the dial ledger here — unless the bouncer holds the
+	 * session, which the server keeps counted.
+	 */
+	noteUnload(): void {
+		if (!this.persistenceHold) {
+			this.dialLedger?.closed(Date.now());
 		}
 	}
 

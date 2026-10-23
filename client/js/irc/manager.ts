@@ -258,6 +258,7 @@ if (typeof window !== "undefined") {
 		for (const client of allClients()) {
 			if (client.isConnected) {
 				client.send("QUIT :page closed");
+				client.noteUnload();
 			}
 		}
 	});

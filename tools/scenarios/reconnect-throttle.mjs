@@ -67,7 +67,7 @@ export default async function run(page) {
 	await page.evaluate(
 		`localStorage.setItem(${JSON.stringify(
 			KEY
-		)}, JSON.stringify({localhost: [Date.now() - 30000, Date.now() - 25000, Date.now() - 20000]}))`
+		)}, JSON.stringify({localhost: {d: [Date.now() - 30000, Date.now() - 25000, Date.now() - 20000], c: []}}))`
 	);
 	const before = await page.evaluate("window.__dials");
 

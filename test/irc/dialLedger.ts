@@ -33,7 +33,8 @@ describe("dial ledger (irc/dialLedger.ts)", function () {
 		});
 
 		it("starts over after a gap of more than 40 s", function () {
-			expect(throttleWaitMs([0, 10 * S, 20 * S], 61 * S, NEFARIOUS_RULE)).to.equal(0);
+			// 42 s: a whole second past the 40 s window on any phase, and the 1 s margin.
+			expect(throttleWaitMs([0, 10 * S, 20 * S], 62 * S, NEFARIOUS_RULE)).to.equal(0);
 		});
 
 		it("counts refused dials, which renew the window", function () {
@@ -47,10 +48,14 @@ describe("dial ledger (irc/dialLedger.ts)", function () {
 			expect(throttleWaitMs([0], 10 * S, rule)).to.equal(32 * S);
 		});
 
-		it("never holds a dial longer than one window, whatever the record says", function () {
-			// Three dials recorded while the clock ran an hour ahead, asked on the corrected clock.
+		it("ignores events dated after now (a clock that ran ahead)", function () {
 			const ahead = [3600 * S, 3610 * S, 3620 * S];
-			expect(throttleWaitMs(ahead, 0, NEFARIOUS_RULE)).to.be.at.most(42 * S);
+			expect(throttleWaitMs(ahead, 0, NEFARIOUS_RULE)).to.equal(0);
+		});
+
+		it("waits through the 41st second too, whatever its phase", function () {
+			expect(throttleWaitMs([0, 10 * S, 20 * S], 60500, NEFARIOUS_RULE)).to.equal(1500);
+			expect(throttleWaitMs([0, 10 * S, 20 * S], 61500, NEFARIOUS_RULE)).to.equal(500);
 		});
 
 		it("counts whole seconds, as the server does", function () {
@@ -137,11 +142,6 @@ describe("dial ledger (irc/dialLedger.ts)", function () {
 			expect(dialGateFor("irc.example").waitMs(180 * S)).to.equal(12 * S);
 		});
 
-		it("reads a record from before closes were kept", function () {
-			data.set("thelounge.state.dials", JSON.stringify({"irc.example": [0, 10 * S, 20 * S]}));
-			expect(dialGateFor("irc.example").waitMs(30 * S)).to.equal(32 * S);
-		});
-
 		it("survives a broken record", function () {
 			data.set("thelounge.state.dials", "{not json");
 			expect(dialGateFor("irc.example").waitMs(0)).to.equal(0);
@@ -160,6 +160,8 @@ describe("dial ledger (irc/dialLedger.ts)", function () {
 		});
 
 		/** The options the client builds its transport with. */
+		let lastClient: ReturnType<typeof setup>["client"];
+
 		function transportOptions(): TransportOptions {
 			let captured: TransportOptions | undefined;
 			const h = setup({
@@ -169,11 +171,53 @@ describe("dial ledger (irc/dialLedger.ts)", function () {
 				},
 			});
 			h.client.connect();
+			lastClient = h.client;
 			return captured as TransportOptions;
 		}
 
 		it("gives the transport a gate for the network's host", function () {
 			expect(transportOptions().gate).to.not.equal(undefined);
+		});
+
+		it("does not record the drop of a session the bouncer holds (the server keeps it counted)", function () {
+			const data = new Map<string, string>();
+			useStorageBackend({
+				get: (k) => data.get(k) ?? null,
+				set: (k, v) => void data.set(k, v),
+				remove: (k) => void data.delete(k),
+			});
+			const opts = transportOptions();
+
+			const closes = (): number[] => {
+				const all = JSON.parse(data.get("thelounge.state.dials") ?? "{}") as Record<
+					string,
+					{c?: number[]}
+				>;
+				return all["irc.test"]?.c ?? [];
+			};
+
+			const client = lastClient;
+			client.persistenceHold = true;
+			opts.gate!.closed(1000);
+			expect(closes()).to.deep.equal([]);
+			client.persistenceHold = false;
+			opts.gate!.closed(2000);
+			expect(closes()).to.deep.equal([2000]);
+			useStorageBackend(null);
+		});
+
+		it("records the drop a page unload makes, for a session not held", function () {
+			const data = new Map<string, string>();
+			useStorageBackend({
+				get: (k) => data.get(k) ?? null,
+				set: (k, v) => void data.set(k, v),
+				remove: (k) => void data.delete(k),
+			});
+			transportOptions();
+			lastClient.noteUnload();
+			const record = JSON.parse(data.get("thelounge.state.dials") ?? "{}")["irc.test"];
+			expect(record?.c).to.deep.equal([Date.now()]);
+			useStorageBackend(null);
 		});
 
 		it("says a wait is the server's throttle, and drops that once the dial starts", function () {
