@@ -25,6 +25,7 @@ import type {SharedNetworkChan} from "../../shared/types/network";
 import * as saved from "../../client/js/irc/saved-networks";
 import {flushQueryLogs} from "../../client/js/irc/querylog";
 import {MUTE_READ_DELAY_MS} from "../../client/js/irc/pushMute";
+import {RESTORE_MAX_WAIT_MS} from "../../client/js/irc/persistence";
 import {ALL_CAPS, Harness, joined, register, setup, stubStorage} from "./support";
 
 const T0 = "2026-08-28T11:00:00.000Z";
@@ -88,6 +89,28 @@ describe("closed queries (irc/closedQueries.ts)", function () {
 			const h = closedQuery();
 			h.transport.line(`@time=${T0};msgid=p0 :bob!bob@host PRIVMSG alice :hi`);
 			expect(queryJoins(h, "bob")).to.deep.equal([]);
+		});
+
+		it("a live line opens it whatever its time, and a reload keeps it open", function () {
+			// bob's server stamps his reply before our last line (it crossed
+			// ours, or his clock is behind); it arrives after the close.
+			const uuid = "closed-live-net";
+			const first = setup({uuid});
+			joined(first, ALL_CAPS);
+			first.transport.line(`@time=${T0};msgid=p0 :bob!bob@host PRIVMSG alice :hi`);
+			first.transport.line(`@time=${T1};msgid=p1 :alice!a@h PRIVMSG bob :bye`);
+			first.client.input(first.client.findChannel("bob")!.id, "/close");
+			clock.tick(RESTORE_MAX_WAIT_MS);
+			first.dispatch.resetHistory();
+			const crossed = new Date(Date.parse(T1) - 2000).toISOString();
+			first.transport.line(`@time=${crossed};msgid=p2 :bob!bob@host PRIVMSG alice :wait`);
+			expect(queryJoins(first, "bob")).to.have.length(1);
+
+			// The next page load replays it: it stays.
+			const second = setup({uuid});
+			joined(second, ALL_CAPS);
+			second.transport.line(`@time=${crossed};msgid=p2 :bob!bob@host PRIVMSG alice :wait`);
+			expect(queryJoins(second, "bob")).to.have.length(1);
 		});
 
 		it("a line after the close reopens it", function () {
@@ -237,6 +260,8 @@ describe("closed queries (irc/closedQueries.ts)", function () {
 		it("drops anything dated in the future (a clock ahead, or a value written to silence a nick)", function () {
 			expect(decodeClosed("bob:zzzzzzzzzz carol:!zzzzzzzzzz", NOW)).to.deep.equal([]);
 			expect(decodeClosed(`dave:${(NOW + 30000).toString(36)}`, NOW)).to.have.length(1); // within the skew allowance
+			// The account's values keep to a minute, not this device's 15.
+			expect(decodeClosed(`erin:${(NOW + 5 * 60000).toString(36)}`, NOW)).to.deep.equal([]);
 		});
 
 		it("merges by keeping each nick's newer event, a close or a reopen", function () {
@@ -541,13 +566,13 @@ describe("closed queries (irc/closedQueries.ts)", function () {
 			// dated after this device's clock.
 			const second = setup({uuid});
 			register(second, META_CAPS, login);
+			second.transport.line(`@time=${ahead};msgid=p8 :bob!bob@host PRIVMSG alice :hi`);
 			clock.tick(MUTE_READ_DELAY_MS);
 			second.transport.line(
 				`:irc.test 761 alice alice seance/closed private :${written.slice(
 					written.indexOf(" :") + 2
 				)}`
 			);
-			second.transport.line(`@time=${ahead};msgid=p8 :bob!bob@host PRIVMSG alice :hi`);
 			expect(queryJoins(second, "bob")).to.deep.equal([]);
 			expect(sets(second)).to.deep.equal([]);
 		});
@@ -564,8 +589,31 @@ describe("closed queries (irc/closedQueries.ts)", function () {
 			clock.tick(MUTE_READ_DELAY_MS);
 			h.transport.line(`:irc.test 761 alice alice seance/closed private :bob:${t36(t0)}`);
 			expect(sets(h)).to.deep.equal(["METADATA * SET seance/closed"]);
+			// The server confirms the delete as "key not set".
+			h.transport.line(":irc.test 766 alice alice seance/closed :key not set");
 			h.transport.line(`:irc.test 761 alice alice seance/closed private :carol:${t36(t0)}`);
 			expect(sets(h)).to.have.length(1);
+		});
+
+		it("tries the delete again at the next read when the server never confirmed it", function () {
+			setClosedQueriesKept(false);
+			const uuid = "closed-unconfirmed-net";
+			const login = [":irc.test 900 alice alice!a@h alice :You are now logged in as alice"];
+			const first = setup({uuid});
+			register(first, META_CAPS, login);
+			clock.tick(MUTE_READ_DELAY_MS);
+			first.transport.line(`:irc.test 761 alice alice seance/closed private :bob:${t36(t0)}`);
+			expect(sets(first)).to.have.length(1);
+			// The socket goes before the server read the delete.
+			first.transport.closed();
+
+			const second = setup({uuid});
+			register(second, META_CAPS, login);
+			clock.tick(MUTE_READ_DELAY_MS);
+			second.transport.line(
+				`:irc.test 761 alice alice seance/closed private :bob:${t36(t0)}`
+			);
+			expect(sets(second)).to.deep.equal(["METADATA * SET seance/closed"]);
 		});
 
 		it("turning it off while a network is down deletes that network's list when it next reads it", function () {

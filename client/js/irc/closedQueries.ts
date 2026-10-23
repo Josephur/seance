@@ -125,12 +125,12 @@ function unshared(): string[] {
  * its next login read deletes it (a network that was down when the setting
  * changed, or a setting off before this device ever ran this code).
  */
-export function closedUnshareDue(uuid: string): boolean {
+function closedUnshareDue(uuid: string): boolean {
 	return !kept && !unshared().includes(uuid);
 }
 
 /** This network's shared list was deleted from here. */
-export function markClosedUnshared(uuid: string): void {
+function markClosedUnshared(uuid: string): void {
 	const list = unshared();
 
 	if (!list.includes(uuid)) {
@@ -244,7 +244,6 @@ export class ClosedQueries {
 	readonly uuid: string;
 	private readonly fold: (nick: string) => string;
 
-	/** `unshare`: delete the account's shared list (called when sharing stops). */
 	constructor(uuid: string, fold: (nick: string) => string) {
 		this.uuid = uuid;
 		this.fold = fold;

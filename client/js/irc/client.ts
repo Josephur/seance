@@ -38,13 +38,7 @@ import {handlers, unhandled} from "./handlers";
 import {FILEHOST_SERVICE, TokenRequests, filehostUrlOf} from "./authtoken";
 import {interceptBatchLine, resetBatches} from "./handlers/batch";
 import {PAYLOAD_KEY} from "./handlers/metadata";
-import {
-	CLOSED_KEY,
-	ClosedQueries,
-	closedQueriesKept,
-	encodeClosed,
-	markClosedUnshared,
-} from "./closedQueries";
+import {CLOSED_KEY, ClosedQueries, closedQueriesKept, encodeClosed} from "./closedQueries";
 import {
 	CONCAT_LINE_TAG_BYTES,
 	MULTILINE_CAP,
@@ -2629,11 +2623,22 @@ export class IrcClient {
 	/**
 	 * Open the query with `nick` for a line it did not ask for (a message, a
 	 * catch-up), unless the user closed that conversation after `time`:
-	 * then nothing opens (irc/closedQueries.ts).
+	 * then nothing opens (irc/closedQueries.ts). A `live` line — not in a
+	 * replay, not in the settling window where a reattach replays unwrapped —
+	 * is news whatever its time: another server stamps it with its own clock,
+	 * and a reply that crossed ours can carry a time before our last line.
+	 * It opens the window, and the close gives way to a reopen so a reload
+	 * keeps it open.
 	 */
-	openAutoQuery(nick: string, time: Date): Channel | undefined {
+	openAutoQuery(nick: string, time: Date, live = false): Channel | undefined {
 		if (this.closed.suppresses(nick, time)) {
-			return undefined;
+			if (!live) {
+				return undefined;
+			}
+
+			if (this.closed.reopen(nick)) {
+				this.writeClosed();
+			}
 		}
 
 		const chan = this.announceChannel(nick, ChanType.QUERY);
@@ -2680,7 +2685,10 @@ export class IrcClient {
 	 * Sharing stopped (closedQueries.ts setClosedQueriesKept, or a login read
 	 * that finds a list while it is off): delete the account's list of closed
 	 * conversations, which the network's operators can read, if this
-	 * connection can — and remember it, so it happens once per network.
+	 * connection can. The server answers the delete with a 766, the same
+	 * "key not set" a read gets, and that (closedQueries.ts onClosedValue)
+	 * is what marks the network done: a delete lost with the socket or
+	 * refused (`FAIL METADATA RATE_LIMITED`) is tried again at the next read.
 	 */
 	unshareClosed(): void {
 		this.closedPending = false;
@@ -2692,7 +2700,6 @@ export class IrcClient {
 			this.caps.hasCapability("draft/metadata-2")
 		) {
 			this.send(`METADATA * SET ${CLOSED_KEY}`);
-			markClosedUnshared(this.uuid);
 		}
 	}
 

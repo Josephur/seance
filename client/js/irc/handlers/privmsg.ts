@@ -9,7 +9,7 @@ import type {IrcClient} from "../client";
 import type {Channel} from "../channel";
 import type {IrcMessage} from "../message";
 import {settleEcho} from "../pending";
-import {isRoutineReplayNotice} from "../persistence";
+import {inRestorationWindow, isRoutineReplayNotice} from "../persistence";
 import {privilegesModified} from "../oper";
 import {noteServicesLine, snoopNicks} from "../servicesfeed";
 import {handleServerNotice, handleWallops} from "../snotice";
@@ -142,9 +142,14 @@ function handleMessage(
 				showInActive = true;
 				chan = client.lobby;
 			} else {
-				// A line from before the user closed this query (an unwrapped
-				// replay) does not open it again (irc/closedQueries.ts).
-				const opened = client.openAutoQuery(target, time);
+				// A line from before the user closed this query (a replay,
+				// batched or in the settling window) does not open it again
+				// (irc/closedQueries.ts); a live one does, whatever its time.
+				const opened = client.openAutoQuery(
+					target,
+					time,
+					!msg.tags.has("batch") && !inRestorationWindow(client)
+				);
 
 				if (!opened) {
 					return;
