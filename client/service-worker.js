@@ -1619,7 +1619,9 @@ async function showMessage(P, parsed, checkSeen, mustShow = false) {
 	// A stub for this conversation under a tag of its own (a read relay that
 	// kept a newer notification), or a stalled push's fallback shown before
 	// this worker knew its network, has had its say. WebKit refuses a close
-	// within 30 s of the show, so it is tried again once that has passed.
+	// within 30 s of the show, so it is tried again once that has passed —
+	// outside `waitUntil`, like a stub's own close: a worker stopped before
+	// then leaves it to the next message or the app-opened sweep.
 	for (const n of await self.registration.getNotifications()) {
 		if (
 			(isStub(n) || (n.data && n.data.kind === "generic")) &&

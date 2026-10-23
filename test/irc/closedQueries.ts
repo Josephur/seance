@@ -524,6 +524,34 @@ describe("closed queries (irc/closedQueries.ts)", function () {
 			expect(queryJoins(h, "bob")).to.deep.equal([]);
 		});
 
+		it("a device clock behind the server keeps its own close through a reload and the login read", function () {
+			const uuid = "closed-slow-clock";
+			const ahead = "2026-08-28T12:02:00.000Z"; // the server, two minutes ahead
+			const login = [":irc.test 900 alice alice!a@h alice :You are now logged in as alice"];
+			const first = setup({uuid});
+			register(first, META_CAPS, login);
+			clock.tick(MUTE_READ_DELAY_MS);
+			first.transport.line(":irc.test 766 alice alice seance/closed :key not set");
+			first.transport.line(`@time=${ahead};msgid=p8 :bob!bob@host PRIVMSG alice :hi`);
+			first.client.input(first.client.findChannel("bob")!.id, "/close");
+			const [written] = sets(first);
+			expect(written).to.be.a("string");
+
+			// A reload: the account hands back what this device wrote, still
+			// dated after this device's clock.
+			const second = setup({uuid});
+			register(second, META_CAPS, login);
+			clock.tick(MUTE_READ_DELAY_MS);
+			second.transport.line(
+				`:irc.test 761 alice alice seance/closed private :${written.slice(
+					written.indexOf(" :") + 2
+				)}`
+			);
+			second.transport.line(`@time=${ahead};msgid=p8 :bob!bob@host PRIVMSG alice :hi`);
+			expect(queryJoins(second, "bob")).to.deep.equal([]);
+			expect(sets(second)).to.deep.equal([]);
+		});
+
 		it("takes a 761 only for our own key, not another user's an oper asked for", function () {
 			const h = account();
 			h.transport.line(`:irc.test 761 alice mallory seance/closed private :bob:${t36(t0)}`);
