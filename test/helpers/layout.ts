@@ -169,6 +169,60 @@ describe("layout — wraps", () => {
 		);
 	});
 
+	/** Every href node's verdict kind, in order. */
+	const verdicts = (message: string) => {
+		const out: string[] = [];
+
+		const walk = (nodes: ReturnType<typeof layout>) => {
+			for (const node of nodes) {
+				if (node.kind === "wrap") {
+					if (node.wrap === "href") {
+						out.push(node.verdict.kind);
+					}
+
+					walk(node.children);
+				}
+			}
+		};
+
+		walk(layout(message, markdown));
+		return out;
+	};
+
+	it("never calls a link honest on a host only faint text names", () => {
+		for (const message of [
+			// Hidden next to a lie a hair space hides
+			"[paypal.c\u200Aom\x041C1A18,1C1A19 evil.com\x04](https://evil.com/login)",
+			// Hidden, no lie at all: the reader sees "click here" and nothing else
+			"[click here \x041C1A18,1C1A19evil.com\x04](https://evil.com/)",
+			"[click here \x0301,88evil.com\x03](https://evil.com/)",
+			"[click here \x0300,98evil.com\x03](https://evil.com/)",
+			"[click here \x0300,01\x04000000evil.com\x04\x03](https://evil.com/)",
+			// One colour: whether it reads depends on the theme
+			"[click here \x041C1A18evil.com\x04](https://evil.com/)",
+		]) {
+			expect(verdicts(message), JSON.stringify(message)).to.not.include("honest");
+		}
+	});
+
+	it("does not take faint text for a lie, nor a readable pair for a hidden one", () => {
+		expect(verdicts("[paypal.com \x0301,01x\x03](https://paypal.com/)")).to.deep.equal([
+			"honest",
+		]);
+		expect(verdicts("[\x0301,00paypal.com\x03](https://evil.example/)")).to.deep.equal([
+			"mismatch",
+		]);
+		expect(verdicts("[\x0304paypal.com\x03](https://evil.example/)")).to.deep.equal([
+			"mismatch",
+		]);
+	});
+
+	it("judges a label a spoiler splits as one", () => {
+		const kinds = verdicts("[paypal||.com||](https://evil.example/)");
+		expect(kinds).to.have.length.above(1);
+		expect(kinds.every((kind) => kind === "mismatch")).to.equal(true);
+	});
+
 	it("keeps an emoji shortcode from reaching across a label's edge", () => {
 		const nodes = layout("[paypal.com:](https://evil.example/login)lock: verify now", markdown);
 		const node = nodes[0];

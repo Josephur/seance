@@ -83,14 +83,25 @@ another. `client/js/helpers/linkSafety.ts` `judgeLink(label, href)` compares
 hosts, never strings. The destination is `new URL(href).hostname`, which sees
 through userinfo (`https://bank.com@evil.example`) and gives an IDN host in
 punycode. The label is first read as a reader sees it: NFKC, invisible
-characters and bidi marks removed, ideographic dots read as dots, and text
-drawn in its own background colour left out (`layout.ts` `visibleText`). Its
-addresses are the host-shaped words that end in a real TLD or carry a letter
-outside ASCII (a lookalike); an e-mail address counts by its domain. A
-schemeless source-file name (`setup.py`, `readme.md`, `main.rs`) is not an
-address unless a path follows it. `layout()` puts the verdict on the `href`
-node, finds no link, channel or nick inside the label and lets no emoji
-shortcode reach across its edge, and `parse.ts` renders it:
+characters, spaces too thin to notice and bidi marks removed, ideographic dots
+read as dots. Its addresses are the host-shaped words (combining marks are part
+of their letters) that end in a real TLD, carry a letter outside ASCII (a
+lookalike) or are an IPv4 address; an e-mail address counts by its domain. A
+schemeless word with no path after it is a name, not an address, when it is a
+source-file name (`setup.py`, `readme.md`, `main.rs`, `install.sh`) or its TLD
+is written in capitals (`ASP.NET`, `Socket.IO`): the real host still shows,
+without the dialog. A word only starts where a word does and the scheme and
+userinfo are bounded, so a 16 KB label is one pass. Colour decides what counts
+(`layout.ts` `judgeLabel`, `ircmessageparser/colours.ts`): text whose
+foreground and background contrast under 2:1 (style.css's palette, or the hex
+the sender set) is not seen, so it can neither lie nor vouch; a label naming
+another site in anything a reader may see is a mismatch, and it is honest only
+when what a reader surely sees is — text in the theme's colours or in a
+readable pair, never text in one colour, which may vanish into a theme's
+background. A link a spoiler or another wrap splits is judged once, whole.
+`layout()` puts the verdict on every `href` node of the link, finds no link,
+channel or nick inside the label and lets no emoji shortcode reach across its
+edge, and `parse.ts` renders it:
 
 - `honest`: every address in the label is the destination's host (one
   leading `www.` aside); rendered as before;

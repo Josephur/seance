@@ -1,5 +1,6 @@
 import {findLinks} from "../../../../shared/linkify";
 import {judgeLink, type LinkVerdict} from "../linkSafety";
+import {colourReading} from "./colours";
 import anyIntersection from "./anyIntersection";
 import findChannels from "./findChannels";
 import findEmoji from "./findEmoji";
@@ -72,7 +73,12 @@ type WrapKey = typeof WRAP_KEYS[number];
 // `lang` is not a wrap of its own: it qualifies `codeBlock`, so that two
 // blocks in different languages never end up under one element. A header's
 // value is its level, so two levels never end up under one element either.
-type Wrap = Partial<Record<WrapKey, boolean | string | number>> & {lang?: string; file?: string};
+// `verdict` rides along on an href: the whole link's, judged once.
+type Wrap = Partial<Record<WrapKey, boolean | string | number>> & {
+	lang?: string;
+	file?: string;
+	verdict?: LinkVerdict;
+};
 // A part, or one run of a part's text, and the wraps it sits in
 type WrappedNodes = {nodes: LayoutNode[]; wrap: Wrap};
 
@@ -180,6 +186,8 @@ export function layout(text: string, options: LayoutOptions = {}): LayoutNode[] 
 		wrapped.push({nodes: run, wrap: runWrap});
 	}
 
+	judgeLinks(wrapped);
+
 	return options.markdown
 		? groupNodes(wrapped)
 		: wrapped.flatMap((wrappedNodes) => wrappedNodes.nodes);
@@ -198,32 +206,77 @@ export function toPlainText(nodes: LayoutNode[]): string {
 
 type TextNode = Extract<LayoutNode, {kind: "text"}>;
 
-/** Text drawn in its own background colour: there, but not to be seen. */
-function hiddenByColour(style: Style): boolean {
-	const sameCode =
-		style.textColor !== undefined &&
-		style.bgColor !== undefined &&
-		Number(style.textColor) === Number(style.bgColor);
-	const sameHex =
-		style.hexColor !== undefined &&
-		style.hexBgColor !== undefined &&
-		style.hexColor.toLowerCase() === style.hexBgColor.toLowerCase();
-	return sameCode || sameHex;
-}
-
-/** The text a reader can see: a masked link is judged by it (helpers/linkSafety.ts). */
-function visibleText(nodes: LayoutNode[]): string {
-	let out = "";
-
+/**
+ * A masked link's label as a reader may see it (`seen`: everything but text
+ * drawn too faint to read) and as a reader surely sees it (`sure`: only text
+ * in the theme's colours or in a readable pair the sender set — a single
+ * colour may vanish into a theme's background).
+ */
+function labelText(nodes: LayoutNode[], out = {seen: "", sure: ""}) {
 	for (const node of nodes) {
-		if (node.kind === "text") {
-			out += hiddenByColour(node.style) ? "" : node.text;
-		} else {
-			out += visibleText(node.children);
+		if (node.kind !== "text") {
+			labelText(node.children, out);
+			continue;
+		}
+
+		const reading = colourReading(node.style);
+
+		if (reading !== "hidden") {
+			out.seen += node.text;
+		}
+
+		if (reading === "plain" || reading === "readable") {
+			out.sure += node.text;
 		}
 	}
 
 	return out;
+}
+
+/**
+ * A label naming another site in anything a reader may see is a mismatch;
+ * it is honest only when what a reader surely sees is.
+ */
+function judgeLabel(nodes: LayoutNode[], href: string): LinkVerdict {
+	const {seen, sure} = labelText(nodes);
+	const verdict = judgeLink(seen, href);
+
+	if (verdict.kind !== "honest" || sure === seen) {
+		return verdict;
+	}
+
+	const surely = judgeLink(sure, href);
+	return surely.kind === "honest" ? verdict : surely;
+}
+
+/**
+ * One verdict per link, whatever splits its label (a spoiler, a header):
+ * the neighbouring runs that share an href are one label.
+ */
+function judgeLinks(wrapped: WrappedNodes[]): void {
+	let i = 0;
+
+	while (i < wrapped.length) {
+		const href = wrapped[i].wrap.href;
+		let j = i + 1;
+
+		while (href && j < wrapped.length && wrapped[j].wrap.href === href) {
+			j += 1;
+		}
+
+		if (href) {
+			const verdict = judgeLabel(
+				wrapped.slice(i, j).flatMap((item) => item.nodes),
+				String(href)
+			);
+
+			for (const item of wrapped.slice(i, j)) {
+				item.wrap.verdict = verdict;
+			}
+		}
+
+		i = j;
+	}
 }
 
 // A quote of the message (the reply quote under a message, the composer's
@@ -459,7 +512,7 @@ function wrapNode(key: WrapKey, wrap: Wrap, children: LayoutNode[]): LayoutNode 
 			kind: "wrap",
 			wrap: "href",
 			href: target,
-			verdict: judgeLink(visibleText(children), target),
+			verdict: wrap.verdict ?? judgeLabel(children, target),
 			children,
 		};
 	}

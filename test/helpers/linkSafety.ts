@@ -79,6 +79,13 @@ describe("linkSafety (masked markdown links)", function () {
 				"www.paypal.com✅",
 				"pay\u200cpal.com",
 				"https://paypal.com\u200e/login",
+				// Spaces too thin to see: NFKC would make them a gap.
+				"paypal.c\u200aom",
+				"paypal.c\u2009om",
+				"paypal\u202f.com",
+				"paypal.c\u205fom",
+				// A combining mark is part of its letter, not a break.
+				"paypal.c\u0323om",
 			]) {
 				expect(
 					judgeLink(label, "https://evil.example/login").kind,
@@ -145,7 +152,7 @@ describe("linkSafety (masked markdown links)", function () {
 		});
 
 		it("does not take a source file name for an address", function () {
-			for (const label of ["readme.md", "setup.py", "main.rs"]) {
+			for (const label of ["readme.md", "setup.py", "main.rs", "install.sh"]) {
 				expect(judgeLink(label, "https://github.com/org/repo"), label).to.deep.equal({
 					kind: "masked",
 					host: "github.com",
@@ -159,17 +166,48 @@ describe("linkSafety (masked markdown links)", function () {
 				"notion.so",
 				"allegro.pl",
 				"backup.zip",
-				"script.sh",
+				"8.8.8.8",
 			]) {
 				expect(judgeLink(label, "https://evil.example/").kind, label).to.equal("mismatch");
 			}
 		});
 
-		it("still flags an extension-like domain written with a scheme or www.", function () {
-			expect(judgeLink("https://paypal.zip", "https://evil.example/").kind).to.equal(
-				"mismatch"
-			);
-			expect(judgeLink("www.paypal.zip", "https://evil.example/").kind).to.equal("mismatch");
+		it("never takes a file-name-shaped word with a scheme, userinfo or www. for a file name", function () {
+			for (const label of [
+				"https://setup.py",
+				"www.readme.md",
+				"x@paypal.rs",
+				"https://ASP.NET",
+				"www.Socket.IO",
+			]) {
+				expect(judgeLink(label, "https://evil.example/").kind, label).to.equal("mismatch");
+			}
+		});
+
+		it("reads a TLD written in capitals as a name, not an address", function () {
+			for (const [label, href] of [
+				["ASP.NET docs", "https://learn.microsoft.com/"],
+				["Socket.IO", "https://github.com/socketio/socket.io"],
+			]) {
+				expect(judgeLink(label, href).kind, label).to.equal("masked");
+			}
+
+			expect(judgeLink("PayPal.com", "https://evil.example/").kind).to.equal("mismatch");
+		});
+
+		it("lets an IDN in a script with combining marks through on its own site", function () {
+			expect(judgeLink("उदाहरण.भारत", "https://उदाहरण.भारत/")).to.deep.equal({
+				kind: "honest",
+			});
+		});
+
+		it("reads a long label in linear time", function () {
+			const label = "a".repeat(16000);
+			const start = Date.now();
+			judgeLink(label, "https://x.example/");
+			judgeLink("a,".repeat(8000), "https://x.example/");
+			judgeLink("a.".repeat(8000) + "a", "https://x.example/");
+			expect(Date.now() - start).to.be.below(100);
 		});
 
 		it("flags an e-mail label whose domain is not where the link goes", function () {
@@ -178,7 +216,7 @@ describe("linkSafety (masked markdown links)", function () {
 				host: "evil.example",
 				shown: "support@paypal.com",
 			});
-			// `.example` is no TLD, so a real one: the linkifier only finds real domains.
+			// `.example` is no TLD, so a real one: only a real TLD names a site.
 			expect(judgeLink("help@example.com", "https://example.com/")).to.deep.equal({
 				kind: "honest",
 			});
