@@ -94,6 +94,8 @@ export class WsTransport {
 	private timer: ReturnType<typeof setTimeout> | null = null;
 	private closedByUs = false;
 	private openedAt: number | null = null; // null = not open (0 is a real fake-clock time)
+	/** A dial the ledger recorded and has not yet seen end (irc/dialLedger.ts). */
+	private dialing = false;
 	private connectingSince = 0;
 	private connectTimer: ReturnType<typeof setTimeout> | null = null;
 	private probeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -161,6 +163,7 @@ export class WsTransport {
 		// A dial made with the radio off never reached the server.
 		if ((globalThis.navigator as {onLine?: boolean} | undefined)?.onLine !== false) {
 			this.opts.gate?.record(Date.now());
+			this.dialing = true;
 		}
 
 		// Every handler checks `ws === this.ws` so a superseded socket stays silent.
@@ -253,6 +256,21 @@ export class WsTransport {
 	}
 
 	/**
+	 * The server restarts its throttle's gap when a connection it accepted
+	 * goes (irc/dialLedger.ts). It counts one at the TCP accept, before TLS
+	 * and the WebSocket upgrade, so a dial that never opened — timed out,
+	 * refused its certificate, abandoned for a fresh one — may have counted
+	 * too: every dial that ends is a close. One that never reached the server
+	 * makes the ledger wait a little longer, never too little.
+	 */
+	private dialEnded(): void {
+		if (this.dialing) {
+			this.dialing = false;
+			this.opts.gate?.closed(Date.now());
+		}
+	}
+
+	/**
 	 * Abandon an in-flight dial and start a fresh one now. For the foreground
 	 * poke: a socket left CONNECTING while the OS had the radio off may never
 	 * open, and connect() alone would wait for it.
@@ -268,6 +286,7 @@ export class WsTransport {
 		this.clearConnectTimer();
 		this.ws = null; // the abandoned socket's events are ignored
 		this._state = "closed";
+		this.dialEnded();
 
 		try {
 			ws?.close();
@@ -371,11 +390,7 @@ export class WsTransport {
 		const wasStable =
 			this.openedAt !== null && Date.now() - this.openedAt >= STABLE_CONNECTION_MS;
 
-		// The server restarts its throttle's gap when a connection closes
-		// (irc/dialLedger.ts): one that never opened never counted there.
-		if (this.openedAt !== null) {
-			this.opts.gate?.closed(Date.now());
-		}
+		this.dialEnded();
 
 		const atOnce = wasStable || probing;
 

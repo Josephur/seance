@@ -986,17 +986,29 @@ describe("WsTransport: the dial gate (irc/dialLedger.ts)", function () {
 		expect(g.record.args).to.deep.equal([[0], [100]]);
 	});
 
-	it("tells the gate when a socket that had opened closes, and not for a failed dial", function () {
+	it("tells the gate when any dial ends: one that never opened counted at the accept", function () {
 		const g = gate(0);
 		const {t} = make({reconnect: fastReconnect, gate: g});
 		t.connect();
-		last().closed(1006, "", false); // never opened
-		expect(g.closed.called).to.equal(false);
+		last().closed(1006, "", false); // refused before it opened
+		expect(g.closed.args).to.deep.equal([[0]]);
 		clock.tick(100);
 		last().open();
 		clock.tick(5_000);
 		last().closed(1006, "", false);
-		expect(g.closed.args).to.deep.equal([[5_100]]);
+		expect(g.closed.args).to.deep.equal([[0], [5_100]]);
+	});
+
+	it("tells the gate when a dial times out or is given up for a fresh one", function () {
+		const g = gate(0);
+		const {t} = make({gate: g});
+		t.connect();
+		clock.tick(CONNECT_TIMEOUT_MS); // TLS or the upgrade stalled
+		expect(g.closed.args).to.deep.equal([[CONNECT_TIMEOUT_MS]]);
+		t.connect();
+		clock.tick(1_000);
+		t.redial(); // the foreground poke drops the stuck dial
+		expect(g.closed.args).to.deep.equal([[CONNECT_TIMEOUT_MS], [CONNECT_TIMEOUT_MS + 1_000]]);
 	});
 
 	it("does not record a dial made offline", function () {
@@ -1012,6 +1024,8 @@ describe("WsTransport: the dial gate (irc/dialLedger.ts)", function () {
 			t.connect();
 			expect(FakeWebSocket.instances).to.have.length(1);
 			expect(g.record.called).to.equal(false);
+			last().closed(1006, "", false);
+			expect(g.closed.called).to.equal(false);
 		} finally {
 			if (nav) {
 				Object.defineProperty(globalThis, "navigator", nav);

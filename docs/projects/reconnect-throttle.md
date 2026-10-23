@@ -36,12 +36,20 @@ lockout of a minute and a half where 42 s of quiet would have done.
 
 ## What the client does now
 
-`client/js/irc/dialLedger.ts` keeps this device's dials, and the drops of its
-connections that had opened, per server host in `thelounge.state.dials`, so a
-reloaded or reopened app and its other tabs share the record. A drop is kept
-only for a session the bouncer does not hold (a held one stays counted on the
-server, which then restarts nothing), and the drop a page unload makes, which
-the transport never sees, is kept from the unload's QUIT (`noteUnload`). The
+`client/js/irc/dialLedger.ts` keeps this device's dials, and when each ended,
+per server host in `thelounge.state.dials`, so a reloaded or reopened app and
+its other tabs share the record. IPcheck counts a connection at the TCP
+accept, before TLS and the WebSocket upgrade, so a dial that timed out or was
+given up before it opened ends with a drop too (one that never reached the
+server only makes the ledger wait a little longer). A drop is kept only for a
+session the bouncer does not hold (a held one stays counted on the server,
+which then restarts nothing; a KILL ends the hold, since nefarious2 never
+holds a killed session), and the drop a page unload makes, which the
+transport never sees, is kept at the unload for any connection still open or
+dialling (`noteUnload`). One case it cannot see: a QUIT that hands the
+session to another of the account's sessions on the same server is a real
+disconnect there (`m_quit.c`), which matters only when that other session is
+on another address. The
 replay is conservative about the server's whole seconds and the clocks' small
 difference: a gap restarts the count only at 42 s (162 s after a drop), and a
 dial waits for the same. Before any dial (a scheduled retry, the foreground poke, the

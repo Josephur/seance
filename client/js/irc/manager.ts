@@ -229,8 +229,6 @@ if (typeof window !== "undefined") {
 	// it out whenever the page may not come back — a phone kills a hidden
 	// page without a pagehide.
 	window.addEventListener("pagehide", flushQueryLogs);
-	// Another tab closed a query: a window this one opened by itself for
-	// that conversation goes too (irc/closedQueries.ts).
 	// Private conversations no longer kept: every connected network deletes
 	// the account's list of closed ones (a network down meanwhile does so at
 	// its next login read).
@@ -239,6 +237,8 @@ if (typeof window !== "undefined") {
 			client.unshareClosed();
 		}
 	});
+	// Another tab closed a query: a window this one opened by itself for
+	// that conversation goes too (irc/closedQueries.ts).
 	window.addEventListener("storage", (ev: StorageEvent) => {
 		if (ev.key === CLOSED_STORAGE_KEY) {
 			closedStorageChanged(allClients());
@@ -258,8 +258,10 @@ if (typeof window !== "undefined") {
 		for (const client of allClients()) {
 			if (client.isConnected) {
 				client.send("QUIT :page closed");
-				client.noteUnload();
 			}
+
+			// Registering or still dialling, the server has counted it too.
+			client.noteUnload();
 		}
 	});
 }

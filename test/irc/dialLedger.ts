@@ -220,6 +220,34 @@ describe("dial ledger (irc/dialLedger.ts)", function () {
 			useStorageBackend(null);
 		});
 
+		it("records no unload drop for a held session, nor for a socket already gone", function () {
+			const data = new Map<string, string>();
+			useStorageBackend({
+				get: (k) => data.get(k) ?? null,
+				set: (k, v) => void data.set(k, v),
+				remove: (k) => void data.delete(k),
+			});
+			transportOptions();
+			lastClient.persistenceHold = true;
+			lastClient.noteUnload();
+			lastClient.persistenceHold = false;
+			(lastClient.transport as FakeTransport).state = "closed";
+			lastClient.noteUnload();
+			const record = JSON.parse(data.get("thelounge.state.dials") ?? "{}")["irc.test"];
+			expect(record?.c ?? []).to.deep.equal([]);
+			useStorageBackend(null);
+		});
+
+		it("a KILL of our own connection ends the hold: a killed session is never held", function () {
+			const h = setup();
+			register(h);
+			h.client.persistenceHold = true;
+			h.transport.line(":oper!o@h KILL someone :irc.test!oper (spam)");
+			expect(h.client.persistenceHold).to.equal(true);
+			h.transport.line(":oper!o@h KILL alice :irc.test!oper (spam)");
+			expect(h.client.persistenceHold).to.equal(false);
+		});
+
 		it("says a wait is the server's throttle, and drops that once the dial starts", function () {
 			const h = setup();
 			register(h);

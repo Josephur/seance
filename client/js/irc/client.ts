@@ -2704,13 +2704,15 @@ export class IrcClient {
 	}
 
 	/**
-	 * The page is going away with this connection open (manager.ts sends its
-	 * QUIT): the socket drops without a close the transport would see, so
-	 * the drop goes into the dial ledger here — unless the bouncer holds the
-	 * session, which the server keeps counted.
+	 * The page is going away (manager.ts sends a registered connection its
+	 * QUIT): an open or dialling socket drops without a close the transport
+	 * would see, so the drop goes into the dial ledger here — unless the
+	 * bouncer holds the session, which the server keeps counted.
 	 */
 	noteUnload(): void {
-		if (!this.persistenceHold) {
+		const live = this.transport.state === "open" || this.transport.state === "connecting";
+
+		if (live && !this.persistenceHold) {
 			this.dialLedger?.closed(Date.now());
 		}
 	}

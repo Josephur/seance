@@ -15,7 +15,8 @@
  * the bouncer holds the session (`bounce_hold_client` never calls
  * `IPcheck_disconnect`), so the client records a drop only for a session that
  * is not held (`IrcClient.createTransport`, `noteUnload` for the unload the
- * transport never sees). The server counts whole seconds (`CurrentTime`) on
+ * transport never sees). Counted at the accept, a dial that never opened
+ * drops too: the transport records the end of every dial. The server counts whole seconds (`CurrentTime`) on
  * a clock a fraction of a second from this one, so the replay works in
  * milliseconds with a whole second and a margin to spare (`throttleWaitMs`).
  * Over a WebSocket a refusal looks like any lost connection (1006). A phone
