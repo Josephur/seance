@@ -70,7 +70,9 @@ bytes. The text stays in chathistory; the server renders it on request.
 **What enters:** a channel line whose text mentions the account's nick (the
 test `webpush_hl_account` already runs, without its push-only gates), from an
 account-less or other account, not `SILENCE`d. Replies to one's own messages
-and private messages are open questions.
+are an open question. Private messages: in step 1 every line of a query is a
+highlight (`handlers/privmsg.ts`), so each one is an entry; whether the
+server inbox should keep them is open.
 
 **Limits:**
 

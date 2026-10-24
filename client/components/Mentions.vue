@@ -48,6 +48,12 @@
 						v-for="message in group.entries"
 						:key="message.key"
 						:class="['msg', 'mentions-entry', message.type]"
+						:role="group.conversation ? 'button' : undefined"
+						:aria-label="
+							group.conversation
+								? `${message.from.nick} in ${group.target}: open the conversation`
+								: undefined
+						"
 						:tabindex="group.conversation ? 0 : -1"
 						@click="openFromRow($event, group)"
 						@keydown.enter.self="openGroup(group)"
