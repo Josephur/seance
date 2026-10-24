@@ -1,0 +1,181 @@
+// The inbox (docs/projects/inbox.md): unread mentions grouped by
+// conversation, a count on the @ button, a mention leaving the list once its
+// conversation is read, and the list surviving a reload with its channels.
+//
+//   corepack yarn build && python3 -m http.server -d public 8000 &
+//   tools/nefarious-dev/run.sh -d
+//   node tools/browser-drive.mjs tools/scenarios/inbox.mjs
+//   node tools/browser-drive.mjs tools/scenarios/inbox.mjs --mobile --width=390 --height=844
+//
+// The page sits in #seance while a second user mentions it there and in a
+// second channel; then the page opens that channel from the popover.
+
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"; // dev ircd's self-signed cert
+
+const IRCD = process.env.SEANCE_IRC_WS ?? "wss://localhost:8443/";
+const RUN = Date.now().toString(36).slice(-5);
+const NICK = `inbx${RUN}`;
+const TALKER = `tlk${RUN}`;
+const HOME = "#seance";
+const OTHER = `#inbox${RUN}`;
+const BASE = process.env.SEANCE_URL ?? "http://localhost:8000/";
+
+export const url = `${BASE}?host=localhost&port=8443&tls=true&nick=${NICK}&join=${encodeURIComponent(
+	`${HOME},${OTHER}`
+)}`;
+
+const BADGE = "#chat button.mentions .mentions-badge";
+const POPUP = ".mentions-popup";
+const ROW = (name) => `.channel-list-item[data-name="${name}"]`;
+
+/** A second user in both channels. */
+function speaker(nick) {
+	const ws = new WebSocket(IRCD, ["text.ircv3.net"]);
+	let joins = 0;
+	let onJoined = () => {};
+
+	ws.onopen = () => {
+		ws.send(`NICK ${nick}`);
+		ws.send(`USER ${nick} 0 * :seance inbox`);
+	};
+
+	ws.onmessage = (ev) => {
+		const line = String(ev.data);
+
+		if (line.startsWith("PING")) {
+			ws.send(`PONG${line.slice(4)}`);
+			return;
+		}
+
+		const params = (line.startsWith("@") ? line.slice(line.indexOf(" ") + 1) : line).split(" ");
+
+		if (params[1] === "001") {
+			ws.send(`JOIN ${HOME},${OTHER}`);
+		} else if (params[1] === "JOIN" && params[0].includes(nick) && ++joins === 2) {
+			onJoined();
+		}
+	};
+
+	return {
+		joined: new Promise((resolve, reject) => {
+			onJoined = resolve;
+			setTimeout(() => reject(new Error(`${nick} never joined`)), 20000);
+		}),
+		say: (target, text) => ws.send(`PRIVMSG ${target} :${text}`),
+		quit: () => ws.send("QUIT :done"),
+	};
+}
+
+const badgeText = `document.querySelector("${BADGE}")?.textContent.trim() ?? ""`;
+const groupNames = `Array.from(document.querySelectorAll(".mentions-group-name")).map((e) => e.textContent.trim()).join(",")`;
+const entryCount = `document.querySelectorAll(".mentions-entry").length`;
+
+export default async function run(page) {
+	const talker = speaker(TALKER);
+	await talker.joined;
+
+	await page.goto(page.url, {waitForSelector: "#connect form"});
+	// Saved and dialled again on the reload below.
+	await page.click('#connect input[name="autoconnect"]');
+	await page.evaluate(`document.querySelector("#connect form").requestSubmit()`);
+	await page.waitFor(`document.querySelector(${JSON.stringify(ROW(OTHER))})`, {
+		timeout: 30000,
+		label: `${OTHER} in the sidebar`,
+	});
+
+	if (
+		await page.evaluate(`!document.querySelector(${JSON.stringify(ROW(HOME))})?.offsetParent`)
+	) {
+		await page.evaluate(`document.querySelector(".lt")?.click()`); // the phone's drawer
+		await page.sleep(400);
+	}
+
+	await page.click(ROW(HOME));
+	await page.waitFor(`document.querySelector("#input")`, {label: "the input box"});
+	await page.sleep(2500); // the join burst and the catch-up
+
+	await page.check("no badge before any mention", (await page.evaluate(badgeText)) === "");
+
+	// Empty state.
+	await page.click("#chat button.mentions");
+	await page.waitFor(`document.querySelector("${POPUP}")`, {label: "the popover"});
+	await page.check(
+		"the empty state says so",
+		await page.evaluate(`!!document.querySelector(".mentions-empty")`)
+	);
+	await page.screenshot("1-empty", {selector: POPUP, pad: 16});
+	await page.evaluate(`document.querySelector("#mentions-popup-container").click()`);
+
+	// Mentions: two in the other channel, one in a channel being looked at
+	// (read at once: never in the inbox), one plain line.
+	talker.say(OTHER, `${NICK}: are you around? the deploy is stuck on step 3 ${RUN}`);
+	talker.say(OTHER, `just a line nobody is named in ${RUN}`);
+	talker.say(
+		OTHER,
+		`${NICK} never mind, found it — it was the **cache** again. Long line to see the clamp: lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua ${RUN}`
+	);
+	talker.say(HOME, `${NICK}: hi in the open channel ${RUN}`);
+	await page.waitFor(`${badgeText} === "2"`, {timeout: 10000, label: "the badge at 2"});
+	await page.sleep(1500);
+	await page.check(
+		`the badge counts 2 (${await page.evaluate(badgeText)})`,
+		(await page.evaluate(badgeText)) === "2"
+	);
+
+	await page.screenshot("2a-badge", {selector: "#chat .header", pad: 4});
+	await page.click("#chat button.mentions");
+	await page.waitFor(`document.querySelector(".mentions-group")`, {label: "a group"});
+	await page.sleep(300);
+	const groups = await page.evaluate(groupNames);
+	await page.check(`one group, the other channel (${groups})`, groups === OTHER);
+	await page.check(
+		`two entries (${await page.evaluate(entryCount)})`,
+		(await page.evaluate(entryCount)) === 2
+	);
+	await page.screenshot("2-two-mentions", {selector: POPUP, pad: 16});
+
+	// Hover a row: the dismiss button shows.
+	await page.hover(".mentions-entry:first-of-type .content");
+	await page.sleep(250);
+	await page.screenshot("3-hover", {selector: POPUP, pad: 16});
+
+	// Dismiss one (this device only).
+	await page.click(".mentions-entry .msg-dismiss");
+	await page.sleep(300);
+	await page.check(
+		`one entry left (${await page.evaluate(entryCount)})`,
+		(await page.evaluate(entryCount)) === 1
+	);
+	await page.check(
+		`the badge says 1 (${await page.evaluate(badgeText)})`,
+		(await page.evaluate(badgeText)) === "1"
+	);
+
+	// It survives a reload, with its channel resolved.
+	await page.evaluate(`document.querySelector("#mentions-popup-container").click()`);
+	await page.goto(BASE, {waitForSelector: "#chat, #connect"});
+	await page.waitFor(`${badgeText} === "1"`, {timeout: 30000, label: "the badge after a reload"});
+	await page.click("#chat button.mentions");
+	await page.waitFor(`document.querySelector(".mentions-group-header:not([disabled])")`, {
+		timeout: 15000,
+		label: "the group, resolved to its channel",
+	});
+	await page.screenshot("4-after-reload", {selector: POPUP, pad: 16});
+
+	// Opening the conversation reads it, and reading it clears the inbox.
+	await page.click(".mentions-group-header");
+	await page.waitFor(`!document.querySelector("${POPUP}")`, {label: "the popover closed"});
+	await page.waitFor(
+		`document.querySelector("#chat .header .title")?.textContent.includes("${OTHER}")`,
+		{label: `${OTHER} open`}
+	);
+	await page.waitFor(`${badgeText} === ""`, {timeout: 5000, label: "the badge gone"});
+	await page.check(
+		"reading the conversation cleared it",
+		(await page.evaluate(badgeText)) === ""
+	);
+	await page.screenshot("5-read", {selector: "#chat .header", pad: 8});
+
+	talker.quit();
+	page.check("no console errors", page.consoleErrors.length === 0);
+}

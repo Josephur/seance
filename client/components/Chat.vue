@@ -64,9 +64,17 @@
 					</span>
 					<button
 						class="mentions"
-						aria-label="Open your mentions"
+						:aria-label="
+							mentionCount
+								? `Open your mentions, ${mentionCount} unread`
+								: 'Open your mentions'
+						"
 						@click="openMentions"
-					/>
+					>
+						<span v-if="mentionCount" class="mentions-badge" aria-hidden="true">{{
+							mentionBadge
+						}}</span>
+					</button>
 					<button
 						class="menu"
 						aria-label="Open the context menu"
@@ -150,6 +158,8 @@ import type {ClientNetwork, ClientChan} from "../js/types";
 import {useStore} from "../js/store";
 import {SpecialChanType, ChanType} from "../../shared/types/chan";
 import {layout, toPlainText} from "../js/helpers/ircmessageparser/layout";
+import {visibleMentions} from "../js/mentions";
+import {badgeCount} from "../js/helpers/inbox";
 
 export default defineComponent({
 	name: "Chat",
@@ -271,6 +281,13 @@ export default defineComponent({
 			});
 		};
 
+		// Unread mentions on every network: the @ button's badge.
+		const mentionCount = computed(() => {
+			void store.state.mentions; // visibleMentions reads the store too
+			return visibleMentions().length;
+		});
+		const mentionBadge = computed(() => badgeCount(mentionCount.value));
+
 		const openMentions = (event: any) => {
 			eventbus.emit("mentions:toggle", {
 				event: event,
@@ -318,6 +335,8 @@ export default defineComponent({
 			saveTopic,
 			openContextMenu,
 			openMentions,
+			mentionCount,
+			mentionBadge,
 		};
 	},
 });

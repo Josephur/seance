@@ -129,3 +129,44 @@ export function parseStored(raw: string | null | undefined): InboxEntry[] {
 
 	return Array.isArray(parsed) ? parsed.filter(isEntry) : [];
 }
+
+export type InboxGroup = {
+	/** `network/target`, lowercased: one per conversation. */
+	key: string;
+	network: string;
+	target: string;
+	/** Oldest first, as the conversation reads. */
+	entries: InboxEntry[];
+	/** The newest entry's time, in ms. */
+	newest: number;
+};
+
+/** The entries by conversation, the conversation with the newest mention first. */
+export function groupByConversation(list: InboxEntry[]): InboxGroup[] {
+	const groups = new Map<string, InboxGroup>();
+
+	for (const entry of list) {
+		const key = `${entry.network}/${entry.target.toLowerCase()}`;
+		const time = new Date(entry.time).getTime();
+		let group = groups.get(key);
+
+		if (!group) {
+			group = {key, network: entry.network, target: entry.target, entries: [], newest: time};
+			groups.set(key, group);
+		}
+
+		group.entries.push(entry);
+		group.newest = Math.max(group.newest, time);
+	}
+
+	for (const group of groups.values()) {
+		group.entries.sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
+	}
+
+	return [...groups.values()].sort((a, b) => b.newest - a.newest);
+}
+
+/** The count a badge shows: the number, or `99+`. */
+export function badgeCount(count: number): string {
+	return count > 99 ? "99+" : String(count);
+}

@@ -2,11 +2,13 @@ import {expect} from "chai";
 import {
 	MAX_ENTRIES,
 	addEntries,
+	badgeCount,
 	dismiss,
 	dropNetwork,
 	dropTarget,
 	entryFor,
 	entryKey,
+	groupByConversation,
 	parseStored,
 	pruneRead,
 	type InboxEntry,
@@ -131,5 +133,31 @@ describe("helpers/inbox.ts", function () {
 			expect(parseStored(JSON.stringify({}))).to.deep.equal([]);
 			expect(parseStored(null)).to.deep.equal([]);
 		});
+	});
+
+	describe("groupByConversation", function () {
+		it("groups by conversation, newest conversation first, each oldest first", function () {
+			const list = [
+				entry({msgid: "a1", target: "#a", time: "2026-10-23T12:00:00.000Z"}),
+				entry({msgid: "b1", target: "#b", time: "2026-10-23T12:01:00.000Z"}),
+				entry({msgid: "a2", target: "#A", time: "2026-10-23T12:03:00.000Z"}),
+				entry({msgid: "a0", target: "#a", time: "2026-10-23T11:00:00.000Z"}),
+				entry({
+					msgid: "c1",
+					network: "net-2",
+					target: "#a",
+					time: "2026-10-23T12:02:00.000Z",
+				}),
+			];
+			const groups = groupByConversation(list);
+			expect(groups.map((g) => g.key)).to.deep.equal(["net-1/#a", "net-2/#a", "net-1/#b"]);
+			expect(groups[0].entries.map((e) => e.msgid)).to.deep.equal(["a0", "a1", "a2"]);
+		});
+	});
+
+	it("badgeCount caps at 99+", function () {
+		expect(badgeCount(7)).to.equal("7");
+		expect(badgeCount(99)).to.equal("99");
+		expect(badgeCount(100)).to.equal("99+");
 	});
 });

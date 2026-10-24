@@ -5,6 +5,7 @@
 
 import storage from "./localStorage";
 import {store} from "./store";
+import type {NetChan} from "./types";
 import {addEntries, dismiss, parseStored, pruneRead, type InboxEntry} from "./helpers/inbox";
 
 const KEY = "thelounge.mentions";
@@ -54,4 +55,17 @@ export function dismissMention(key: string): void {
 
 export function dismissAllMentions(): void {
 	store.commit("mentions", []);
+}
+
+/** The conversation an entry belongs to, when this page has it. */
+export function conversationOf(entry: InboxEntry): NetChan | null {
+	const network = store.getters.findNetwork(entry.network);
+	const name = entry.target.toLowerCase();
+	const channel = network?.channels.find((c) => c.name.toLowerCase() === name);
+	return network && channel ? {network, channel} : null;
+}
+
+/** What the inbox shows: every entry but those of muted conversations. */
+export function visibleMentions(): InboxEntry[] {
+	return store.state.mentions.filter((entry) => !conversationOf(entry)?.channel.muted);
 }
