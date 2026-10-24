@@ -1,16 +1,13 @@
-// Recent mentions, kept in the Vuex store and persisted in localStorage.
-//
-// TheLounge kept this list on the server (`mentions:get` / `mentions:dismiss`
-// / `mentions:dismiss_all` / `mentions:list`). It is now purely local: the
-// message handler records highlights as they arrive, and the store is
-// mirrored to localStorage whenever it changes.
+// The inbox's store glue (docs/projects/inbox.md): unread mentions kept in
+// the Vuex store and persisted in localStorage. The IRC layer says what goes
+// in (`inbox:add`) and what has been read (`inbox:read`); the rules are in
+// helpers/inbox.ts.
 
 import storage from "./localStorage";
 import {store} from "./store";
-import {ClientMention} from "./types";
+import {addEntries, dismiss, parseStored, pruneRead, type InboxEntry} from "./helpers/inbox";
 
 const KEY = "thelounge.mentions";
-const MAX_MENTIONS = 100;
 
 let watching = false;
 
@@ -18,20 +15,20 @@ function persist(): void {
 	storage.set(KEY, JSON.stringify(store.state.mentions));
 }
 
+function update(fn: (list: InboxEntry[]) => InboxEntry[]): void {
+	const next = fn(store.state.mentions);
+
+	if (
+		next.length !== store.state.mentions.length ||
+		next.some((e, i) => e !== store.state.mentions[i])
+	) {
+		store.commit("mentions", next);
+	}
+}
+
 /** Load stored mentions into the store and start mirroring changes back. */
 export function loadMentions(): void {
-	let stored: ClientMention[] = [];
-
-	try {
-		stored = JSON.parse(storage.get(KEY) || "[]") as ClientMention[];
-	} catch (e) {
-		storage.remove(KEY);
-	}
-
-	if (!Array.isArray(stored)) {
-		stored = [];
-	}
-
+	const stored = parseStored(storage.get(KEY));
 	store.commit("mentions", stored);
 
 	if (!watching) {
@@ -40,22 +37,19 @@ export function loadMentions(): void {
 	}
 }
 
-export function addMention(mention: ClientMention): void {
-	const mentions = store.state.mentions.filter((m) => m.msgId !== mention.msgId);
-	mentions.push(mention);
-
-	if (mentions.length > MAX_MENTIONS) {
-		mentions.splice(0, mentions.length - MAX_MENTIONS);
+export function addMentions(entries: InboxEntry[]): void {
+	if (entries.length > 0) {
+		update((list) => addEntries(list, entries));
 	}
-
-	store.commit("mentions", mentions);
 }
 
-export function dismissMention(msgId: number): void {
-	store.commit(
-		"mentions",
-		store.state.mentions.filter((m) => m.msgId !== msgId)
-	);
+export function markMentionsRead(network: string, target: string, time: Date): void {
+	update((list) => pruneRead(list, network, target, time));
+}
+
+/** This device only: a dismissal does not reach the other devices. */
+export function dismissMention(key: string): void {
+	update((list) => dismiss(list, key));
 }
 
 export function dismissAllMentions(): void {

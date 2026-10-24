@@ -10,6 +10,7 @@ import {SettingsState} from "./settings";
 import {SharedConfiguration, LockedSharedConfiguration} from "../../shared/types/config";
 import {BrandingConfig, DEFAULT_BRANDING, brandingString} from "./branding";
 import type {UploadProgress} from "./upload";
+import {dropNetwork, dropTarget} from "./helpers/inbox";
 
 enum DesktopNotificationState {
 	Unsupported = "unsupported",
@@ -230,6 +231,7 @@ const mutations: Mutations = {
 		state.mentions = mentions;
 	},
 	removeNetwork(state, networkId) {
+		state.mentions = dropNetwork(state.mentions, networkId);
 		state.networks.splice(
 			state.networks.findIndex((n) => n.uuid === networkId),
 			1
@@ -293,8 +295,7 @@ type Actions = {
 
 const actions: Actions = {
 	partChannel({commit, state}, netChan) {
-		const mentions = state.mentions.filter((msg) => !(msg.chanId === netChan.channel.id));
-		commit("mentions", mentions);
+		commit("mentions", dropTarget(state.mentions, netChan.network.uuid, netChan.channel.name));
 	},
 };
 

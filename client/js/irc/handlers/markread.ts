@@ -60,6 +60,13 @@ export function parseMarker(param: string | undefined): Date | undefined {
 /** `chan` is read up to `time`; a query's read point is kept with its log. */
 function moveReadMarker(client: IrcClient, chan: Channel, time: Date): void {
 	chan.readMarker = time;
+	// Whoever read it (this device, another session's MARKREAD, a line of
+	// ours in a history page), the inbox drops what it covers.
+	client.dispatch("inbox:read", {
+		network: client.uuid,
+		target: chan.name,
+		time: time.toISOString(),
+	});
 
 	if (chan.type === ChanType.QUERY) {
 		client.queryLog.setRead(chan.name, time);
@@ -158,6 +165,7 @@ export function countPageUnread(
 
 	let unread = 0;
 	let highlight = 0;
+	const mentions: SharedMsg[] = [];
 
 	for (const [msg, ref] of page) {
 		if (ref.time.getTime() <= readTo || !countsAsUnread(msg)) {
@@ -170,7 +178,12 @@ export function countPageUnread(
 		if (msg.highlight) {
 			ref.highlight = true;
 			highlight++;
+			mentions.push(msg);
 		}
+	}
+
+	if (mentions.length > 0) {
+		client.dispatch("inbox:add", {chan: chan.id, msgs: mentions});
 	}
 
 	if (unread === 0) {

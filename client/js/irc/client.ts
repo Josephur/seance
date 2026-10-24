@@ -2992,7 +2992,8 @@ export class IrcClient {
 	 * appends) the message counts as unread as it would have live — what
 	 * someone else said, not an edit, newer than the read marker — and
 	 * `increasesUnread` is ignored; the flag travels on the `msg` event so
-	 * the consumer skips notifications and the mentions list.
+	 * the consumer skips notifications. An unread highlight, replayed or
+	 * not, also goes out as `inbox:add`.
 	 */
 	pushMessage(
 		chan: Channel,
@@ -3077,6 +3078,12 @@ export class IrcClient {
 			highlight: shared.highlight,
 			...(replay ? {replay: true} : {}),
 		});
+
+		// An unread highlight, live or caught up, is an inbox entry; one
+		// read already (looked at, or past another session's marker) is not.
+		if (ref.highlight) {
+			this.bus.dispatch("inbox:add", {chan: chan.id, msgs: [msg]});
+		}
 
 		return msg;
 	}

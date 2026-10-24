@@ -208,10 +208,18 @@ interface ServerToClientEvents {
 		unread?: number;
 		/**
 		 * History catch-up replay: show the message (highlight included)
-		 * but do not notify, play a sound or record a mention.
+		 * but do not notify or play a sound.
 		 */
 		replay?: boolean;
 	}>;
+	/**
+	 * Unread mentions for the inbox (docs/projects/inbox.md): a live or
+	 * catch-up highlight that counted as unread, or the highlights past the
+	 * read marker in a history page.
+	 */
+	"inbox:add": EventHandler<{chan: number; msgs: SharedMsg[]}>;
+	/** `target` on network `network` (uuid) is read up to `time` (ISO 8601). */
+	"inbox:read": EventHandler<{network: string; target: string; time: string}>;
 
 	init: EventHandler<{active: number; networks: SharedNetwork[]; token?: string}>;
 

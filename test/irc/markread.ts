@@ -577,3 +577,92 @@ describe("Read markers (handlers/markread.ts)", function () {
 		});
 	});
 });
+
+describe("The inbox's events (docs/projects/inbox.md)", function () {
+	interface InboxAdd {
+		chan: number;
+		msgs: SharedMsg[];
+	}
+
+	interface InboxRead {
+		network: string;
+		target: string;
+		time: string;
+	}
+
+	beforeEach(function () {
+		installSpy();
+		clock = sinon.useFakeTimers({
+			now: new Date("2026-08-25T12:30:00.000Z"),
+			toFake: ["setTimeout", "clearTimeout", "Date"],
+		});
+	});
+
+	afterEach(function () {
+		clock.restore();
+		removeSpy();
+	});
+
+	it("adds an unread highlight, and nothing else", function () {
+		const h = setup();
+		const chanId = joined(h);
+		live(h, 1);
+		live(h, 2, "alice: ping");
+
+		const added = payloads<InboxAdd>("inbox:add");
+		expect(added).to.have.length(1);
+		expect(added[0].chan).to.equal(chanId);
+		expect(added[0].msgs.map((m) => m.msgid)).to.deep.equal(["m2"]);
+	});
+
+	it("adds no highlight in the conversation someone is looking at", function () {
+		const h = setup();
+		const chanId = joined(h);
+		socket.emit("open", chanId);
+		live(h, 1, "alice: ping");
+		expect(payloads("inbox:add")).to.have.length(0);
+	});
+
+	it("adds no highlight already read on another session", function () {
+		const h = setup();
+		joined(h);
+		marker(h, "timestamp=2026-08-25T12:05:00.000Z");
+		live(h, 4, "alice: old news"); // e.g. a catch-up line
+		expect(payloads("inbox:add")).to.have.length(0);
+		live(h, 6, "alice: new");
+		expect(payloads<InboxAdd>("inbox:add")[0].msgs[0].msgid).to.equal("m6");
+	});
+
+	it("says how far a conversation is read, whoever read it", function () {
+		const h = setup();
+		const chanId = joined(h);
+		live(h, 1, "alice: ping");
+
+		marker(h, "timestamp=2026-08-25T12:00:30.000Z"); // another session
+		live(h, 2);
+		socket.emit("open", chanId); // this device: read to the newest line
+
+		expect(payloads<InboxRead>("inbox:read")).to.deep.equal([
+			{network: h.client.uuid, target: "#seance", time: "2026-08-25T12:00:30.000Z"},
+			{network: h.client.uuid, target: "#seance", time: "2026-08-25T12:02:00.000Z"},
+		]);
+	});
+
+	it("adds the highlights past the marker in a history page, not the older ones", function () {
+		const h = setup();
+		const label = join(h)
+			.find((l) => l.includes("CHATHISTORY"))
+			?.match(/^@label=([^ ;]+)/)?.[1];
+		marker(h, "timestamp=2026-08-25T11:30:00.000Z");
+		h.transport.lines(
+			`${label ? `@label=${label} ` : ""}:irc.test BATCH +hist1 chathistory #seance`,
+			"@batch=hist1;time=2026-08-25T11:00:00.000Z;msgid=h1 :bob!bob@host PRIVMSG #seance :alice: read already",
+			"@batch=hist1;time=2026-08-25T11:45:00.000Z;msgid=h2 :bob!bob@host PRIVMSG #seance :nothing to see",
+			"@batch=hist1;time=2026-08-25T11:50:00.000Z;msgid=h3 :bob!bob@host PRIVMSG #seance :alice: unread",
+			":irc.test BATCH -hist1"
+		);
+
+		const added = payloads<InboxAdd>("inbox:add");
+		expect(added.flatMap((a) => a.msgs.map((m) => m.msgid))).to.deep.equal(["h3"]);
+	});
+});

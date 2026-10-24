@@ -8,7 +8,7 @@
 	>
 		<div class="mentions-popup">
 			<div class="mentions-popup-title">
-				Recent mentions
+				Unread mentions
 				<button
 					v-if="resolvedMessages.length"
 					class="btn dismiss-all-mentions"
@@ -19,32 +19,38 @@
 			</div>
 			<template v-if="resolvedMessages.length === 0">
 				<p v-if="isLoading">Loading…</p>
-				<p v-else>You have no recent mentions.</p>
+				<p v-else>You have no unread mentions.</p>
 			</template>
-			<template v-for="message in resolvedMessages" v-else :key="message.msgId">
+			<template v-for="message in resolvedMessages" v-else :key="message.key">
 				<div :class="['msg', message.type]">
 					<div class="mentions-info">
 						<div>
 							<span class="from">
 								<Username :user="(message.from as any)" />
 								<template v-if="message.channel">
-									in {{ message.channel.channel.name }} on
-									{{ message.channel.network.name }}
+									in
+									<a
+										href="#"
+										class="mention-target"
+										@click.prevent="openMention(message)"
+										>{{ message.channel.channel.name }}</a
+									>
+									on {{ message.channel.network.name }}
 								</template>
-								<template v-else> in unknown channel </template> </span
+								<template v-else> in {{ message.target }} </template> </span
 							>{{ ` ` }}
 							<span :title="message.localetime" class="time">
-								{{ messageTime(message.time.toString()) }}
+								{{ messageTime(message.time) }}
 							</span>
 						</div>
 						<div>
 							<span
 								class="close-tooltip tooltipped tooltipped-w"
-								aria-label="Dismiss this mention"
+								aria-label="Dismiss on this device"
 							>
 								<button
 									class="msg-dismiss"
-									aria-label="Dismiss this mention"
+									aria-label="Dismiss on this device"
 									@click="dismissMention(message)"
 								></button>
 							</span>
@@ -153,15 +159,18 @@ import {
 	dismissAllMentions as dismissAllStoredMentions,
 } from "../js/mentions";
 import eventbus from "../js/eventbus";
+import {switchToChannel} from "../js/router";
+import {entryKey} from "../js/helpers/inbox";
 import localetime from "../js/helpers/localetime";
 import dayjs from "dayjs";
 import relativeTime from "dayjs/plugin/relativeTime";
 import {computed, watch, defineComponent, ref, onMounted, onUnmounted} from "vue";
 import {useStore} from "../js/store";
-import type {SharedMention} from "../../shared/types/mention";
+import type {InboxEntry} from "../../shared/types/mention";
 import type {NetChan} from "../js/types";
 
-type MentionWithContext = SharedMention & {
+type MentionWithContext = InboxEntry & {
+	key: string;
 	localetime: string;
 	channel: NetChan | null;
 };
@@ -178,14 +187,22 @@ export default defineComponent({
 		const store = useStore();
 		const isOpen = ref(false);
 		const isLoading = ref(false);
+		const findTarget = (entry: InboxEntry): NetChan | null => {
+			const network = store.getters.findNetwork(entry.network);
+			const name = entry.target.toLowerCase();
+			const channel = network?.channels.find((c) => c.name.toLowerCase() === name);
+			return network && channel ? {network, channel} : null;
+		};
+
 		const resolvedMessages = computed(() => {
 			return store.state.mentions
 				.slice()
 				.reverse()
 				.map((message) => ({
 					...message,
-					localetime: localetime(message.time),
-					channel: store.getters.findChannel(message.chanId),
+					key: entryKey(message),
+					localetime: localetime(new Date(message.time)),
+					channel: findTarget(message),
 				}))
 				.filter((message) => !message.channel?.channel.muted);
 		});
@@ -202,7 +219,15 @@ export default defineComponent({
 		};
 
 		const dismissMention = (message: MentionWithContext) => {
-			dismissStoredMention(message.msgId);
+			dismissStoredMention(message.key);
+		};
+
+		// Opening it reads it, and reading it clears the entry (inbox:read).
+		const openMention = (message: MentionWithContext) => {
+			if (message.channel) {
+				isOpen.value = false;
+				switchToChannel(message.channel.channel);
+			}
 		};
 
 		const dismissAllMentions = () => {
@@ -249,6 +274,7 @@ export default defineComponent({
 			messageTime,
 			dismissMention,
 			dismissAllMentions,
+			openMention,
 			containerClick,
 		};
 	},
