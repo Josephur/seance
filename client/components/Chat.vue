@@ -158,8 +158,6 @@ import type {ClientNetwork, ClientChan} from "../js/types";
 import {useStore} from "../js/store";
 import {SpecialChanType, ChanType} from "../../shared/types/chan";
 import {layout, toPlainText} from "../js/helpers/ircmessageparser/layout";
-import {visibleMentions} from "../js/mentions";
-import {badgeCount} from "../js/helpers/inbox";
 
 export default defineComponent({
 	name: "Chat",
@@ -282,11 +280,8 @@ export default defineComponent({
 		};
 
 		// Unread mentions on every network: the @ button's badge.
-		const mentionCount = computed(() => {
-			void store.state.mentions; // visibleMentions reads the store too
-			return visibleMentions().length;
-		});
-		const mentionBadge = computed(() => badgeCount(mentionCount.value));
+		const mentionCount = computed(() => store.getters.visibleMentions.length);
+		const mentionBadge = computed(() => (mentionCount.value > 99 ? "99+" : mentionCount.value));
 
 		const openMentions = (event: any) => {
 			eventbus.emit("mentions:toggle", {

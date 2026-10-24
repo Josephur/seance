@@ -135,7 +135,7 @@ export default async function run(page) {
 	await page.screenshot("2-two-mentions", {selector: POPUP, pad: 16});
 
 	// Hover a row: the dismiss button shows.
-	await page.hover(".mentions-entry:first-of-type .content");
+	await page.hover(".mentions-entry .content");
 	await page.sleep(250);
 	await page.screenshot("3-hover", {selector: POPUP, pad: 16});
 

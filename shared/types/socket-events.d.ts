@@ -1,4 +1,4 @@
-import {SharedMention} from "./mention";
+import {InboxEntry} from "./mention";
 import {ChanState, SharedChan} from "./chan";
 import {
 	ServicesConfig,
@@ -60,8 +60,6 @@ interface ServerToClientEvents {
 	"push:unregister": NoPayloadEventHandler;
 
 	"sessions:list": EventHandler<Session[]>;
-
-	"mentions:list": EventHandler<SharedMention[]>;
 
 	"setting:new": EventHandler<{name: string; value: any}>;
 	"setting:all": EventHandler<{[key: string]: any}>;
@@ -217,7 +215,7 @@ interface ServerToClientEvents {
 	 * catch-up highlight that counted as unread, or the highlights past the
 	 * read marker in a history page.
 	 */
-	"inbox:add": EventHandler<{chan: number; msgs: SharedMsg[]}>;
+	"inbox:add": EventHandler<{entries: InboxEntry[]}>;
 	/** `target` on network `network` (uuid) is read up to `time` (ISO 8601). */
 	"inbox:read": EventHandler<{network: string; target: string; time: string}>;
 
@@ -352,10 +350,6 @@ interface ClientToServerEvents {
 		network: SharedNetwork["uuid"];
 		order: SharedChan["id"][];
 	}>;
-
-	"mentions:dismiss": (msgId: number) => void;
-	"mentions:dismiss_all": NoPayloadEventHandler;
-	"mentions:get": NoPayloadEventHandler;
 
 	more: EventHandler<{target: number; lastId: number; condensed: boolean}>;
 	/** The UI dropped these messages from a channel's buffer (see bus-contract § 2). */

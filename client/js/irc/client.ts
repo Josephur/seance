@@ -55,9 +55,11 @@ import {
 	countPageUnread,
 	flushDeferredMarkRead,
 	markReadAt,
+	markable,
 	readNow,
 	scheduleMarkRead,
 } from "./handlers/markread";
+import {entryFor} from "../helpers/inbox";
 import {
 	effectiveMode,
 	type GlobalModeState,
@@ -3079,10 +3081,14 @@ export class IrcClient {
 			...(replay ? {replay: true} : {}),
 		});
 
-		// An unread highlight, live or caught up, is an inbox entry; one
-		// read already (looked at, or past another session's marker) is not.
-		if (ref.highlight) {
-			this.bus.dispatch("inbox:add", {chan: chan.id, msgs: [msg]});
+		// An unread highlight in a conversation, live or caught up, is an
+		// inbox entry; one read already (looked at, or past another
+		// session's marker) is not, nor one in the lobby, which no read
+		// marker ever clears.
+		const entry = ref.highlight && markable(chan) ? entryFor(this.uuid, chan.name, msg) : null;
+
+		if (entry) {
+			this.bus.dispatch("inbox:add", {entries: [entry]});
 		}
 
 		return msg;

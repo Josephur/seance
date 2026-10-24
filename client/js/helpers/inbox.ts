@@ -7,11 +7,25 @@
 
 import type {InboxEntry} from "../../../shared/types/mention";
 import {MessageType, type SharedMsg} from "../../../shared/types/msg";
-
-export type {InboxEntry};
+import {casefold} from "../irc/casemap";
 
 /** How many entries a device keeps; the oldest go first. */
 export const MAX_ENTRIES = 100;
+/** How many of those one conversation may hold, so a busy query cannot push the rest out. */
+export const MAX_PER_CONVERSATION = 20;
+/** How many dismissals a device remembers. */
+export const MAX_DISMISSED = 200;
+
+/**
+ * A dismissed entry, remembered so the catch-up does not bring it back,
+ * until its conversation is read past it.
+ */
+export type Dismissal = {key: string; network: string; target: string; time: string};
+
+/** One conversation's identity: its network and its name under rfc1459 casemapping. */
+export function conversationKey(network: string, target: string): string {
+	return `${network}/${casefold(target)}`;
+}
 
 /**
  * The entry's identity: its msgid, or what identifies the message on a
@@ -22,7 +36,7 @@ export function entryKey(entry: InboxEntry): string {
 		return `${entry.network}/${entry.msgid}`;
 	}
 
-	return [entry.network, entry.target.toLowerCase(), entry.time, entry.from.nick ?? ""].join("/");
+	return `${conversationKey(entry.network, entry.target)}/${entry.time}/${entry.from.nick ?? ""}`;
 }
 
 /** The entry for `msg`, said in `target` on `network`; null for our own or a sourceless line. */
@@ -42,131 +56,125 @@ export function entryFor(network: string, target: string, msg: SharedMsg): Inbox
 	};
 }
 
-function sameTarget(entry: InboxEntry, network: string, target: string): boolean {
-	return entry.network === network && entry.target.toLowerCase() === target.toLowerCase();
-}
+const timeOf = (e: {time: string}) => new Date(e.time).getTime();
 
-/** Add `added`, deduplicated by key, ordered by time, the newest {@link MAX_ENTRIES} kept. */
+/**
+ * Add `added`, deduplicated by key and without the dismissed ones, ordered
+ * by time; the newest {@link MAX_PER_CONVERSATION} of each conversation and
+ * the newest {@link MAX_ENTRIES} overall are kept.
+ */
 export function addEntries(
 	list: InboxEntry[],
 	added: InboxEntry[],
-	max = MAX_ENTRIES
+	dismissed: Dismissal[] = []
 ): InboxEntry[] {
+	const gone = new Set(dismissed.map((d) => d.key));
 	const byKey = new Map<string, InboxEntry>();
 
 	for (const entry of [...list, ...added]) {
-		byKey.set(entryKey(entry), entry);
+		const key = entryKey(entry);
+
+		if (!gone.has(key)) {
+			byKey.set(key, entry);
+		}
 	}
 
-	const merged = [...byKey.values()].sort(
-		(a, b) => new Date(a.time).getTime() - new Date(b.time).getTime()
-	);
+	const newestFirst = [...byKey.values()].sort((a, b) => timeOf(b) - timeOf(a));
+	const perConversation = new Map<string, number>();
+	const kept = newestFirst.filter((entry) => {
+		const key = conversationKey(entry.network, entry.target);
+		const count = (perConversation.get(key) ?? 0) + 1;
+		perConversation.set(key, count);
+		return count <= MAX_PER_CONVERSATION;
+	});
 
-	return merged.length > max ? merged.slice(merged.length - max) : merged;
-}
-
-/** `target` on `network` was read up to `time`: drop its entries at or before it. */
-export function pruneRead(
-	list: InboxEntry[],
-	network: string,
-	target: string,
-	time: Date
-): InboxEntry[] {
-	const until = time.getTime();
-	return list.filter(
-		(entry) => !sameTarget(entry, network, target) || new Date(entry.time).getTime() > until
-	);
-}
-
-/** Drop every entry of `target` on `network` (parted, closed). */
-export function dropTarget(list: InboxEntry[], network: string, target: string): InboxEntry[] {
-	return list.filter((entry) => !sameTarget(entry, network, target));
-}
-
-/** Drop every entry of `network` (removed). */
-export function dropNetwork(list: InboxEntry[], network: string): InboxEntry[] {
-	return list.filter((entry) => entry.network !== network);
-}
-
-/** Drop one entry by its key (a dismissal: this device only). */
-export function dismiss(list: InboxEntry[], key: string): InboxEntry[] {
-	return list.filter((entry) => entryKey(entry) !== key);
-}
-
-function isEntry(value: unknown): value is InboxEntry {
-	if (!value || typeof value !== "object") {
-		return false;
-	}
-
-	const entry = value as Record<string, unknown>;
-	return (
-		typeof entry.network === "string" &&
-		typeof entry.target === "string" &&
-		typeof entry.time === "string" &&
-		!Number.isNaN(new Date(entry.time).getTime()) &&
-		typeof entry.text === "string" &&
-		!!entry.from &&
-		typeof entry.from === "object"
-	);
+	return kept.slice(0, MAX_ENTRIES).reverse();
 }
 
 /**
- * The stored list. Entries in the old shape (session-local `chanId`/`msgId`,
- * which point nowhere after a reload) are dropped, not migrated.
+ * `target` on `network` was read up to `time`: drop what it covers. Works
+ * for entries and dismissals alike (a dismissal past the read point has
+ * nothing left to hold back).
  */
-export function parseStored(raw: string | null | undefined): InboxEntry[] {
-	if (!raw) {
-		return [];
-	}
-
-	let parsed: unknown;
-
-	try {
-		parsed = JSON.parse(raw);
-	} catch {
-		return [];
-	}
-
-	return Array.isArray(parsed) ? parsed.filter(isEntry) : [];
+export function pruneRead<T extends {network: string; target: string; time: string}>(
+	list: T[],
+	network: string,
+	target: string,
+	time: Date
+): T[] {
+	const key = conversationKey(network, target);
+	return list.filter(
+		(e) => conversationKey(e.network, e.target) !== key || timeOf(e) > time.getTime()
+	);
 }
 
 export type InboxGroup = {
-	/** `network/target`, lowercased: one per conversation. */
+	/** {@link conversationKey}: one per conversation. */
 	key: string;
 	network: string;
 	target: string;
 	/** Oldest first, as the conversation reads. */
 	entries: InboxEntry[];
-	/** The newest entry's time, in ms. */
-	newest: number;
 };
 
 /** The entries by conversation, the conversation with the newest mention first. */
 export function groupByConversation(list: InboxEntry[]): InboxGroup[] {
 	const groups = new Map<string, InboxGroup>();
 
-	for (const entry of list) {
-		const key = `${entry.network}/${entry.target.toLowerCase()}`;
-		const time = new Date(entry.time).getTime();
+	for (const entry of [...list].sort((a, b) => timeOf(a) - timeOf(b))) {
+		const key = conversationKey(entry.network, entry.target);
 		let group = groups.get(key);
 
 		if (!group) {
-			group = {key, network: entry.network, target: entry.target, entries: [], newest: time};
+			group = {key, network: entry.network, target: entry.target, entries: []};
 			groups.set(key, group);
 		}
 
 		group.entries.push(entry);
-		group.newest = Math.max(group.newest, time);
 	}
 
-	for (const group of groups.values()) {
-		group.entries.sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
+	const newest = (g: InboxGroup) => timeOf(g.entries[g.entries.length - 1]);
+	return [...groups.values()].sort((a, b) => newest(b) - newest(a));
+}
+
+function isEntry(value: unknown): value is InboxEntry {
+	const e = value as Record<string, unknown> | null;
+	return (
+		!!e &&
+		typeof e.network === "string" &&
+		typeof e.target === "string" &&
+		typeof e.time === "string" &&
+		!Number.isNaN(new Date(e.time).getTime()) &&
+		typeof e.text === "string" &&
+		!!e.from &&
+		typeof e.from === "object"
+	);
+}
+
+function isDismissal(value: unknown): value is Dismissal {
+	const d = value as Record<string, unknown> | null;
+	return (
+		!!d &&
+		typeof d.key === "string" &&
+		typeof d.network === "string" &&
+		typeof d.target === "string" &&
+		typeof d.time === "string"
+	);
+}
+
+function parseList<T>(raw: string | null | undefined, valid: (v: unknown) => v is T): T[] {
+	try {
+		const parsed: unknown = JSON.parse(raw || "[]");
+		return Array.isArray(parsed) ? parsed.filter(valid) : [];
+	} catch {
+		return [];
 	}
-
-	return [...groups.values()].sort((a, b) => b.newest - a.newest);
 }
 
-/** The count a badge shows: the number, or `99+`. */
-export function badgeCount(count: number): string {
-	return count > 99 ? "99+" : String(count);
-}
+/**
+ * The stored list. Entries in the old shape (session-local `chanId`/`msgId`,
+ * which point nowhere after a reload) are dropped, not migrated.
+ */
+export const parseStored = (raw: string | null | undefined) => parseList(raw, isEntry);
+
+export const parseDismissed = (raw: string | null | undefined) => parseList(raw, isDismissal);

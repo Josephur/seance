@@ -86,8 +86,6 @@ socket.on("msg", function (data) {
 	// ahead of them.
 	insertMessage(channel.messages, data.msg);
 
-	// Unread highlights reach the inbox as `inbox:add` (socket-events/inbox.ts).
-
 	if (data.msg.self) {
 		// Our own JOIN in a catch-up is not reading the channel (IrcClient.pushMessage).
 		if (!data.replay || SAID_TYPES.has(data.msg.type ?? MessageType.MESSAGE)) {

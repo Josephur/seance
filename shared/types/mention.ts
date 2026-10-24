@@ -18,5 +18,3 @@ export type InboxEntry = {
 	text: string;
 	from: UserInMessage;
 };
-
-export type SharedMention = InboxEntry;

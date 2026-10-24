@@ -1,36 +1,49 @@
 // The inbox's store glue (docs/projects/inbox.md): unread mentions kept in
-// the Vuex store and persisted in localStorage. The IRC layer says what goes
-// in (`inbox:add`) and what has been read (`inbox:read`); the rules are in
-// helpers/inbox.ts.
+// the Vuex store and persisted in localStorage, and the dismissals that keep
+// the catch-up from bringing a dismissed one back. The IRC layer says what
+// goes in (`inbox:add`) and what has been read (`inbox:read`); the rules are
+// in helpers/inbox.ts.
 
 import storage from "./localStorage";
 import {store} from "./store";
-import type {NetChan} from "./types";
-import {addEntries, dismiss, parseStored, pruneRead, type InboxEntry} from "./helpers/inbox";
+import type {InboxEntry} from "../../shared/types/mention";
+import {
+	MAX_DISMISSED,
+	addEntries,
+	entryKey,
+	parseDismissed,
+	parseStored,
+	pruneRead,
+	type Dismissal,
+} from "./helpers/inbox";
 
 const KEY = "thelounge.mentions";
+const DISMISSED_KEY = "thelounge.mentions.dismissed";
 
 let watching = false;
+let dismissed: Dismissal[] = [];
 
 function persist(): void {
 	storage.set(KEY, JSON.stringify(store.state.mentions));
 }
 
-function update(fn: (list: InboxEntry[]) => InboxEntry[]): void {
-	const next = fn(store.state.mentions);
+function setDismissed(next: Dismissal[]): void {
+	dismissed = next.slice(-MAX_DISMISSED);
+	storage.set(DISMISSED_KEY, JSON.stringify(dismissed));
+}
 
-	if (
-		next.length !== store.state.mentions.length ||
-		next.some((e, i) => e !== store.state.mentions[i])
-	) {
+function commitIfChanged(next: InboxEntry[]): void {
+	const current = store.state.mentions;
+
+	if (next.length !== current.length || next.some((e, i) => e !== current[i])) {
 		store.commit("mentions", next);
 	}
 }
 
 /** Load stored mentions into the store and start mirroring changes back. */
 export function loadMentions(): void {
-	const stored = parseStored(storage.get(KEY));
-	store.commit("mentions", stored);
+	dismissed = parseDismissed(storage.get(DISMISSED_KEY));
+	store.commit("mentions", parseStored(storage.get(KEY)));
 
 	if (!watching) {
 		watching = true;
@@ -40,32 +53,36 @@ export function loadMentions(): void {
 
 export function addMentions(entries: InboxEntry[]): void {
 	if (entries.length > 0) {
-		update((list) => addEntries(list, entries));
+		commitIfChanged(addEntries(store.state.mentions, entries, dismissed));
 	}
 }
 
 export function markMentionsRead(network: string, target: string, time: Date): void {
-	update((list) => pruneRead(list, network, target, time));
+	commitIfChanged(pruneRead(store.state.mentions, network, target, time));
+
+	const left = pruneRead(dismissed, network, target, time);
+
+	if (left.length !== dismissed.length) {
+		setDismissed(left);
+	}
 }
 
-/** This device only: a dismissal does not reach the other devices. */
-export function dismissMention(key: string): void {
-	update((list) => dismiss(list, key));
+/** Drop the entry of a message that is gone (deleted, or replaced by an edit). */
+export function dropMentionOf(network: string, msgid: string): void {
+	commitIfChanged(store.state.mentions.filter((e) => entryKey(e) !== `${network}/${msgid}`));
 }
 
-export function dismissAllMentions(): void {
-	store.commit("mentions", []);
-}
-
-/** The conversation an entry belongs to, when this page has it. */
-export function conversationOf(entry: InboxEntry): NetChan | null {
-	const network = store.getters.findNetwork(entry.network);
-	const name = entry.target.toLowerCase();
-	const channel = network?.channels.find((c) => c.name.toLowerCase() === name);
-	return network && channel ? {network, channel} : null;
-}
-
-/** What the inbox shows: every entry but those of muted conversations. */
-export function visibleMentions(): InboxEntry[] {
-	return store.state.mentions.filter((entry) => !conversationOf(entry)?.channel.muted);
+/** On this device only, remembered until the conversation is read past them. */
+export function dismissMentions(entries: InboxEntry[]): void {
+	const keys = new Set(entries.map(entryKey));
+	setDismissed([
+		...dismissed,
+		...entries.map((e) => ({
+			key: entryKey(e),
+			network: e.network,
+			target: e.target,
+			time: e.time,
+		})),
+	]);
+	commitIfChanged(store.state.mentions.filter((e) => !keys.has(entryKey(e))));
 }

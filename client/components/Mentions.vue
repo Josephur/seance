@@ -32,31 +32,41 @@
 					class="mentions-group"
 					:aria-label="group.label"
 				>
-					<button
-						class="mentions-group-header"
-						:disabled="!group.conversation"
-						:title="group.conversation ? `Open ${group.target}` : undefined"
-						@click="openGroup(group)"
-					>
-						<span class="mentions-group-name">{{ group.target }}</span>
-						<span v-if="group.networkName" class="mentions-group-network">{{
-							group.networkName
-						}}</span>
-						<span class="mentions-group-count">{{ group.entries.length }}</span>
-					</button>
+					<div class="mentions-group-head">
+						<button
+							class="mentions-group-header"
+							:disabled="!group.conversation"
+							:title="group.conversation ? `Open ${group.target}` : undefined"
+							@click="openGroup(group)"
+						>
+							<span class="mentions-group-name">{{ group.target }}</span>
+							<span v-if="group.networkName" class="mentions-group-network">{{
+								group.networkName
+							}}</span>
+							<span v-if="groups.length > 1" class="mentions-group-count">{{
+								group.entries.length
+							}}</span>
+						</button>
+						<!-- A conversation this page no longer has: reading cannot clear it. -->
+						<button
+							v-if="!group.conversation"
+							class="btn dismiss-group-mentions"
+							@click="dismissGroup(group)"
+						>
+							Dismiss
+						</button>
+					</div>
+					<!-- A click opens the conversation; the header is the keyboard's way. -->
 					<div
 						v-for="message in group.entries"
 						:key="message.key"
-						:class="['msg', 'mentions-entry', message.type]"
-						:role="group.conversation ? 'button' : undefined"
-						:aria-label="
-							group.conversation
-								? `${message.from.nick} in ${group.target}: open the conversation`
-								: undefined
-						"
-						:tabindex="group.conversation ? 0 : -1"
+						:class="[
+							'msg',
+							'mentions-entry',
+							message.type,
+							{'mentions-entry-openable': group.conversation},
+						]"
 						@click="openFromRow($event, group)"
-						@keydown.enter.self="openGroup(group)"
 					>
 						<div class="mentions-info">
 							<span class="from" @click.stop>
@@ -141,8 +151,23 @@
 	margin-top: 0.25rem;
 }
 
+.mentions-group-head {
+	display: flex;
+	align-items: center;
+	padding-inline-end: 0.75rem;
+}
+
+.mentions-group-head .dismiss-group-mentions {
+	flex-shrink: 0;
+	margin: 0;
+	padding: 0.125rem 0.375rem;
+	font-size: 0.75rem;
+}
+
 .mentions-group-header {
 	display: flex;
+	flex: 1 1 auto;
+	min-width: 0;
 	align-items: baseline;
 	gap: 0.5rem;
 	width: 100%;
@@ -187,7 +212,7 @@
 	flex-shrink: 0;
 	min-width: 1.25rem;
 	padding: 0.125rem 0.375rem;
-	border-radius: 999px;
+	border-radius: 999rem;
 	background: var(--highlight-bg-color);
 	font-size: 0.75rem;
 	text-align: center;
@@ -199,17 +224,14 @@
 	padding: 0.375rem;
 	border-radius: 0.375rem;
 	user-select: text;
+}
+
+.mentions-popup .mentions-entry-openable {
 	cursor: pointer;
 }
 
-.mentions-popup .mentions-entry[tabindex="-1"] {
-	cursor: default;
-}
-
-.mentions-popup .mentions-entry:hover,
-.mentions-popup .mentions-entry:focus-visible {
+.mentions-popup .mentions-entry:hover {
 	background: var(--highlight-bg-color);
-	outline: none;
 }
 
 .mentions-popup .mentions-info {
@@ -330,12 +352,7 @@
 <script lang="ts">
 import Username from "./Username.vue";
 import ParsedMessage from "./ParsedMessage.vue";
-import {
-	conversationOf,
-	dismissMention as dismissStoredMention,
-	dismissAllMentions as dismissAllStoredMentions,
-	visibleMentions,
-} from "../js/mentions";
+import {dismissMentions} from "../js/mentions";
 import eventbus from "../js/eventbus";
 import {switchToChannel} from "../js/router";
 import {entryKey, groupByConversation} from "../js/helpers/inbox";
@@ -374,12 +391,10 @@ export default defineComponent({
 		const isOpen = ref(false);
 
 		const groups = computed((): GroupWithContext[] => {
-			// Read for reactivity: visibleMentions reads the store too.
-			void store.state.mentions;
 			const several = store.state.networks.length > 1;
 
-			return groupByConversation(visibleMentions()).map((group) => {
-				const conversation = conversationOf(group.entries[0]);
+			return groupByConversation(store.getters.visibleMentions).map((group) => {
+				const conversation = store.getters.findConversation(group.network, group.target);
 				const target = conversation?.channel.name ?? group.target;
 				const networkName =
 					several || !conversation ? conversation?.network.name ?? "" : "";
@@ -408,7 +423,11 @@ export default defineComponent({
 		};
 
 		const dismissMention = (message: MentionWithContext) => {
-			dismissStoredMention(message.key);
+			dismissMentions([message]);
+		};
+
+		const dismissGroup = (group: GroupWithContext) => {
+			dismissMentions(group.entries);
 		};
 
 		// Opening it reads it, and reading it clears its mentions (inbox:read).
@@ -435,8 +454,9 @@ export default defineComponent({
 			openGroup(group);
 		};
 
+		// What is shown: a muted conversation's entries stay out of it.
 		const dismissAllMentions = () => {
-			dismissAllStoredMentions();
+			dismissMentions(store.getters.visibleMentions);
 		};
 
 		const containerClick = (event: Event) => {
@@ -475,6 +495,7 @@ export default defineComponent({
 			total,
 			messageTime,
 			dismissMention,
+			dismissGroup,
 			dismissAllMentions,
 			openGroup,
 			openFromRow,
