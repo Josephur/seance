@@ -1,5 +1,6 @@
 import socket from "../socket";
 import {store} from "../store";
+import {casefold} from "../irc/casemap";
 import {addMentions, dropMentionOf, markMentionsRead} from "../mentions";
 
 // Unread mentions, live or caught up (docs/projects/inbox.md). A muted
@@ -30,4 +31,15 @@ function dropMessage(chanId: number, id: number): void {
 }
 
 socket.on("msg:redact", (data) => dropMessage(data.chan, data.id));
-socket.on("msg:edit", (data) => dropMessage(data.chan, data.replaces));
+
+// Only an edit by the original's author: an edit tag on someone else's line
+// must not take a mention of us out of the inbox.
+socket.on("msg:edit", (data) => {
+	const messages = store.getters.findChannel(data.chan)?.channel.messages ?? [];
+	const nickOf = (id: number) => messages.find((m) => m.id === id)?.from?.nick;
+	const author = nickOf(data.replaces);
+
+	if (author && casefold(author) === casefold(nickOf(data.id) ?? "")) {
+		dropMessage(data.chan, data.replaces);
+	}
+});
