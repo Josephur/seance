@@ -219,11 +219,11 @@ interface ServerToClientEvents {
 	/** `target` on network `network` (uuid) is read up to `time` (ISO 8601). */
 	"inbox:read": EventHandler<{network: string; target: string; time: string}>;
 	/**
-	 * The message `msgid` on network `network` was deleted, or replaced by
+	 * The message `msgid` in `target` on network `network` was deleted, or replaced by
 	 * an edit from `by` (whom the inbox checks against the entry's sender),
 	 * whether or not it is loaded.
 	 */
-	"inbox:drop": EventHandler<{network: string; msgid: string; by?: string}>;
+	"inbox:drop": EventHandler<{network: string; target: string; msgid: string; by?: string}>;
 
 	init: EventHandler<{active: number; networks: SharedNetwork[]; token?: string}>;
 

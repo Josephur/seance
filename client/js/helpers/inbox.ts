@@ -142,16 +142,23 @@ export function addEntries(
 		}
 	}
 
-	const newestFirst = [...byKey.values()].sort((a, b) => timeOf(b) - timeOf(a));
+	// Oldest first, lines of the same instant in the order they came (a
+	// stable sort); counted from the newest end.
+	const ordered = [...byKey.values()].sort((a, b) => timeOf(a) - timeOf(b));
 	const perConversation = new Map<string, number>();
-	const kept = newestFirst.filter((entry) => {
-		const key = conversationKey(entry.network, entry.target);
+	const dropped = new Set<InboxEntry>();
+
+	for (let i = ordered.length - 1; i >= 0; i--) {
+		const key = conversationKey(ordered[i].network, ordered[i].target);
 		const count = (perConversation.get(key) ?? 0) + 1;
 		perConversation.set(key, count);
-		return count <= MAX_PER_CONVERSATION;
-	});
 
-	return kept.slice(0, MAX_ENTRIES).reverse();
+		if (count > MAX_PER_CONVERSATION) {
+			dropped.add(ordered[i]);
+		}
+	}
+
+	return ordered.filter((e) => !dropped.has(e)).slice(-MAX_ENTRIES);
 }
 
 /**
@@ -172,19 +179,22 @@ export function pruneRead<T extends {network: string; target: string; time: stri
 }
 
 /**
- * The message `msgid` on `network` is gone: drop the entry that shows it.
- * With `by` (an edit, which only its author may make), only when `by` sent
- * it.
+ * The message `msgid` in `target` on `network` is gone: drop the entry that
+ * shows it, in that conversation only (a REDACT or an edit elsewhere naming
+ * it must not reach it). With `by` (an edit, which only its author may
+ * make), only when `by` sent it.
  */
 export function dropMessage(
 	list: InboxEntry[],
 	network: string,
+	target: string,
 	msgid: string,
 	by?: string
 ): InboxEntry[] {
+	const key = conversationKey(network, target);
 	return list.filter(
 		(e) =>
-			e.network !== network ||
+			conversationKey(e.network, e.target) !== key ||
 			e.msgid !== msgid ||
 			(by !== undefined && casefold(e.from.nick ?? "") !== casefold(by))
 	);

@@ -250,7 +250,12 @@ function handleMessage(
 	// the edit's sender wrote it (`by`). The edit brings its own entry if it
 	// still mentions us.
 	if (editOf && !self) {
-		client.dispatch("inbox:drop", {network: client.uuid, msgid: editOf, by: nick});
+		client.dispatch("inbox:drop", {
+			network: client.uuid,
+			target: chan.name,
+			msgid: editOf,
+			by: nick,
+		});
 	}
 
 	// A live message of ours is the echo of one we sent: its pending copy

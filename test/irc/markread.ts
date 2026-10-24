@@ -693,9 +693,15 @@ describe("The inbox's events (docs/projects/inbox.md)", function () {
 		h.transport.line(
 			"@time=2026-08-25T12:10:00.000Z;msgid=q1 :carol!carol@host PRIVMSG alice :hello there"
 		);
-		expect(added().map((e) => e.query)).to.deep.equal([true]);
+		h.transport.line(
+			"@time=2026-08-25T12:10:00.000Z;msgid=q2 :carol!carol@host PRIVMSG alice :still there?"
+		);
+		expect(added().map((e) => [e.msgid, e.query])).to.deep.equal([
+			["q1", true],
+			["q2", true],
+		]);
 		live(h, 11, "alice: in a channel");
-		expect(added()[1]).to.not.have.property("query");
+		expect(added()[2]).to.not.have.property("query");
 	});
 
 	it("cuts a long line to just before the mention", function () {
@@ -714,7 +720,7 @@ describe("The inbox's events (docs/projects/inbox.md)", function () {
 		joined(h);
 		h.transport.line(":bob!bob@host REDACT #seance never-loaded");
 		expect(payloads("inbox:drop")).to.deep.equal([
-			{network: h.client.uuid, msgid: "never-loaded"},
+			{network: h.client.uuid, target: "#seance", msgid: "never-loaded"},
 		]);
 	});
 
@@ -725,7 +731,7 @@ describe("The inbox's events (docs/projects/inbox.md)", function () {
 			"@time=2026-08-25T12:10:00.000Z;msgid=e1;+seance/edit=gone :bob!bob@host PRIVMSG #seance :fixed"
 		);
 		expect(payloads("inbox:drop")).to.deep.equal([
-			{network: h.client.uuid, msgid: "gone", by: "bob"},
+			{network: h.client.uuid, target: "#seance", msgid: "gone", by: "bob"},
 		]);
 	});
 

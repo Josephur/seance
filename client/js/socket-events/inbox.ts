@@ -15,5 +15,5 @@ socket.on("inbox:read", function (data) {
 
 // A message deleted, or replaced by its author's edit, loaded or not.
 socket.on("inbox:drop", function (data) {
-	dropMentionOf(data.network, data.msgid, data.by);
+	dropMentionOf(data.network, data.target, data.msgid, data.by);
 });

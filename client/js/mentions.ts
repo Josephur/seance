@@ -69,8 +69,8 @@ export function markMentionsRead(network: string, target: string, time: Date): v
 }
 
 /** Drop the entry of a message that is gone (deleted, or replaced by `by`'s edit). */
-export function dropMentionOf(network: string, msgid: string, by?: string): void {
-	commitIfChanged(dropMessage(store.state.mentions, network, msgid, by));
+export function dropMentionOf(network: string, target: string, msgid: string, by?: string): void {
+	commitIfChanged(dropMessage(store.state.mentions, network, target, msgid, by));
 }
 
 /** On this device only, remembered until the conversation is read past them. */

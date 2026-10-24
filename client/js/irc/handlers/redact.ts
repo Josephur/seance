@@ -26,7 +26,10 @@ const redact: Handler = (client, msg) => {
 		return;
 	}
 
-	client.dispatch("inbox:drop", {network: client.uuid, msgid});
+	// Scoped to the conversation: a REDACT names one message in one target.
+	// In a private conversation the target is us and the conversation the sender.
+	const conversation = chan?.name ?? (client.isSelf(target) ? nick : target);
+	client.dispatch("inbox:drop", {network: client.uuid, target: conversation, msgid});
 
 	if (chan) {
 		client.afterReplay(() => {

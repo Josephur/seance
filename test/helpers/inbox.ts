@@ -96,6 +96,15 @@ describe("helpers/inbox.ts", function () {
 			expect(list[1].text).to.equal("again");
 		});
 
+		it("keeps lines of the same instant in the order they came", function () {
+			const t = minute(1);
+			const list = addEntries(
+				[entry({msgid: "a", time: t})],
+				[entry({msgid: "b", time: t}), entry({msgid: "c", time: t})]
+			);
+			expect(list.map((e) => e.msgid)).to.deep.equal(["a", "b", "c"]);
+		});
+
 		it("keeps a conversation's newest, so a busy query cannot push the rest out", function () {
 			const query = Array.from({length: MAX_PER_CONVERSATION + 30}, (_, i) =>
 				entry({msgid: `q${i}`, target: "carol", time: minute(10 + i)})
@@ -150,18 +159,19 @@ describe("helpers/inbox.ts", function () {
 			entry({query: true, target: "dave", msgid: "q"}),
 		];
 
-		it("drops the entry showing the message, on that network only", function () {
-			expect(dropMessage(list, "net-1", "a").map((e) => e.msgid)).to.deep.equal([
+		it("drops the entry showing the message, in that conversation only", function () {
+			expect(dropMessage(list, "net-1", "#Seance", "a").map((e) => e.msgid)).to.deep.equal([
 				"b",
 				"a",
 				"q",
 			]);
-			expect(dropMessage(list, "net-1", "q")).to.have.length(3);
+			expect(dropMessage(list, "net-1", "dave", "q")).to.have.length(3);
+			expect(dropMessage(list, "net-1", "#elsewhere", "a")).to.have.length(4);
 		});
 
 		it("for an edit, only when its sender wrote the message", function () {
-			expect(dropMessage(list, "net-1", "b", "mallory")).to.have.length(4);
-			expect(dropMessage(list, "net-1", "b", "carol")).to.have.length(3);
+			expect(dropMessage(list, "net-1", "#seance", "b", "mallory")).to.have.length(4);
+			expect(dropMessage(list, "net-1", "#seance", "b", "carol")).to.have.length(3);
 		});
 	});
 

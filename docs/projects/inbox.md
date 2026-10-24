@@ -51,7 +51,7 @@ Every device builds the same list from what the server already gives it:
   a muted conversation's. Older scrollback is never added.
 - **Pruned** by the `inbox:read {network, target, time}` bus event that
   `moveReadMarker` dispatches whenever the read point moves, and by
-  `inbox:drop {network, msgid, by?}` when the message is deleted
+  `inbox:drop {network, target, msgid, by?}` when the message is deleted
   (`REDACT`) or replaced by its author's edit, whether or not the page has
   it loaded (an edit is dropped only when `by` sent the entry's message).
 - **Dismissed** on this device: the entry goes, and its key and time are
