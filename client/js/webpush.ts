@@ -1117,12 +1117,33 @@ function subscribe(uuid: string): Promise<void> {
 
 async function subscribeNow(uuid: string): Promise<void> {
 	try {
-		// The shell asks for Android's permission inside its subscribe.
+		// The shell asks for Android's permission inside its subscribe. In a
+		// browser the permission is asked for only while it is undecided:
+		// WebKit's requestPermission() resolves "denied" whenever it is called
+		// without a user gesture, with the permission already granted too
+		// (Notification.cpp checks the gesture first and never the stored
+		// permission), and the silent subscribes have no gesture — the one
+		// after the browser dropped a subscription (iOS, after three silent
+		// pushes), a second network's, a renewal under `trust`, a worker's
+		// resubscribe. On an iPhone every one of them ended here as "denied"
+		// while iOS still allowed notifications, so a revoked subscription was
+		// never made again. subscribe() itself needs no gesture once the
+		// permission is granted (PushManager.cpp).
 		const permission =
-			pushBackend() === "native" ? "granted" : await Notification.requestPermission();
+			pushBackend() === "native" || notificationPermission() === "granted"
+				? "granted"
+				: await Notification.requestPermission();
 
 		if (permission !== "granted") {
-			setState("denied");
+			// Refused: by the user, or by WebKit for want of a gesture while the
+			// permission is still undecided — then nobody was asked, and the
+			// next connect's prompt asks with a button.
+			if (notificationPermission() === "denied") {
+				setState("denied");
+			} else {
+				refreshState();
+			}
+
 			return;
 		}
 
