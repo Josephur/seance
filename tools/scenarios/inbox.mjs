@@ -66,11 +66,38 @@ function speaker(nick) {
 	};
 }
 
+/** A real tap at the element's centre: what a finger sends, not a mouse click. */
+async function tap(page, selector) {
+	const r = JSON.parse(
+		await page.evaluate(
+			`JSON.stringify(document.querySelector(${JSON.stringify(
+				selector
+			)})?.getBoundingClientRect() ?? null)`
+		)
+	);
+
+	if (!r || (r.width === 0 && r.height === 0)) {
+		throw new Error(`no visible element for ${selector}`);
+	}
+
+	const touchPoints = [
+		{x: r.x + r.width / 2, y: r.y + r.height / 2, radiusX: 12, radiusY: 12, force: 1},
+	];
+	await page.send("Input.dispatchTouchEvent", {type: "touchStart", touchPoints});
+	await page.sleep(60);
+	await page.send("Input.dispatchTouchEvent", {type: "touchEnd", touchPoints: []});
+	await page.sleep(250);
+}
+
 const badgeText = `document.querySelector("${BADGE}")?.textContent.trim() ?? ""`;
 const groupNames = `Array.from(document.querySelectorAll(".mentions-group-name")).map((e) => e.textContent.trim()).join(",")`;
 const entryCount = `document.querySelectorAll(".mentions-entry").length`;
 
 export default async function run(page) {
+	// --mobile: a finger. Taps, never hovers, and the dismiss button must
+	// show without a hover.
+	const touch = await page.evaluate(`matchMedia("(pointer: coarse)").matches`);
+	const press = (selector) => (touch ? tap(page, selector) : page.click(selector));
 	const talker = speaker(TALKER);
 	await talker.joined;
 
@@ -90,14 +117,14 @@ export default async function run(page) {
 		await page.sleep(400);
 	}
 
-	await page.click(ROW(HOME));
+	await press(ROW(HOME));
 	await page.waitFor(`document.querySelector("#input")`, {label: "the input box"});
 	await page.sleep(2500); // the join burst and the catch-up
 
 	await page.check("no badge before any mention", (await page.evaluate(badgeText)) === "");
 
 	// Empty state.
-	await page.click("#chat button.mentions");
+	await press("#chat button.mentions");
 	await page.waitFor(`document.querySelector("${POPUP}")`, {label: "the popover"});
 	await page.check(
 		"the empty state says so",
@@ -123,7 +150,7 @@ export default async function run(page) {
 	);
 
 	await page.screenshot("2a-badge", {selector: "#chat .header", pad: 4});
-	await page.click("#chat button.mentions");
+	await press("#chat button.mentions");
 	await page.waitFor(`document.querySelector(".mentions-group")`, {label: "a group"});
 	await page.sleep(300);
 	const groups = await page.evaluate(groupNames);
@@ -135,12 +162,22 @@ export default async function run(page) {
 	await page.screenshot("2-two-mentions", {selector: POPUP, pad: 16});
 
 	// Hover a row: the dismiss button shows.
-	await page.hover(".mentions-entry .content");
+	if (touch) {
+		const shown = await page.evaluate(
+			`getComputedStyle(document.querySelector(".mentions-entry .msg-dismiss")).opacity`
+		);
+		await page.check(
+			`the dismiss button shows without a hover (opacity ${shown})`,
+			shown === "1"
+		);
+	} else {
+		await page.hover(".mentions-entry .content");
+	}
 	await page.sleep(250);
 	await page.screenshot("3-hover", {selector: POPUP, pad: 16});
 
 	// Dismiss one (this device only).
-	await page.click(".mentions-entry .msg-dismiss");
+	await press(".mentions-entry .msg-dismiss");
 	await page.sleep(300);
 	await page.check(
 		`one entry left (${await page.evaluate(entryCount)})`,
@@ -155,7 +192,7 @@ export default async function run(page) {
 	await page.evaluate(`document.querySelector("#mentions-popup-container").click()`);
 	await page.goto(BASE, {waitForSelector: "#chat, #connect"});
 	await page.waitFor(`${badgeText} === "1"`, {timeout: 30000, label: "the badge after a reload"});
-	await page.click("#chat button.mentions");
+	await press("#chat button.mentions");
 	await page.waitFor(`document.querySelector(".mentions-group-header:not([disabled])")`, {
 		timeout: 15000,
 		label: "the group, resolved to its channel",
@@ -163,7 +200,7 @@ export default async function run(page) {
 	await page.screenshot("4-after-reload", {selector: POPUP, pad: 16});
 
 	// Opening the conversation reads it, and reading it clears the inbox.
-	await page.click(".mentions-group-header");
+	await press(".mentions-group-header");
 	await page.waitFor(`!document.querySelector("${POPUP}")`, {label: "the popover closed"});
 	await page.waitFor(
 		`document.querySelector("#chat .header .title")?.textContent.includes("${OTHER}")`,

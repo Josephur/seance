@@ -287,6 +287,13 @@
 	opacity: 1;
 }
 
+/* A finger's target: about 44pt at the default text size. */
+:where(html[data-input="touch"]) .mentions-popup .msg-dismiss {
+	width: 2.25rem;
+	height: 2.25rem;
+	margin-block: -0.5rem;
+}
+
 .mentions-popup .msg-dismiss::before {
 	font-size: 1.125rem;
 	line-height: 1.5rem;
