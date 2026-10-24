@@ -10,10 +10,21 @@
 			<div class="mentions-popup-title">
 				<h2 id="mentions-popup-heading">
 					Mentions
-					<span v-if="total" class="mentions-total">{{ total }} unread</span>
+					<span v-if="total" class="mentions-total" :aria-label="`${total} unread`">{{
+						total
+					}}</span>
 				</h2>
 				<button v-if="total" class="btn dismiss-all-mentions" @click="dismissAllMentions()">
 					Dismiss all
+				</button>
+				<!-- On the phone the pane is the whole screen: nothing outside it to tap. -->
+				<button
+					class="mentions-close"
+					type="button"
+					aria-label="Close mentions"
+					@click="closePopup"
+				>
+					✕
 				</button>
 			</div>
 
@@ -120,13 +131,17 @@
 	z-index: 1;
 	display: flex;
 	align-items: center;
-	justify-content: space-between;
 	gap: 0.75rem;
 	padding: 0.75rem 0.75rem 0.5rem;
 	background: inherit;
 }
 
 .mentions-popup-title h2 {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 	margin: 0;
 	font-size: 1.125rem;
 	font-weight: 700;
@@ -140,7 +155,27 @@
 	color: var(--body-color-muted);
 }
 
+.mentions-popup .mentions-close {
+	flex-shrink: 0;
+	min-width: 2.25rem;
+	min-height: 2.25rem;
+	margin: -0.375rem -0.375rem -0.375rem 0;
+	padding: 0;
+	border: 0;
+	background: none;
+	color: var(--body-color-muted);
+	font-size: 1.125rem;
+	line-height: 1;
+}
+
+.mentions-popup .mentions-close:hover,
+.mentions-popup .mentions-close:focus-visible {
+	color: var(--body-color);
+}
+
 .mentions-popup .dismiss-all-mentions {
+	flex-shrink: 0;
+	white-space: nowrap;
 	margin: 0;
 	padding: 0.25rem 0.5rem;
 	font-size: 0.8125rem;
@@ -507,6 +542,7 @@ export default defineComponent({
 			openGroup,
 			openFromRow,
 			containerClick,
+			closePopup,
 		};
 	},
 });

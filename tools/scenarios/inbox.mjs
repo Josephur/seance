@@ -131,7 +131,9 @@ export default async function run(page) {
 		await page.evaluate(`!!document.querySelector(".mentions-empty")`)
 	);
 	await page.screenshot("1-empty", {selector: POPUP, pad: 16});
-	await page.evaluate(`document.querySelector("#mentions-popup-container").click()`);
+	// Its own close button: on the phone the pane is the whole screen.
+	await press(".mentions-close");
+	await page.waitFor(`!document.querySelector("${POPUP}")`, {label: "closed by its ✕"});
 
 	// Mentions: two in the other channel, one in a channel being looked at
 	// (read at once: never in the inbox), one plain line.
