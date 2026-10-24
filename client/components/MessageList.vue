@@ -706,6 +706,17 @@ export default defineComponent({
 			{immediate: true}
 		);
 
+		// A page that failed (FAIL CHATHISTORY, the timeout) changes no
+		// message: its end runs the jump on, to the next page or the nearest.
+		watch(
+			() => props.channel.historyLoading,
+			(loading) => {
+				if (!loading) {
+					void runJump();
+				}
+			}
+		);
+
 		watch(
 			() => props.channel.messages,
 			async (messages, previous) => {

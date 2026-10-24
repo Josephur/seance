@@ -17,7 +17,7 @@ export const MAX_PER_CONVERSATION = 20;
 /** How many dismissals a device remembers. */
 export const MAX_DISMISSED = 200;
 /** A mention starting further in than this is shown from just before it. */
-export const EXCERPT_FROM = 80;
+export const EXCERPT_FROM = 60;
 /** How much of the text before the mention the excerpt keeps. */
 export const EXCERPT_LEAD = 30;
 

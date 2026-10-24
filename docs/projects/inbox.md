@@ -83,7 +83,7 @@ and a page around the message would leave a gap. The logic is
 Opening still reads the conversation, as opening it from the sidebar does.
 
 **Excerpt.** The pane clamps an entry to three lines. A line whose mention
-starts past 80 characters is kept from a word about 30 characters before
+starts past 60 characters (three lines hold fewer than 80 on a phone at the large text steps) is kept from a word about 30 characters before
 it, with an ellipsis, and without its IRC formatting (a cut could leave a
 style half open). The match is the highlight rule's own
 (`highlight.ts` `mentionIndex`), run when the entry is made.
