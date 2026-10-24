@@ -280,7 +280,7 @@ export default defineComponent({
 		};
 
 		// Unread mentions on every network: the @ button's badge.
-		const mentionCount = computed(() => store.getters.visibleMentions.length);
+		const mentionCount = computed(() => store.getters.mentionCount);
 		const mentionBadge = computed(() => (mentionCount.value > 99 ? "99+" : mentionCount.value));
 
 		const openMentions = (event: any) => {

@@ -10,6 +10,7 @@ import type {InboxEntry} from "../../shared/types/mention";
 import {
 	MAX_DISMISSED,
 	addEntries,
+	dropMessage,
 	entryKey,
 	parseDismissed,
 	parseStored,
@@ -67,9 +68,9 @@ export function markMentionsRead(network: string, target: string, time: Date): v
 	}
 }
 
-/** Drop the entry of a message that is gone (deleted, or replaced by an edit). */
-export function dropMentionOf(network: string, msgid: string): void {
-	commitIfChanged(store.state.mentions.filter((e) => entryKey(e) !== `${network}/${msgid}`));
+/** Drop the entry of a message that is gone (deleted, or replaced by `by`'s edit). */
+export function dropMentionOf(network: string, msgid: string, by?: string): void {
+	commitIfChanged(dropMessage(store.state.mentions, network, msgid, by));
 }
 
 /** On this device only, remembered until the conversation is read past them. */

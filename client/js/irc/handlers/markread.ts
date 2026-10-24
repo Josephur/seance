@@ -28,7 +28,6 @@ import {SAID_TYPES, countsAsUnread, type Channel, type MsgRef} from "../channel"
 import type {IrcClient} from "../client";
 import {formatLine} from "../message";
 import type {Handler} from "../types";
-import {entryFor} from "../../helpers/inbox";
 import type {InboxEntry} from "../../../../shared/types/mention";
 
 export const MARKREAD_CAP = "draft/read-marker";
@@ -181,7 +180,7 @@ export function countPageUnread(
 		if (msg.highlight) {
 			ref.highlight = true;
 			highlight++;
-			const entry = markable(chan) ? entryFor(client.uuid, chan.name, msg) : null;
+			const entry = client.inboxEntry(chan, msg);
 
 			if (entry) {
 				mentions.push(entry);

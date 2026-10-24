@@ -687,6 +687,48 @@ describe("The inbox's events (docs/projects/inbox.md)", function () {
 		expect(added().map((e) => e.msgid)).to.deep.equal(["h3"]);
 	});
 
+	it("marks a query's entry as one for the whole conversation", function () {
+		const h = setup();
+		joined(h);
+		h.transport.line(
+			"@time=2026-08-25T12:10:00.000Z;msgid=q1 :carol!carol@host PRIVMSG alice :hello there"
+		);
+		expect(added().map((e) => e.query)).to.deep.equal([true]);
+		live(h, 11, "alice: in a channel");
+		expect(added()[1]).to.not.have.property("query");
+	});
+
+	it("cuts a long line to just before the mention", function () {
+		const h = setup();
+		joined(h);
+		const lead = "lorem ipsum dolor sit amet ".repeat(5);
+		live(h, 1, `${lead}so what do you think, alice?`);
+		const text = added()[0].text;
+		expect(text.startsWith("…"), text).to.equal(true);
+		expect(text.endsWith("so what do you think, alice?")).to.equal(true);
+		expect(text.length).to.be.lessThan(70);
+	});
+
+	it("reports a deleted message's msgid, loaded or not", function () {
+		const h = setup();
+		joined(h);
+		h.transport.line(":bob!bob@host REDACT #seance never-loaded");
+		expect(payloads("inbox:drop")).to.deep.equal([
+			{network: h.client.uuid, msgid: "never-loaded"},
+		]);
+	});
+
+	it("reports an edit's original with the editor, for the inbox to check", function () {
+		const h = setup();
+		joined(h);
+		h.transport.line(
+			"@time=2026-08-25T12:10:00.000Z;msgid=e1;+seance/edit=gone :bob!bob@host PRIVMSG #seance :fixed"
+		);
+		expect(payloads("inbox:drop")).to.deep.equal([
+			{network: h.client.uuid, msgid: "gone", by: "bob"},
+		]);
+	});
+
 	it("a marker that arrives after a highlight it covers reports the read point past it", function () {
 		const h = setup();
 		joined(h);

@@ -8,6 +8,7 @@
 import type {InboxEntry} from "../../../shared/types/mention";
 import {MessageType, type SharedMsg} from "../../../shared/types/msg";
 import {casefold} from "../irc/casemap";
+import {cleanIrcMessage} from "../../../shared/irc";
 
 /** How many entries a device keeps; the oldest go first. */
 export const MAX_ENTRIES = 100;
@@ -15,6 +16,10 @@ export const MAX_ENTRIES = 100;
 export const MAX_PER_CONVERSATION = 20;
 /** How many dismissals a device remembers. */
 export const MAX_DISMISSED = 200;
+/** A mention starting further in than this is shown from just before it. */
+export const EXCERPT_FROM = 80;
+/** How much of the text before the mention the excerpt keeps. */
+export const EXCERPT_LEAD = 30;
 
 /**
  * A dismissed entry, remembered so the catch-up does not bring it back,
@@ -29,9 +34,14 @@ export function conversationKey(network: string, target: string): string {
 
 /**
  * The entry's identity: its msgid, or what identifies the message on a
- * server without `message-tags`. Never a session-local id (irc/ids.ts).
+ * server without `message-tags`. Never a session-local id (irc/ids.ts). A
+ * private conversation is one entry, whatever line it shows.
  */
 export function entryKey(entry: InboxEntry): string {
+	if (entry.query) {
+		return `query:${conversationKey(entry.network, entry.target)}`;
+	}
+
 	if (entry.msgid) {
 		return `${entry.network}/${entry.msgid}`;
 	}
@@ -39,8 +49,46 @@ export function entryKey(entry: InboxEntry): string {
 	return `${conversationKey(entry.network, entry.target)}/${entry.time}/${entry.from.nick ?? ""}`;
 }
 
+/**
+ * The text an entry shows: all of it, or for a long line whose mention
+ * starts past {@link EXCERPT_FROM} characters, an ellipsis and the text from
+ * a word boundary about {@link EXCERPT_LEAD} characters before the mention,
+ * so the three lines the pane shows hold the name. `findMention` returns the
+ * mention's index in the text without IRC formatting (-1: none), and a cut
+ * text is shown without its formatting, which a cut could leave half open.
+ */
+export function excerptText(text: string, findMention?: (plain: string) => number): string {
+	if (!findMention) {
+		return text;
+	}
+
+	const plain = cleanIrcMessage(text);
+	const at = findMention(plain);
+
+	if (at <= EXCERPT_FROM) {
+		return text;
+	}
+
+	const from = at - EXCERPT_LEAD;
+	const space = plain.slice(from, at).search(/\s\S/);
+	const start = space === -1 ? from : from + space + 1;
+	return "…" + plain.slice(start);
+}
+
+export type EntryOptions = {
+	/** A private conversation: one entry for the whole of it. */
+	query?: boolean;
+	/** Where the text mentions us, in the text without formatting (-1: nowhere). */
+	findMention?: (plain: string) => number;
+};
+
 /** The entry for `msg`, said in `target` on `network`; null for our own or a sourceless line. */
-export function entryFor(network: string, target: string, msg: SharedMsg): InboxEntry | null {
+export function entryFor(
+	network: string,
+	target: string,
+	msg: SharedMsg,
+	options: EntryOptions = {}
+): InboxEntry | null {
 	if (msg.self || !msg.from?.nick) {
 		return null;
 	}
@@ -49,9 +97,10 @@ export function entryFor(network: string, target: string, msg: SharedMsg): Inbox
 		network,
 		target,
 		...(msg.msgid ? {msgid: msg.msgid} : {}),
+		...(options.query ? {query: true as const} : {}),
 		time: new Date(msg.time).toISOString(),
 		type: msg.type ?? MessageType.MESSAGE,
-		text: msg.text ?? "",
+		text: options.query ? msg.text ?? "" : excerptText(msg.text ?? "", options.findMention),
 		from: msg.from,
 	};
 }
@@ -59,22 +108,36 @@ export function entryFor(network: string, target: string, msg: SharedMsg): Inbox
 const timeOf = (e: {time: string}) => new Date(e.time).getTime();
 
 /**
- * Add `added`, deduplicated by key and without the dismissed ones, ordered
- * by time; the newest {@link MAX_PER_CONVERSATION} of each conversation and
- * the newest {@link MAX_ENTRIES} overall are kept.
+ * Add `added`, deduplicated by key (the newer line wins, which for a
+ * private conversation is the line it shows) and without the dismissed
+ * ones, ordered by time; the newest {@link MAX_PER_CONVERSATION} of each
+ * conversation and the newest {@link MAX_ENTRIES} overall are kept. A
+ * dismissal holds back what it covered, not a later line under the same key
+ * (a private conversation's next message).
  */
 export function addEntries(
 	list: InboxEntry[],
 	added: InboxEntry[],
 	dismissed: Dismissal[] = []
 ): InboxEntry[] {
-	const gone = new Set(dismissed.map((d) => d.key));
+	const gone = new Map<string, number>();
+
+	for (const d of dismissed) {
+		gone.set(d.key, Math.max(gone.get(d.key) ?? -Infinity, timeOf(d)));
+	}
+
 	const byKey = new Map<string, InboxEntry>();
 
 	for (const entry of [...list, ...added]) {
 		const key = entryKey(entry);
+		const held = gone.get(key);
+		const kept = byKey.get(key);
 
-		if (!gone.has(key)) {
+		if (held !== undefined && timeOf(entry) <= held) {
+			continue;
+		}
+
+		if (!kept || timeOf(entry) >= timeOf(kept)) {
 			byKey.set(key, entry);
 		}
 	}
@@ -105,6 +168,25 @@ export function pruneRead<T extends {network: string; target: string; time: stri
 	const key = conversationKey(network, target);
 	return list.filter(
 		(e) => conversationKey(e.network, e.target) !== key || timeOf(e) > time.getTime()
+	);
+}
+
+/**
+ * The message `msgid` on `network` is gone: drop the entry that shows it.
+ * With `by` (an edit, which only its author may make), only when `by` sent
+ * it.
+ */
+export function dropMessage(
+	list: InboxEntry[],
+	network: string,
+	msgid: string,
+	by?: string
+): InboxEntry[] {
+	return list.filter(
+		(e) =>
+			e.network !== network ||
+			e.msgid !== msgid ||
+			(by !== undefined && casefold(e.from.nick ?? "") !== casefold(by))
 	);
 }
 

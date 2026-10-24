@@ -60,6 +60,7 @@ import {
 	scheduleMarkRead,
 } from "./handlers/markread";
 import {entryFor} from "../helpers/inbox";
+import type {InboxEntry} from "../../../shared/types/mention";
 import {
 	effectiveMode,
 	type GlobalModeState,
@@ -2658,6 +2659,19 @@ export class IrcClient {
 		return this.highlightTester.isHighlightException(text, exceptions);
 	}
 
+	/** The inbox entry for an unread highlight in `chan` (helpers/inbox.ts), or null. */
+	inboxEntry(chan: Channel, msg: SharedMsg): InboxEntry | null {
+		if (!markable(chan)) {
+			return null; // the lobby: no read point would ever clear it
+		}
+
+		const {keywords} = this.options.highlights?.() ?? {keywords: []};
+		return entryFor(this.uuid, chan.name, msg, {
+			query: chan.type === ChanType.QUERY,
+			findMention: (plain) => this.highlightTester.mentionIndex(plain, this.nick, keywords),
+		});
+	}
+
 	findChannel(name: string): Channel | undefined {
 		return this.channels.find((chan) => this.namesEqual(chan.name, name));
 	}
@@ -3085,7 +3099,7 @@ export class IrcClient {
 		// inbox entry; one read already (looked at, or past another
 		// session's marker) is not, nor one in the lobby, which no read
 		// marker ever clears.
-		const entry = ref.highlight && markable(chan) ? entryFor(this.uuid, chan.name, msg) : null;
+		const entry = ref.highlight ? this.inboxEntry(chan, msg) : null;
 
 		if (entry) {
 			this.bus.dispatch("inbox:add", {entries: [entry]});

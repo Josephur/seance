@@ -8,7 +8,8 @@
  * reason?, time}` for a loaded message; for one we never showed it is a
  * plain "<nick> deleted a message" line (live) or dropped (replay). A
  * REDACT of our own that an edit is waiting on releases that edit
- * (`IrcClient.settleEdit`).
+ * (`IrcClient.settleEdit`). Loaded or not, the msgid goes to the inbox
+ * (`inbox:drop`), which keeps mentions across reloads.
  */
 
 import type {Channel} from "../channel";
@@ -24,6 +25,8 @@ const redact: Handler = (client, msg) => {
 	if (!msgid) {
 		return;
 	}
+
+	client.dispatch("inbox:drop", {network: client.uuid, msgid});
 
 	if (chan) {
 		client.afterReplay(() => {

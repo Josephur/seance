@@ -6,7 +6,13 @@
 		@click="containerClick"
 		@contextmenu="containerClick"
 	>
-		<div class="mentions-popup" role="dialog" aria-labelledby="mentions-popup-heading">
+		<div
+			ref="popup"
+			class="mentions-popup"
+			role="dialog"
+			aria-labelledby="mentions-popup-heading"
+			:style="placement"
+		>
 			<div class="mentions-popup-title">
 				<h2 id="mentions-popup-heading">
 					Mentions
@@ -54,7 +60,10 @@
 							<span v-if="group.networkName" class="mentions-group-network">{{
 								group.networkName
 							}}</span>
-							<span v-if="groups.length > 1" class="mentions-group-count">{{
+							<span v-if="group.unreadLabel" class="mentions-group-unread">{{
+								group.unreadLabel
+							}}</span>
+							<span v-else-if="groups.length > 1" class="mentions-group-count">{{
 								group.entries.length
 							}}</span>
 						</button>
@@ -69,7 +78,7 @@
 					</div>
 					<!-- A click opens the conversation; the header is the keyboard's way. -->
 					<div
-						v-for="message in group.entries"
+						v-for="message in group.shown"
 						:key="message.key"
 						:class="[
 							'msg',
@@ -77,7 +86,7 @@
 							message.type,
 							{'mentions-entry-openable': group.conversation},
 						]"
-						@click="openFromRow($event, group)"
+						@click="openFromRow($event, group, message)"
 					>
 						<div class="mentions-info">
 							<span class="from" @click.stop>
@@ -93,7 +102,9 @@
 								class="msg-dismiss"
 								title="Dismiss on this device"
 								aria-label="Dismiss on this device"
-								@click.stop="dismissMention(message)"
+								@click.stop="
+									group.query ? dismissGroup(group) : dismissMention(message)
+								"
 							></button>
 						</div>
 						<div class="content" dir="auto">
@@ -116,8 +127,13 @@
 	position: absolute;
 	box-sizing: border-box;
 	width: min(26rem, calc(100vw - 1rem));
-	right: 5rem;
-	top: 3.4rem;
+	/* Under the @ button (--mentions-right/-top, set on open), kept on screen. */
+	right: clamp(
+		0.5rem,
+		var(--mentions-right, 5rem),
+		calc(100% - min(26rem, 100vw - 1rem) - 0.5rem)
+	);
+	top: var(--mentions-top, 3.4rem);
 	max-height: 25rem;
 	overflow-y: auto;
 	overscroll-behavior: contain;
@@ -252,6 +268,13 @@
 	font-size: 0.75rem;
 	text-align: center;
 	color: var(--body-color);
+}
+
+.mentions-group-unread {
+	margin-inline-start: auto;
+	flex-shrink: 0;
+	font-size: 0.8125rem;
+	color: var(--body-color-muted);
 }
 
 .mentions-popup .mentions-entry {
@@ -401,10 +424,11 @@ import {entryKey, groupByConversation} from "../js/helpers/inbox";
 import localetime from "../js/helpers/localetime";
 import dayjs from "dayjs";
 import relativeTime from "dayjs/plugin/relativeTime";
-import {computed, defineComponent, ref, onMounted, onUnmounted} from "vue";
+import {computed, defineComponent, nextTick, ref, onMounted, onUnmounted, watch} from "vue";
 import {useStore} from "../js/store";
 import type {InboxEntry} from "../../shared/types/mention";
 import type {NetChan} from "../js/types";
+import {ChanType} from "../../shared/types/chan";
 
 type MentionWithContext = InboxEntry & {
 	key: string;
@@ -417,8 +441,16 @@ type GroupWithContext = {
 	networkName: string;
 	label: string;
 	conversation: NetChan | null;
+	/** A private conversation: one row, its newest line, and how much is unread. */
+	query: boolean;
+	unreadLabel: string;
 	entries: MentionWithContext[];
+	/** The rows: every mention, or a private conversation's newest line. */
+	shown: MentionWithContext[];
 };
+
+/** How often "a few seconds ago" is redone while the pane is open. */
+const CLOCK_TICK_MS = 30_000;
 
 dayjs.extend(relativeTime);
 
@@ -440,6 +472,15 @@ export default defineComponent({
 				const target = conversation?.channel.name ?? group.target;
 				const networkName =
 					several || !conversation ? conversation?.network.name ?? "" : "";
+				const query = conversation
+					? conversation.channel.type === ChanType.QUERY
+					: !!group.entries[0]?.query;
+				const entries = group.entries.map((entry) => ({
+					...entry,
+					key: entryKey(entry),
+					localetime: localetime(new Date(entry.time)),
+				}));
+				const unread = query ? conversation?.channel.unread ?? 0 : 0;
 
 				return {
 					key: group.key,
@@ -447,22 +488,61 @@ export default defineComponent({
 					networkName,
 					label: networkName ? `${target} on ${networkName}` : target,
 					conversation,
-					entries: group.entries.map((entry) => ({
-						...entry,
-						key: entryKey(entry),
-						localetime: localetime(new Date(entry.time)),
-					})),
+					query,
+					unreadLabel: unread > 1 ? `${unread} unread` : "",
+					entries,
+					shown: query ? entries.slice(-1) : entries,
 				};
 			});
 		});
 
-		const total = computed(() =>
-			groups.value.reduce((sum, group) => sum + group.entries.length, 0)
-		);
+		const total = computed(() => store.getters.mentionCount);
+
+		// Read by messageTime, so the times are redone on each tick.
+		const now = ref(Date.now());
+		let clock: ReturnType<typeof setInterval> | null = null;
 
 		const messageTime = (time: string) => {
-			return dayjs(time).fromNow();
+			return dayjs(time).from(now.value);
 		};
+
+		// Under the @ button, measured against the container the pane is
+		// placed in; the phone layout's rule ignores both.
+		const popup = ref<HTMLElement | null>(null);
+		const placement = ref<Record<string, string>>({});
+
+		const place = () => {
+			const button = document.querySelector("#chat button.mentions");
+			const container = popup.value?.offsetParent;
+
+			if (!button || !container) {
+				placement.value = {};
+				return;
+			}
+
+			const b = button.getBoundingClientRect();
+			const c = container.getBoundingClientRect();
+			placement.value = {
+				"--mentions-top": `${b.bottom - c.top}px`,
+				"--mentions-right": `${c.right - b.right}px`,
+			};
+		};
+
+		watch(isOpen, (open) => {
+			if (clock !== null) {
+				clearInterval(clock);
+				clock = null;
+			}
+
+			window.removeEventListener("resize", place);
+
+			if (open) {
+				now.value = Date.now();
+				clock = setInterval(() => (now.value = Date.now()), CLOCK_TICK_MS);
+				window.addEventListener("resize", place);
+				void nextTick(place);
+			}
+		});
 
 		const dismissMention = (message: MentionWithContext) => {
 			dismissMentions([message]);
@@ -472,17 +552,33 @@ export default defineComponent({
 			dismissMentions(group.entries);
 		};
 
-		// Opening it reads it, and reading it clears its mentions (inbox:read).
-		const openGroup = (group: GroupWithContext) => {
-			if (group.conversation) {
-				isOpen.value = false;
-				switchToChannel(group.conversation.channel);
+		// Opening it reads it, and reading it clears its mentions (inbox:read);
+		// it opens at the mention (MessageList.vue's jump): the one clicked,
+		// or the header's oldest, or for a private conversation its first
+		// unread line, which the page knows before opening it reads it.
+		const openGroup = (group: GroupWithContext, entry = group.entries[0]) => {
+			if (!group.conversation) {
+				return;
 			}
+
+			const channel = group.conversation.channel;
+			store.commit("jumpTarget", {
+				chanId: channel.id,
+				...(group.query && channel.firstUnread ? {id: channel.firstUnread} : {}),
+				...(entry?.msgid ? {msgid: entry.msgid} : {}),
+				...(entry ? {time: entry.time} : {}),
+			});
+			isOpen.value = false;
+			switchToChannel(channel);
 		};
 
 		// A click on the row opens the conversation; one on a link, a nick
 		// or a channel in the text, or a selection being made, does not.
-		const openFromRow = (event: MouseEvent, group: GroupWithContext) => {
+		const openFromRow = (
+			event: MouseEvent,
+			group: GroupWithContext,
+			entry: MentionWithContext
+		) => {
 			const target = event.target as HTMLElement | null;
 
 			if (target?.closest("a, button, .user, .inline-channel")) {
@@ -493,7 +589,7 @@ export default defineComponent({
 				return;
 			}
 
-			openGroup(group);
+			openGroup(group, group.query ? group.entries[0] : entry);
 		};
 
 		// What is shown: a muted conversation's entries stay out of it.
@@ -527,12 +623,19 @@ export default defineComponent({
 		});
 
 		onUnmounted(() => {
+			if (clock !== null) {
+				clearInterval(clock);
+			}
+
+			window.removeEventListener("resize", place);
 			eventbus.off("mentions:toggle", togglePopup);
 			eventbus.off("escapekey", onEscape);
 		});
 
 		return {
 			isOpen,
+			popup,
+			placement,
 			groups,
 			total,
 			messageTime,

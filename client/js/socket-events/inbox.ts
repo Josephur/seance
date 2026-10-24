@@ -1,16 +1,11 @@
 import socket from "../socket";
-import {store} from "../store";
-import {casefold} from "../irc/casemap";
 import {addMentions, dropMentionOf, markMentionsRead} from "../mentions";
 
 // Unread mentions, live or caught up (docs/projects/inbox.md). A muted
-// conversation's are not kept: they would only take up room.
+// conversation's are kept too, and hidden (store.ts visibleMentions), so
+// unmuting it shows what is still unread.
 socket.on("inbox:add", function (data) {
-	addMentions(
-		data.entries.filter(
-			(e) => !store.getters.findConversation(e.network, e.target)?.channel.muted
-		)
-	);
+	addMentions(data.entries);
 });
 
 // A conversation was read up to a point, here or on another session.
@@ -18,28 +13,7 @@ socket.on("inbox:read", function (data) {
 	markMentionsRead(data.network, data.target, new Date(data.time));
 });
 
-// A deleted message leaves the inbox, and so does the original of an edit
-// (registered before ./msg_updates in index.ts, so the message is still there)
-// (the edit brings its own entry if it still mentions us).
-function dropMessage(chanId: number, id: number): void {
-	const found = store.getters.findChannel(chanId);
-	const msgid = found?.channel.messages.find((m) => m.id === id)?.msgid;
-
-	if (found && msgid) {
-		dropMentionOf(found.network.uuid, msgid);
-	}
-}
-
-socket.on("msg:redact", (data) => dropMessage(data.chan, data.id));
-
-// Only an edit by the original's author: an edit tag on someone else's line
-// must not take a mention of us out of the inbox.
-socket.on("msg:edit", (data) => {
-	const messages = store.getters.findChannel(data.chan)?.channel.messages ?? [];
-	const nickOf = (id: number) => messages.find((m) => m.id === id)?.from?.nick;
-	const author = nickOf(data.replaces);
-
-	if (author && casefold(author) === casefold(nickOf(data.id) ?? "")) {
-		dropMessage(data.chan, data.replaces);
-	}
+// A message deleted, or replaced by its author's edit, loaded or not.
+socket.on("inbox:drop", function (data) {
+	dropMentionOf(data.network, data.msgid, data.by);
 });

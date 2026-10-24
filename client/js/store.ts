@@ -11,6 +11,7 @@ import {SettingsState} from "./settings";
 import {SharedConfiguration, LockedSharedConfiguration} from "../../shared/types/config";
 import {BrandingConfig, DEFAULT_BRANDING, brandingString} from "./branding";
 import type {UploadProgress} from "./upload";
+import type {JumpTarget} from "./helpers/jumpToMessage";
 import {conversationKey} from "./helpers/inbox";
 
 enum DesktopNotificationState {
@@ -55,6 +56,8 @@ export type State = {
 	userlistOpen: boolean;
 	/** The file upload in flight (`client/js/upload.ts`); `null` when idle. */
 	uploadProgress: UploadProgress | null;
+	/** A message the open conversation is to be taken to (helpers/jumpToMessage.ts). */
+	jumpTarget: JumpTarget | null;
 };
 
 const state = (): State => ({
@@ -76,6 +79,7 @@ const state = (): State => ({
 	sidebarDragging: false,
 	userlistOpen: storage.get("thelounge.state.userlist") !== "false",
 	uploadProgress: null,
+	jumpTarget: null,
 });
 
 type Getters = {
@@ -101,7 +105,8 @@ type Getters = {
 		state: State,
 		getters: {findConversation: (network: string, target: string) => NetChan | null}
 	) => InboxEntry[];
-	highlightCount(state: State): number;
+	/** Unread mentions as the inbox shows them (docs/projects/inbox.md). */
+	mentionCount(state: State, getters: {visibleMentions: InboxEntry[]}): number;
 	title(state: State, getters: Omit<Getters, "title">): string;
 };
 
@@ -159,25 +164,11 @@ const getters: Getters = {
 
 		return null;
 	},
-	highlightCount(state) {
-		let highlightCount = 0;
-
-		for (const network of state.networks) {
-			for (const channel of network.channels) {
-				if (channel.muted) {
-					continue;
-				}
-
-				highlightCount += channel.highlight;
-			}
-		}
-
-		return highlightCount;
-	},
+	// The one count of unread mentions: the @ button, the title, the
+	// favicon and the app icon all read it.
+	mentionCount: (state, getters) => getters.visibleMentions.length,
 	title(state, getters) {
-		const alertEventCount = getters.highlightCount
-			? `(${getters.highlightCount.toString()}) `
-			: "";
+		const alertEventCount = getters.mentionCount ? `(${getters.mentionCount.toString()}) ` : "";
 		const channelname = state.activeChannel ? `${state.activeChannel.channel.name} — ` : "";
 
 		return alertEventCount + channelname + state.branding.appName;
@@ -216,6 +207,7 @@ type Mutations = {
 	toggleUserlist(state: State): void;
 	userlistOpen(state: State, payload: State["userlistOpen"]): void;
 	uploadProgress(state: State, progress: State["uploadProgress"]): void;
+	jumpTarget(state: State, target: State["jumpTarget"]): void;
 };
 
 const mutations: Mutations = {
@@ -293,6 +285,9 @@ const mutations: Mutations = {
 	},
 	uploadProgress(state, progress) {
 		state.uploadProgress = progress;
+	},
+	jumpTarget(state, target) {
+		state.jumpTarget = target;
 	},
 };
 

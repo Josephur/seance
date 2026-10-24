@@ -2,9 +2,12 @@ import {expect} from "chai";
 import {
 	MAX_ENTRIES,
 	MAX_PER_CONVERSATION,
+	EXCERPT_FROM,
 	addEntries,
 	conversationKey,
+	dropMessage,
 	entryFor,
+	excerptText,
 	entryKey,
 	groupByConversation,
 	parseDismissed,
@@ -41,6 +44,12 @@ describe("helpers/inbox.ts", function () {
 			expect(entryKey(entry())).to.equal("net-1/m1");
 		});
 
+		it("is the conversation alone for a private one, whatever line it shows", function () {
+			expect(entryKey(entry({query: true, target: "Carol"}))).to.equal(
+				entryKey(entry({query: true, target: "carol", msgid: "other"}))
+			);
+		});
+
 		it("is the conversation, time and nick without a msgid", function () {
 			expect(entryKey(entry({msgid: undefined, target: "#Seance"}))).to.equal(
 				"net-1/#seance/2026-10-23T12:00:00.000Z/bob"
@@ -63,6 +72,13 @@ describe("helpers/inbox.ts", function () {
 			const made = entryFor("net-1", "#seance", msg)!;
 			expect(made).to.deep.equal(entry());
 			expect(made).to.not.have.property("id");
+		});
+
+		it("flags a private conversation's entry and keeps its whole line", function () {
+			const long = {...msg, text: `${"x ".repeat(100)}alice`};
+			const made = entryFor("net-1", "carol", long, {query: true, findMention: () => 200})!;
+			expect(made.query).to.equal(true);
+			expect(made.text).to.equal(long.text);
 		});
 
 		it("makes nothing of our own line or a line without a sender", function () {
@@ -100,11 +116,76 @@ describe("helpers/inbox.ts", function () {
 			expect(list[0].msgid).to.equal("m5");
 		});
 
+		it("shows a private conversation's newest line, whatever order lines come in", function () {
+			const q = (msgid: string, time: string) =>
+				entry({query: true, target: "carol", msgid, time});
+			const list = addEntries([q("b", minute(2))], [q("a", minute(1)), q("c", minute(3))]);
+			expect(list.map((e) => e.msgid)).to.deep.equal(["c"]);
+			expect(addEntries(list, [q("a", minute(1))]).map((e) => e.msgid)).to.deep.equal(["c"]);
+		});
+
+		it("lets a private conversation's next line past the dismissal of an earlier one", function () {
+			const first = entry({query: true, target: "carol", msgid: "a", time: minute(1)});
+			const gone: Dismissal[] = [
+				{key: entryKey(first), network: "net-1", target: "carol", time: minute(1)},
+			];
+			expect(addEntries([], [first], gone)).to.deep.equal([]);
+			const next = {...first, msgid: "b", time: minute(2)};
+			expect(addEntries([], [next], gone)).to.deep.equal([next]);
+		});
+
 		it("never brings back a dismissed entry", function () {
 			const gone: Dismissal[] = [
-				{key: "net-1/m1", network: "net-1", target: "#seance", time: minute(0)},
+				{key: "net-1/m1", network: "net-1", target: "#seance", time: entry().time},
 			];
 			expect(addEntries([], [entry()], gone)).to.deep.equal([]);
+		});
+	});
+
+	describe("dropMessage", function () {
+		const list = [
+			entry({msgid: "a"}),
+			entry({msgid: "b", from: {nick: "Carol", mode: ""}}),
+			entry({msgid: "a", network: "net-2"}),
+			entry({query: true, target: "dave", msgid: "q"}),
+		];
+
+		it("drops the entry showing the message, on that network only", function () {
+			expect(dropMessage(list, "net-1", "a").map((e) => e.msgid)).to.deep.equal([
+				"b",
+				"a",
+				"q",
+			]);
+			expect(dropMessage(list, "net-1", "q")).to.have.length(3);
+		});
+
+		it("for an edit, only when its sender wrote the message", function () {
+			expect(dropMessage(list, "net-1", "b", "mallory")).to.have.length(4);
+			expect(dropMessage(list, "net-1", "b", "carol")).to.have.length(3);
+		});
+	});
+
+	describe("excerptText", function () {
+		const lead = "one two three four five six seven eight nine ten ".repeat(3);
+		const text = `${lead}hey alice, look`;
+		const find = (plain: string) => plain.indexOf("alice");
+
+		it("keeps a line whose mention is near its start, formatting and all", function () {
+			expect(excerptText("\x02hey\x02 alice", find)).to.equal("\x02hey\x02 alice");
+			expect(excerptText(text)).to.equal(text);
+		});
+
+		it("starts a long line at a word a little before the mention", function () {
+			expect(find(text)).to.be.greaterThan(EXCERPT_FROM);
+			const cut = excerptText(text, find);
+			expect(cut).to.match(/^…[a-z]/);
+			expect(text.endsWith(cut.slice(1))).to.equal(true);
+			expect(cut.indexOf("alice")).to.be.lessThan(40);
+		});
+
+		it("drops the formatting of a line it cuts", function () {
+			const cut = excerptText(`\x0304${text}\x03`, find);
+			expect(cut).to.not.match(/[\x00-\x1f]/);
 		});
 	});
 
