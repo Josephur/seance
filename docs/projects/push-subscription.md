@@ -1083,3 +1083,27 @@ with nothing to close, the next push replacing the stub, the stalled
 handler's generic notification, and a Chromium user agent keeping the
 drops). The iPhone itself remains unverified: nobody here has one, and
 `getSubscription()` on the device after three pushes is the check.
+
+### A revoked subscription was never made again (2026-10-24)
+
+Reported after the above shipped: iPhones still get no push. Found in
+WebKit's `Notification.cpp`: `Notification.requestPermission()` called
+without a user gesture resolves `"denied"` whatever the stored permission —
+the gesture check (`consumeTransientActivation`) comes first and the
+permission is never consulted — while `PushManager::subscribe` needs no
+gesture once the permission is granted. `subscribeNow` opened every
+subscribe with `await Notification.requestPermission()`, so the silent
+subscribes (`maybePrompt` with the permission granted: the subscription the
+browser dropped, a second network; a `trust` renewal; the worker's
+`resubscribe` message) all ended as `"denied"` on WebKit, with Settings →
+Notifications reporting notifications blocked while iOS allowed them — and
+the recovery after WebKit's revocation never happened: a device revoked
+before the fix above stayed without push after it. Now the permission is
+asked for only while it is `default` (the prompt's button and the Renew
+button are gestures), a refusal with the permission still undecided leaves
+the state unsubscribed for the next connect's prompt rather than "denied",
+and a granted permission subscribes at once. Nothing to test under mocha
+(`webpush.ts` is Vue + store); type-checked and reviewed against the two
+WebKit functions. On a device: open the app once with notifications
+allowed — the lobby's `WEBPUSH REGISTER` echo, and Settings → Notifications
+no longer saying blocked, are the signs.
