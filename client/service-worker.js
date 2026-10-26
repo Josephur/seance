@@ -486,10 +486,50 @@ function isStub(n) {
 // (`{type: "tidy"}`, sent once the 30 s have passed).
 
 let lastStamp = 0;
+let stampSeed = null;
+/** How long seeding may wait for IndexedDB: a stalled database must never
+ * hold up a show (WebKit counts a push that shows nothing). */
+const STAMP_SEED_MS = 500;
 
-/** A strictly increasing time for this worker's shows and reads: a show and
- * a read in the same millisecond must still say which came first. */
-function stamp() {
+/** Start the counter past every stamp a previous life of this worker (or
+ * another network's) left behind: the notifications still up and the
+ * remembered reads outlive the worker, its counter does not. */
+function seedStamp() {
+	if (!stampSeed) {
+		stampSeed = (async () => {
+			let max = 0;
+
+			try {
+				for (const n of await self.registration.getNotifications()) {
+					max = Math.max(max, shownAt(n));
+				}
+			} catch (e) {
+				// nothing up to order against
+			}
+
+			const reads = await Promise.race([
+				idbGet("reads").catch(() => null),
+				new Promise((resolve) => setTimeout(() => resolve(null), STAMP_SEED_MS)),
+			]);
+
+			for (const r of Array.isArray(reads) ? reads : []) {
+				if (r && typeof r.at === "number") {
+					max = Math.max(max, r.at);
+				}
+			}
+
+			lastStamp = Math.max(lastStamp, max);
+		})();
+	}
+
+	return stampSeed;
+}
+
+/** A strictly increasing time for shows and reads: a show and a read in the
+ * same millisecond, or either side of a worker restart, must still say which
+ * came first. */
+async function stamp() {
+	await seedStamp();
 	lastStamp = Math.max(Date.now(), lastStamp + 1);
 	return lastStamp;
 }
@@ -537,8 +577,8 @@ const READS_CAP = 50;
 /** Remember that `target` on `network` was read up to `cutoff` (epoch ms of
  * the server's message times; Infinity for a read of everything up, which
  * compares no clocks), so a close WebKit refused now is retried by `tidy`. */
-function rememberRead(network, target, cutoff) {
-	const now = stamp();
+async function rememberRead(network, target, cutoff) {
+	const now = await stamp();
 	const name = target === READ_ALL ? READ_ALL : foldName(target || "");
 
 	return idbUpdate("reads", (prev) =>
@@ -1947,7 +1987,7 @@ async function showSafely(title, options) {
 	}
 
 	// Which copy under a tag is the newest (WebKit keeps them all; `tidy`).
-	options = {...options, data: {...(options.data || {}), shownAt: stamp()}};
+	options = {...options, data: {...(options.data || {}), shownAt: await stamp()}};
 
 	try {
 		await self.registration.showNotification(title, options);

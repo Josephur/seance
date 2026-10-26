@@ -359,6 +359,11 @@ interface HarnessOptions {
 	/** Stop the clock: time moves only by `advance` (shows and reads in the
 	 * same millisecond). */
 	freezeClock?: boolean;
+	/** Where a frozen clock stands (default: when the harness is made). */
+	clockAt?: number;
+	/** The registration's notifications, to share them with a restarted
+	 * worker (a new harness over the same registration). */
+	records?: Rec[];
 	/** The IndexedDB contents, to share one database between two workers
 	 * (every network's worker shares the origin's). */
 	kv?: Map<string, unknown>;
@@ -371,7 +376,7 @@ const SCOPE = "https://app.test/";
 
 function makeSW(options: HarnessOptions = {}): SWHarness {
 	const handlers: Record<string, Array<(ev: any) => void>> = {};
-	const records: Rec[] = [];
+	const records: Rec[] = options.records ?? [];
 	const shown: Rec[] = [];
 	const opened: string[] = [];
 	const kv = options.kv ?? new Map<string, unknown>();
@@ -382,7 +387,7 @@ function makeSW(options: HarnessOptions = {}): SWHarness {
 
 	const socketsBefore = wsInstances.length;
 	let offset = 0;
-	const frozenAt = Date.now();
+	const frozenAt = options.clockAt ?? Date.now();
 	const now = (): number => (options.freezeClock ? frozenAt : Date.now()) + offset;
 
 	class ShiftedDate extends Date {
@@ -1650,6 +1655,58 @@ describe("service worker push notifications under WebKit (every push shows)", fu
 			await fireMessage(sw, {type: "tidy"});
 
 			expect(live(sw).map((n) => n.body)).to.deep.equal(["unread"]);
+		});
+
+		it("a worker restart keeps shows and reads in order (the stamps outlive the counter)", async function () {
+			const at = Date.now();
+			const kv = new Map<string, unknown>();
+			const records: Rec[] = [];
+			const opts = {
+				userAgent: IOS_UA,
+				webkitNotifications: true,
+				freezeClock: true,
+				clockAt: at,
+				kv,
+				records,
+			};
+			const first = makeSW(opts);
+
+			await firePush(first, msgPayload("alice", "pushtest", "old"));
+			await fireMessage(first, {type: "tidy", all: true});
+
+			// The worker is stopped and started again in the same millisecond.
+			const second = makeSW(opts);
+			await firePush(second, msgPayload("bob", "pushtest", "unread"));
+			// A notification refuses its close on its own harness's clock.
+			first.advance(32000);
+			second.advance(32000);
+			await fireMessage(second, {type: "tidy"});
+
+			expect(live(second).map((n) => n.body)).to.deep.equal(["unread"]);
+		});
+
+		it("a read after a restart covers what the previous life showed in the same millisecond", async function () {
+			const at = Date.now();
+			const kv = new Map<string, unknown>();
+			const records: Rec[] = [];
+			const opts = {
+				userAgent: IOS_UA,
+				webkitNotifications: true,
+				freezeClock: true,
+				clockAt: at,
+				kv,
+				records,
+			};
+
+			const first = makeSW(opts);
+			await firePush(first, msgPayload("alice", "pushtest", "old"));
+			const second = makeSW(opts);
+			await fireMessage(second, {type: "read", target: "alice"});
+			first.advance(32000);
+			second.advance(32000);
+			await fireMessage(second, {type: "tidy"});
+
+			expect(live(second)).to.deep.equal([]);
 		});
 
 		it("a Chromium worker ignores tidy", async function () {

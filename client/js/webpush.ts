@@ -1592,10 +1592,21 @@ function tidyLater(
 	const pending = tidyTimers.get(key);
 
 	// Never push a tidy back: a steady stream of messages would otherwise
-	// postpone it for as long as the conversation runs.
+	// postpone it for as long as the conversation runs. One wanted sooner
+	// takes its place, and the one it displaces comes after it.
 	if (pending) {
-		if (due > pending.due) {
+		if (due >= pending.due) {
 			pending.later = Math.max(pending.later ?? 0, due);
+			return;
+		}
+
+		clearTimeout(pending.timer);
+		tidyTimers.delete(key);
+		tidyLater(key, worker, delay);
+		const replaced = tidyTimers.get(key);
+
+		if (replaced) {
+			replaced.later = Math.max(pending.later ?? 0, pending.due);
 		}
 
 		return;
