@@ -356,6 +356,9 @@ interface HarnessOptions {
 	 * the same tag (webpushd files each under its own UUID), and a close
 	 * within 30 s of the show is refused. */
 	webkitNotifications?: boolean;
+	/** Stop the clock: time moves only by `advance` (shows and reads in the
+	 * same millisecond). */
+	freezeClock?: boolean;
 	/** The IndexedDB contents, to share one database between two workers
 	 * (every network's worker shares the origin's). */
 	kv?: Map<string, unknown>;
@@ -379,7 +382,8 @@ function makeSW(options: HarnessOptions = {}): SWHarness {
 
 	const socketsBefore = wsInstances.length;
 	let offset = 0;
-	const now = (): number => Date.now() + offset;
+	const frozenAt = Date.now();
+	const now = (): number => (options.freezeClock ? frozenAt : Date.now()) + offset;
 
 	class ShiftedDate extends Date {
 		constructor(...args: any[]) {
@@ -1634,6 +1638,18 @@ describe("service worker push notifications under WebKit (every push shows)", fu
 
 			const reads = kv.get("reads") as Array<{network: string}>;
 			expect(reads.map((r) => r.network).sort()).to.deep.equal(["net-1", "net-2"]);
+		});
+
+		it("a message shown in the same millisecond as a read is not covered by it", async function () {
+			const sw = makeSW({userAgent: IOS_UA, webkitNotifications: true, freezeClock: true});
+
+			await firePush(sw, msgPayload("alice", "pushtest", "old"));
+			await fireMessage(sw, {type: "read", target: "alice"});
+			await firePush(sw, msgPayload("alice", "pushtest", "unread"));
+			sw.advance(32000);
+			await fireMessage(sw, {type: "tidy"});
+
+			expect(live(sw).map((n) => n.body)).to.deep.equal(["unread"]);
 		});
 
 		it("a Chromium worker ignores tidy", async function () {

@@ -485,6 +485,15 @@ function isStub(n) {
 // read (a close refused now succeeds on a later wake) and when the page asks
 // (`{type: "tidy"}`, sent once the 30 s have passed).
 
+let lastStamp = 0;
+
+/** A strictly increasing time for this worker's shows and reads: a show and
+ * a read in the same millisecond must still say which came first. */
+function stamp() {
+	lastStamp = Math.max(Date.now(), lastStamp + 1);
+	return lastStamp;
+}
+
 /** When a notification was shown (showSafely stamps it); 0 for one an older
  * worker showed, which is older than any this one did. */
 function shownAt(n) {
@@ -529,7 +538,7 @@ const READS_CAP = 50;
  * the server's message times; Infinity for a read of everything up, which
  * compares no clocks), so a close WebKit refused now is retried by `tidy`. */
 function rememberRead(network, target, cutoff) {
-	const now = Date.now();
+	const now = stamp();
 	const name = target === READ_ALL ? READ_ALL : foldName(target || "");
 
 	return idbUpdate("reads", (prev) =>
@@ -575,7 +584,7 @@ function readCovers(reads, n, network) {
 	return reads.some(
 		(r) =>
 			r.network === net &&
-			shownAt(n) <= r.at &&
+			shownAt(n) < r.at &&
 			(r.target === READ_ALL || r.target === target) &&
 			(isNaN(time) || time <= r.cutoff)
 	);
@@ -1938,7 +1947,7 @@ async function showSafely(title, options) {
 	}
 
 	// Which copy under a tag is the newest (WebKit keeps them all; `tidy`).
-	options = {...options, data: {...(options.data || {}), shownAt: Date.now()}};
+	options = {...options, data: {...(options.data || {}), shownAt: stamp()}};
 
 	try {
 		await self.registration.showNotification(title, options);

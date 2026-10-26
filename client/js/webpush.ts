@@ -1576,21 +1576,43 @@ const TIDY_AFTER_MS = 32_000;
 /** The same for a message the page took: its push reaches the worker later
  * than the message reaches the page, and its quiet stub's 30 s start then. */
 const TIDY_AFTER_PUSH_MS = 60_000;
-const tidyTimers = new Map<string, ReturnType<typeof setTimeout>>();
+/** Per key: the pending tidy's timer and due time, and the latest due time
+ * asked for since (served by a second tidy once the first has run). */
+const tidyTimers = new Map<
+	string,
+	{timer: ReturnType<typeof setTimeout>; due: number; later?: number}
+>();
 
 function tidyLater(
 	key: string,
 	worker: () => ServiceWorker | undefined | Promise<ServiceWorker | undefined>,
 	delay = TIDY_AFTER_MS
 ): void {
-	clearTimeout(tidyTimers.get(key));
-	tidyTimers.set(
-		key,
-		setTimeout(() => {
+	const due = Date.now() + delay;
+	const pending = tidyTimers.get(key);
+
+	// Never push a tidy back: a steady stream of messages would otherwise
+	// postpone it for as long as the conversation runs.
+	if (pending) {
+		if (due > pending.due) {
+			pending.later = Math.max(pending.later ?? 0, due);
+		}
+
+		return;
+	}
+
+	tidyTimers.set(key, {
+		due,
+		timer: setTimeout(() => {
+			const later = tidyTimers.get(key)?.later;
 			tidyTimers.delete(key);
 			void Promise.resolve(worker()).then((w) => w?.postMessage({type: "tidy"}));
-		}, delay)
-	);
+
+			if (later !== undefined) {
+				tidyLater(key, worker, Math.max(0, later - Date.now()));
+			}
+		}, delay),
+	});
 }
 
 /** A notification on `uuid`'s push worker was just closed, or a push for a
