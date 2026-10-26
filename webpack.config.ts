@@ -232,6 +232,14 @@ const config: webpack.Configuration = {
 	},
 	resolve: {
 		extensions: [".ts", ".js", ".vue"],
+		fallback: {
+			fs: false,
+			path: false,
+			os: false,
+			crypto: false,
+			readline: false,
+			child_process: false,
+		},
 	},
 	module: {
 		rules: [

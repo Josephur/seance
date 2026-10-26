@@ -21,7 +21,7 @@ import {
 } from "./helpers/linkTarget";
 import * as saved from "./irc/saved-networks";
 import type {SavedNetwork} from "./irc/saved-networks";
-import {parseJoinList} from "./irc/client";
+import {parseJoinList, type IrcClient} from "./irc/client";
 import {ChanState} from "../../shared/types/chan";
 import socket from "./socket";
 import {loadMentions} from "./mentions";
@@ -37,8 +37,10 @@ import {followSystemAccessibility} from "./helpers/systemAccessibility";
 import {lowerStatusBarTintAfterLaunch} from "./helpers/statusBarTint";
 import {onLaunch, openInstallGuideAtStart} from "./pwa";
 import dnd from "./dnd";
+import {setContextProvider, scriptManager} from "./irc/scripting/manager";
+import {MessageType} from "../../shared/types/msg";
 // Also registers the IRC layer's bus handlers (input, names, more, network:*).
-import {autoconnectSavedNetworks, clientForNetwork, createNetwork} from "./irc/manager";
+import {allClients, autoconnectSavedNetworks, clientForNetwork, createNetwork} from "./irc/manager";
 
 declare global {
 	interface Window {
@@ -116,6 +118,90 @@ export async function boot(): Promise<void> {
 	// After the stored settings, before any network dials: the first AWAY *
 	// decision already knows about do-not-disturb.
 	dnd.start();
+
+	setContextProvider({
+		getContext() {
+			const active = store.state.activeChannel;
+			return {
+				channel: active?.channel.name ?? "",
+				network: active?.network.name ?? "",
+				nick: active?.network.nick ?? "",
+			};
+		},
+		send(line, networkUuid) {
+			let client: IrcClient | undefined;
+
+			if (networkUuid) {
+				client = clientForNetwork(networkUuid);
+			} else {
+				const active = store.state.activeChannel;
+
+				if (active) {
+					client = clientForNetwork(active.network.uuid);
+				}
+			}
+
+			if (!client) {
+				const clients = allClients();
+				client = clients[0];
+			}
+
+			if (client && client.isConnected) {
+				client.send(line);
+			}
+		},
+		reply(msg, text) {
+			const target =
+				msg.target.startsWith("#") || msg.target.startsWith("&") ? msg.target : msg.from;
+
+			if (!target || !text) {
+				return;
+			}
+
+			let client: IrcClient | undefined;
+
+			for (const c of allClients()) {
+				if (c.name.toLowerCase() === msg.network.toLowerCase()) {
+					client = c;
+					break;
+				}
+			}
+
+			if (!client) {
+				const active = store.state.activeChannel;
+
+				if (active) {
+					client = clientForNetwork(active.network.uuid);
+				}
+			}
+
+			if (client && client.isConnected) {
+				client.send(`PRIVMSG ${target} :${text}`);
+			}
+		},
+		print(text) {
+			const active = store.state.activeChannel;
+
+			if (!active) {
+				return;
+			}
+
+			const client = clientForNetwork(active.network.uuid);
+
+			if (!client) {
+				return;
+			}
+
+			const chan = client.findChannel(active.channel.name) ?? client.lobby;
+			client.pushMessage(chan, {
+				type: MessageType.MESSAGE,
+				text,
+				from: {nick: "lua", mode: ""},
+			});
+		},
+	});
+
+	void scriptManager.init();
 
 	store.commit("appLoaded");
 

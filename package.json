@@ -45,6 +45,7 @@
     "./public/**"
   ],
   "dependencies": {
+    "fengari": "0.1.5",
     "flourite": "1.3.0",
     "got": "11.8.6",
     "katex": "0.16.22",

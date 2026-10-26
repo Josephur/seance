@@ -322,8 +322,8 @@
 				</label>
 				<label class="opt">
 					<input
-						:checked="store.state.settings.psPauseWhenAway"
 						v-switch
+						:checked="store.state.settings.psPauseWhenAway"
 						type="checkbox"
 						name="psPauseWhenAway"
 					/>
@@ -346,8 +346,8 @@
 			<div role="group" aria-labelledby="label-ps-layout" class="scene-motion-options">
 				<label class="opt">
 					<input
-						:checked="store.state.settings.psGroupMessages"
 						v-switch
+						:checked="store.state.settings.psGroupMessages"
 						type="checkbox"
 						name="psGroupMessages"
 					/>

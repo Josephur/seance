@@ -16,6 +16,7 @@ import AppearanceSettings from "../components/Settings/Appearance.vue";
 import GeneralSettings from "../components/Settings/General.vue";
 import NotificationSettings from "../components/Settings/Notifications.vue";
 import AliasSettings from "../components/Settings/Aliases.vue";
+import ScriptSettings from "../components/Settings/Scripts.vue";
 import NetworkSettings from "../components/Settings/Networks.vue";
 import {ClientChan} from "./types";
 import {shouldShowGeneralSettings} from "./helpers/settingsTabs";
@@ -80,6 +81,11 @@ const router = createRouter({
 					name: "Aliases",
 					path: "aliases",
 					component: AliasSettings,
+				},
+				{
+					name: "Scripts",
+					path: "scripts",
+					component: ScriptSettings,
 				},
 			],
 		},

@@ -41,12 +41,16 @@ export const BACKUP_KEYS: readonly string[] = [
 	"thelounge.media.trusted",
 	"thelounge.reactions.recent",
 	"thelounge.aliases",
+	"thelounge.scripts",
 	"thelounge.oper",
 	"thelounge.dnd",
 ];
 
 /** Key prefixes the backup carries: one entry per network. */
-export const BACKUP_PREFIXES: readonly string[] = ["thelounge.ignore."];
+export const BACKUP_PREFIXES: readonly string[] = [
+	"thelounge.ignore.",
+	"thelounge.script_storage.",
+];
 
 export interface SettingsBackup {
 	format: typeof FORMAT;

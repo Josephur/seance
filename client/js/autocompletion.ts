@@ -9,6 +9,7 @@ import fuzzy from "fuzzy";
 import emojiMap from "./helpers/simplemap.json";
 import {fuzzyHtml} from "./helpers/fuzzyHtml";
 import {aliasNames} from "./helpers/aliases";
+import {scriptManager} from "./irc/scripting/manager";
 import {store} from "./store";
 import {ChanType} from "../../shared/types/chan";
 
@@ -312,7 +313,7 @@ function completeNicks(word: string, isFuzzy: boolean) {
 function getCommands() {
 	let cmds = constants.commands.slice();
 
-	for (const name of aliasNames()) {
+	for (const name of aliasNames().concat(scriptManager.getCommandNames())) {
 		const cmd = `/${name}`;
 
 		if (!cmds.includes(cmd)) {
