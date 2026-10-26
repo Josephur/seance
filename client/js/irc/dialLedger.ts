@@ -46,6 +46,16 @@ export interface ThrottleRule {
 /** nefarious2's defaults (`ircd_features.c`). */
 export const NEFARIOUS_RULE: ThrottleRule = {limit: 4, periodMs: 40_000, marginMs: 1_000};
 
+/**
+ * What the gate holds a dial to: one connection more than nefarious2's
+ * default lets in. Networks set their own limit, often looser (AfterNET's
+ * felt so), and waiting up to 42 s in front of a server that would have let
+ * the dial in is the worse mistake: guessing one too many costs a single
+ * refused dial, after which the record holds the default's whole chain and
+ * the gate waits it out as before.
+ */
+export const GATE_RULE: ThrottleRule = {...NEFARIOUS_RULE, limit: NEFARIOUS_RULE.limit + 1};
+
 export interface DialGate {
 	/** How long to wait before a dial at `now` would be accepted; 0 = dial now. */
 	waitMs(now: number): number;
@@ -131,7 +141,7 @@ function hostRecord(value: unknown): HostRecord {
 
 /** The gate for one server host, over the shared record. */
 export function dialGateFor(host: string): DialGate {
-	const rule = NEFARIOUS_RULE;
+	const rule = GATE_RULE;
 	const key = host.toLowerCase();
 	const read = () => hostRecord(readRecord(backend.get(STORAGE_KEY))[key]);
 

@@ -11,8 +11,9 @@
 // The dev ircd's own throttle is relaxed (100 / 1 s / 1 s), so nothing here
 // is refused by the server: what is checked is the client's ledger. The
 // page's WebSocket constructor is wrapped to count dials. After /disconnect,
-// three dials are written into `thelounge.state.dials` as if the app had
-// been reopened three times in quick succession; then:
+// four dials are written into `thelounge.state.dials` as if the app had
+// been reopened four times in quick succession (the gate lets in one more
+// than nefarious2's default of four); then:
 //  - the strip's Connect waits, with the throttle wording and a countdown;
 //  - "Connect now" during the wait waits too, and no socket is opened;
 //  - when the countdown ends, exactly one dial goes out and the network
@@ -67,7 +68,7 @@ export default async function run(page) {
 	await page.evaluate(
 		`localStorage.setItem(${JSON.stringify(
 			KEY
-		)}, JSON.stringify({localhost: {d: [Date.now() - 30000, Date.now() - 25000, Date.now() - 20000], c: []}}))`
+		)}, JSON.stringify({localhost: {d: [Date.now() - 35000, Date.now() - 30000, Date.now() - 25000, Date.now() - 20000], c: []}}))`
 	);
 	const before = await page.evaluate("window.__dials");
 

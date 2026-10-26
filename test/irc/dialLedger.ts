@@ -104,7 +104,8 @@ describe("dial ledger (irc/dialLedger.ts)", function () {
 			a.record(0);
 			b.record(10 * S);
 			a.record(20 * S);
-			expect(b.waitMs(30 * S)).to.equal(32 * S);
+			b.record(30 * S);
+			expect(b.waitMs(35 * S)).to.equal(37 * S);
 			expect(dialGateFor("other.example").waitMs(30 * S)).to.equal(0);
 		});
 
@@ -112,7 +113,18 @@ describe("dial ledger (irc/dialLedger.ts)", function () {
 			dialGateFor("irc.example").record(0);
 			dialGateFor("irc.example").record(10 * S);
 			dialGateFor("irc.example").record(20 * S);
-			expect(dialGateFor("irc.example").waitMs(30 * S)).to.equal(32 * S);
+			dialGateFor("irc.example").record(30 * S);
+			expect(dialGateFor("irc.example").waitMs(35 * S)).to.equal(37 * S);
+		});
+
+		it("lets in one dial more than nefarious2's default, then waits", function () {
+			const gate = dialGateFor("irc.example");
+			gate.record(0);
+			gate.record(10 * S);
+			gate.record(20 * S);
+			expect(gate.waitMs(30 * S), "the fourth may try").to.equal(0);
+			gate.record(30 * S);
+			expect(gate.waitMs(31 * S), "the fifth waits").to.equal(41 * S);
 		});
 
 		it("prunes dials too old to matter", function () {
@@ -139,7 +151,8 @@ describe("dial ledger (irc/dialLedger.ts)", function () {
 			gate.closed(90 * S);
 			gate.record(120 * S);
 			gate.closed(150 * S);
-			expect(dialGateFor("irc.example").waitMs(180 * S)).to.equal(12 * S);
+			gate.record(165 * S);
+			expect(dialGateFor("irc.example").waitMs(180 * S)).to.equal(27 * S);
 		});
 
 		it("survives a broken record", function () {

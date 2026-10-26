@@ -36,6 +36,13 @@ lockout of a minute and a half where 42 s of quiet would have done.
 
 ## What the client does now
 
+The gate assumes one connection more than nefarious2's default lets in
+(`GATE_RULE`, limit 5 over the default's 4, 2026-10-26): networks set their
+own limit, AfterNET's felt looser, and a 20–40 s wait in front of a server
+that would have accepted the dial annoyed more than the cost of guessing one
+too many — a single refused dial, after which the record holds the default's
+whole chain and the gate waits it out.
+
 `client/js/irc/dialLedger.ts` keeps this device's dials, and when each ended,
 per server host in `thelounge.state.dials`, so a reloaded or reopened app and
 its other tabs share the record. IPcheck counts a connection at the TCP
