@@ -1862,6 +1862,69 @@ describe("service worker subscription renewal", function () {
 	});
 });
 
+describe("service worker push log", function () {
+	// The worker writes what it did with each push into IndexedDB
+	// (`pushlog`), for Settings → Notifications → Diagnostics: the one way to
+	// read a device nobody debugging it can hold.
+	const IOS_UA =
+		"Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148";
+
+	function log(sw: SWHarness): string[] {
+		const entries = sw.kv.get("pushlog");
+		return Array.isArray(entries) ? (entries as string[]) : [];
+	}
+
+	it("records each push with its outcome and whether it showed", async function () {
+		const sw = makeSW({userAgent: IOS_UA});
+
+		await firePush(sw, msgPayload("alice", "pushtest", "hello there"));
+		await firePush(sw, `{"t":"read","target":"alice","ts":"${new Date().toISOString()}"}`);
+		await firePush(sw, "garbage that parses as nothing");
+
+		const lines = log(sw);
+		expect(lines).to.have.lengthOf(3);
+		expect(lines[0]).to.match(/ push message PRIVMSG alice bytes=\d+ strict=true shown=1$/);
+		expect(lines[1]).to.match(/ push read-relay alice bytes=\d+ strict=true shown=1$/);
+		expect(lines[2]).to.match(/ push generic bytes=\d+ strict=true shown=1$/);
+		expect(lines[0]).to.match(/^\d{4}-\d{2}-\d{2}T/);
+	});
+
+	it("records a push the lenient worker dropped as shown=0", async function () {
+		const sw = makeSW();
+		const msgid = "BjAAAaBjzZ0";
+
+		sw.kv.set("seen", [msgid]);
+		await firePush(sw, msgPayload("alice", "pushtest", "hello there", msgid));
+
+		expect(log(sw)[0]).to.match(/ push message PRIVMSG alice bytes=\d+ strict=false shown=0$/);
+	});
+
+	it("records the worker's activation with its build and network", async function () {
+		const sw = makeSW({scope: `${SCOPE}push/net-1/`});
+		const waited: Array<Promise<unknown>> = [];
+
+		for (const handler of sw.handlers.activate ?? []) {
+			handler({waitUntil: (p: Promise<unknown>) => waited.push(p)});
+		}
+
+		await Promise.all(waited);
+
+		expect(log(sw)).to.have.lengthOf(1);
+		expect(log(sw)[0]).to.match(/ activate build=__HASH__ network=net-1$/);
+	});
+
+	it("records a click with its action and tag", async function () {
+		const sw = makeSW();
+		const rec = await pushed(sw);
+
+		await fireClick(sw, rec, "markread");
+
+		expect(
+			log(sw).some((line) => / click action=markread tag=push-net-1\/alice$/.test(line))
+		).to.equal(true);
+	});
+});
+
 describe("service worker build announcement", function () {
 	/** Fire the worker's `activate` and settle everything it waited on. */
 	async function activate(sw: SWHarness): Promise<void> {

@@ -102,6 +102,10 @@ self.addEventListener("install", function (event) {
 });
 
 self.addEventListener("activate", function (event) {
+	event.waitUntil(
+		logPush("activate build=" + cacheName + (pushOnly ? " network=" + scopeNetwork : " root"))
+	);
+
 	if (pushOnly) {
 		// The cache belongs to the root worker; a push-only one of another
 		// build must not sweep it, and there are no clients to claim.
@@ -1148,6 +1152,25 @@ let pushChain = Promise.resolve();
  * shown, so its deadline knows it has answered WebKit. */
 let activePush = null;
 
+/** The worker's own account of what it did — each push and its outcome,
+ * a show that failed, a subscription change, an activation — kept in
+ * IndexedDB (`pushlog`, newest last) for Settings → Notifications →
+ * Diagnostics (webpush.ts `diagnostics`): the one way to learn what happened
+ * on a device nobody debugging it can hold. Never awaited ahead of a
+ * notification that must still be shown. */
+const PUSH_LOG_CAP = 40;
+/** Notifications shown so far (showSafely): a push's outcome line says
+ * whether it showed one. */
+let notificationsShown = 0;
+
+async function logPush(text) {
+	try {
+		await idbAppend("pushlog", new Date().toISOString() + " " + text, PUSH_LOG_CAP);
+	} catch (e) {
+		// no storage, no log
+	}
+}
+
 function handlePush(raw) {
 	if (!strictUserVisible()) {
 		return enqueuePush(() => handlePushNow(raw));
@@ -1344,6 +1367,8 @@ function fromJson(json) {
 }
 
 async function handlePushNow(raw, state = {fellBack: false}) {
+	const before = notificationsShown;
+	let outcome = "unparsed";
 	let json = null;
 
 	// RFC 8188 says the decrypter strips the aes128gcm padding delimiter
@@ -1369,6 +1394,7 @@ async function handlePushNow(raw, state = {fellBack: false}) {
 
 		// Another device read a channel (JSON opt-down tier): close what we show for it.
 		if (json && json.t === "read") {
+			outcome = "read-relay " + json.target;
 			await readRelay(json.target, json.ts, strict);
 			return;
 		}
@@ -1378,19 +1404,29 @@ async function handlePushNow(raw, state = {fellBack: false}) {
 
 		// The same relay as a MARKREAD line (the full tier).
 		if (parsed && parsed.command === "MARKREAD") {
+			outcome = "read-relay " + parsed.target;
 			await readRelay(parsed.target, parsed.timestamp, strict);
 			return;
 		}
 
 		if (parsed && (parsed.command === "PRIVMSG" || parsed.command === "NOTICE")) {
+			// The conversation, as the notification is tagged: the sender of a PM.
+			outcome =
+				"message " +
+				parsed.command +
+				" " +
+				(isChannelName(parsed.target) ? parsed.target : parsed.nick);
 			await showMessage(P, parsed, true, strict);
 			return;
 		}
 
 		// userVisibleOnly means every push should surface something.
+		outcome = "generic";
 		await showGeneric();
 		await updateBadge();
 	} catch (e) {
+		outcome = "error " + ((e && e.name) || "Error") + ": " + ((e && e.message) || e);
+
 		// The deadline's fallback already stands for this push: a second
 		// generic would be a second alert for it.
 		if (!state.fellBack) {
@@ -1398,6 +1434,18 @@ async function handlePushNow(raw, state = {fellBack: false}) {
 		}
 
 		await updateBadge().catch(() => undefined);
+	} finally {
+		await logPush(
+			"push " +
+				outcome +
+				" bytes=" +
+				raw.length +
+				" strict=" +
+				strict +
+				" shown=" +
+				(notificationsShown - before) +
+				(state.fellBack ? " fellBack" : "")
+		);
 	}
 }
 
@@ -1731,11 +1779,14 @@ async function showSafely(title, options) {
 		activePush.shown = true;
 	}
 
+	let failure = null;
+
 	try {
 		await self.registration.showNotification(title, options);
+		notificationsShown++;
 		return;
 	} catch (e) {
-		// fall through to the reduced forms
+		failure = e; // fall through to the reduced forms
 	}
 
 	try {
@@ -1744,15 +1795,24 @@ async function showSafely(title, options) {
 			body: options.body,
 			silent: options.silent === true,
 		});
+		notificationsShown++;
 		return;
 	} catch (e) {
-		// fall through to the bare form
+		failure = e; // fall through to the bare form
 	}
 
 	try {
 		await self.registration.showNotification(title, {});
+		notificationsShown++;
 	} catch (e) {
-		// nothing else to try
+		// nothing else to try: say so where the page can read it
+		failure = e;
+		void logPush(
+			"show failed " +
+				((failure && failure.name) || "Error") +
+				": " +
+				((failure && failure.message) || failure)
+		);
 	}
 }
 
@@ -1838,7 +1898,14 @@ function parsePushLine(line) {
 // connection; when credentials are not stashed, ask any open page to redo it
 // from the UI instead.
 self.addEventListener("pushsubscriptionchange", function (event) {
-	event.waitUntil(handleResubscribe(event.oldSubscription, event.newSubscription));
+	event.waitUntil(
+		logPush(
+			"pushsubscriptionchange old=" +
+				Boolean(event.oldSubscription) +
+				" new=" +
+				Boolean(event.newSubscription)
+		).then(() => handleResubscribe(event.oldSubscription, event.newSubscription))
+	);
 });
 
 async function handleResubscribe(oldSub, newSub) {
@@ -2089,6 +2156,10 @@ async function doneWith(data) {
 
 self.addEventListener("notificationclick", function (event) {
 	const data = event.notification.data || {};
+
+	void logPush(
+		"click action=" + (event.action || "open") + " tag=" + (event.notification.tag || "")
+	);
 
 	// Reply: an inline text field where the platform has one (event.reply),
 	// a plain button elsewhere — that one opens the conversation to type in.
