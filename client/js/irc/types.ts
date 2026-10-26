@@ -71,6 +71,9 @@ export type Handler = (client: IrcClient, msg: IrcMessage) => void;
 export interface InputOptions {
 	reply?: string;
 	edit?: string;
+	/** Run by the client, not typed or clicked (a network's saved commands
+	 * after every registration): never counts as the user asking. */
+	auto?: boolean;
 }
 
 /** The channel (or lobby/query) an input line was typed into. */

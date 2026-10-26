@@ -41,6 +41,11 @@ const COUNT_DIALS = `(() => {
 	window.WebSocket = Counted;
 })()`;
 
+/** Four recent dials on record, as if the app had been reopened four times. */
+const SEED = `localStorage.setItem(${JSON.stringify(
+	KEY
+)}, JSON.stringify({localhost: {d: [Date.now() - 35000, Date.now() - 30000, Date.now() - 25000, Date.now() - 20000], c: []}}))`;
+
 const LABEL = `document.querySelector(".connection-bar-label")?.textContent ?? ""`;
 const BAR_GONE = `!document.querySelector(".connection-bar")`;
 
@@ -65,11 +70,7 @@ export default async function run(page) {
 	await page.waitFor(`document.querySelector("#input")`, {label: "the input"});
 	await page.sleep(1500);
 
-	await page.evaluate(
-		`localStorage.setItem(${JSON.stringify(
-			KEY
-		)}, JSON.stringify({localhost: {d: [Date.now() - 35000, Date.now() - 30000, Date.now() - 25000, Date.now() - 20000], c: []}}))`
-	);
+	await page.evaluate(SEED);
 	const before = await page.evaluate("window.__dials");
 	// Lost under the client: the transport's own retry asks the gate.
 	await page.evaluate("window.__lastWs.close()");
@@ -103,6 +104,33 @@ export default async function run(page) {
 		(await page.evaluate("window.__dials")) === before + 1
 	);
 	await page.waitFor(BAR_GONE, {timeout: 15000, label: "registered after Connect now"});
+
+	// The same wait again, answered from the sidebar's status icon: during a
+	// retry's wait it dials (it cancels only a dial in flight).
+	await page.sleep(1000);
+	await page.evaluate(SEED);
+	const beforeIcon = await page.evaluate("window.__dials");
+	await page.evaluate("window.__lastWs.close()");
+	await page.waitFor(`/the server limits/.test(${LABEL})`, {
+		timeout: 10000,
+		label: "the retry waits again",
+	});
+	const iconLabel = await page.evaluate(
+		`document.querySelector(".connection-status-icon")?.getAttribute("aria-label") ?? ""`
+	);
+	await page.check(
+		`the sidebar's status icon offers to connect now ("${iconLabel}")`,
+		/connect now/.test(iconLabel)
+	);
+	// Synthetic: on the phone layout the sidebar is closed, and what is
+	// checked is what the icon does, not the drawer.
+	await page.evaluate(`document.querySelector(".connection-status-icon").click()`);
+	await page.sleep(300);
+	await page.check(
+		"the sidebar's status icon dials during the wait",
+		(await page.evaluate("window.__dials")) === beforeIcon + 1
+	);
+	await page.waitFor(BAR_GONE, {timeout: 15000, label: "registered after the icon"});
 
 	await page.sleep(1000);
 	await disconnect(page);

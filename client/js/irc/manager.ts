@@ -423,7 +423,7 @@ socket.on("network:status", ({network, connected}) => {
 
 	if (client && client.isConnected) {
 		for (const command of commands) {
-			client.input(client.lobby.id, command);
+			client.input(client.lobby.id, command, {auto: true});
 		}
 	}
 });
