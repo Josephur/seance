@@ -702,8 +702,9 @@ export class IrcClient {
 
 	// ------------------------------------------------------------ lifecycle
 
-	/** Announce the network to the UI (first call only) and open the transport. */
-	connect(): void {
+	/** Announce the network to the UI (first call only) and open the
+	 * transport; `force` (the user asked) dials even into the throttle. */
+	connect(opts: {force?: boolean} = {}): void {
 		if (!this.announced) {
 			this.announced = true;
 			this.bus.dispatch("network", {network: this.network});
@@ -729,7 +730,7 @@ export class IrcClient {
 			{text: `Connecting to ${this.options.host}:${this.options.port}…`},
 			true
 		);
-		this.transport.connect();
+		this.transport.connect(opts);
 	}
 
 	/**

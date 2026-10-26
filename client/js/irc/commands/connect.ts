@@ -29,7 +29,9 @@ const connect: Command = {
 				return;
 			}
 
-			client.connect();
+			// Typed or clicked ("Connect now"): the user asked, so it dials
+			// even while the server's throttle would refuse it.
+			client.connect({force: true});
 			return;
 		}
 
