@@ -1525,6 +1525,11 @@ socket.on("init", async () => {
 					n.close();
 				}
 			}
+
+			// WebKit refuses those closes for a notification under 30 s old:
+			// the worker remembers the opening and closes them later.
+			registration.active?.postMessage({type: "tidy", all: true});
+			tidyLater(registration.scope, () => registration.active ?? undefined);
 		}
 
 		await idbSet("badge", {});
@@ -1560,6 +1565,43 @@ function readOnWorker(uuid: string, target: string): void {
 	}
 
 	void pushWorkerFor(uuid).then((worker) => worker?.postMessage({type: "read", target}));
+	tidySoon(uuid);
+}
+
+/** WebKit refuses a close within 30 s of a show and replaces nothing by
+ * tag, so a read can leave a notification up beside the read stub that
+ * followed it (service-worker.js `tidy`); once that time has passed, the
+ * worker is asked to close what is left. */
+const TIDY_AFTER_MS = 32_000;
+/** The same for a message the page took: its push reaches the worker later
+ * than the message reaches the page, and its quiet stub's 30 s start then. */
+const TIDY_AFTER_PUSH_MS = 60_000;
+const tidyTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function tidyLater(
+	key: string,
+	worker: () => ServiceWorker | undefined | Promise<ServiceWorker | undefined>,
+	delay = TIDY_AFTER_MS
+): void {
+	clearTimeout(tidyTimers.get(key));
+	tidyTimers.set(
+		key,
+		setTimeout(() => {
+			tidyTimers.delete(key);
+			void Promise.resolve(worker()).then((w) => w?.postMessage({type: "tidy"}));
+		}, delay)
+	);
+}
+
+/** A notification on `uuid`'s push worker was just closed, or a push for a
+ * message the page took is showing quietly there: tidy it once WebKit lets
+ * the closes through. */
+function tidySoon(uuid: string, delay = TIDY_AFTER_MS): void {
+	if (pushBackend() === "native" || !workerPush() || subs[uuid] === undefined) {
+		return;
+	}
+
+	tidyLater(uuid, () => pushWorkerFor(uuid), delay);
 }
 
 /** The open conversation, when the user can see it. */
@@ -1754,6 +1796,8 @@ export default {
 	notifyOn,
 	pushWorkerFor,
 	recordSeenOnShell,
+	tidySoon,
+	TIDY_AFTER_PUSH_MS,
 	pushPrompt,
 	answerPrompt,
 };

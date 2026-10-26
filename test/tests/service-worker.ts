@@ -324,6 +324,8 @@ interface SWHarness {
 	sentBySocket(): string[][];
 	/** When each socket opened and sent its QUIT, on one clock. */
 	socketTimeline(): {bornAt: number; quitAt: number | null}[];
+	/** Move the worker's and the notifications' clock forward. */
+	advance(ms: number): void;
 }
 
 interface HarnessOptions {
@@ -350,6 +352,13 @@ interface HarnessOptions {
 	/** Refuse `close()` on a notification shown under 30 s ago, as WebKit does
 	 * (bug 309940). */
 	refuseYoungClose?: boolean;
+	/** WebKit's notifications as they are: a show never replaces one under
+	 * the same tag (webpushd files each under its own UUID), and a close
+	 * within 30 s of the show is refused. */
+	webkitNotifications?: boolean;
+	/** The IndexedDB contents, to share one database between two workers
+	 * (every network's worker shares the origin's). */
+	kv?: Map<string, unknown>;
 	/** Hold every `indexedDB.open` until this settles: storage that is slow,
 	 * not stalled (or, if it rejects, that fails once it answers). */
 	idbGate?: Promise<void>;
@@ -362,8 +371,31 @@ function makeSW(options: HarnessOptions = {}): SWHarness {
 	const records: Rec[] = [];
 	const shown: Rec[] = [];
 	const opened: string[] = [];
-	const kv = new Map<string, unknown>([["stash", options.stash ?? STASH]]);
+	const kv = options.kv ?? new Map<string, unknown>();
+
+	if (!kv.has("stash")) {
+		kv.set("stash", options.stash ?? STASH);
+	}
+
 	const socketsBefore = wsInstances.length;
+	let offset = 0;
+	const now = (): number => Date.now() + offset;
+
+	class ShiftedDate extends Date {
+		constructor(...args: any[]) {
+			if (args.length) {
+				super(...(args as [number]));
+			} else {
+				super(now());
+			}
+		}
+
+		static now(): number {
+			return now();
+		}
+	}
+
+	const webkit = options.webkitNotifications === true;
 
 	class HarnessWS extends FakeWS {
 		constructor(url: string, protocol?: string) {
@@ -373,6 +405,7 @@ function makeSW(options: HarnessOptions = {}): SWHarness {
 
 	const sandbox: any = {
 		console,
+		Date: ShiftedDate,
 		setTimeout: options.fastTimers
 			? (fn: () => void, ms = 0) => setTimeout(fn, ms / 100)
 			: setTimeout,
@@ -407,7 +440,7 @@ function makeSW(options: HarnessOptions = {}): SWHarness {
 				// silently rather than showing a second one; mirror that here
 				// so the worker's tag-based merge (no explicit close-then-show)
 				// behaves the same under test as in a browser.
-				if (opts.tag) {
+				if (opts.tag && !webkit) {
 					for (const n of records) {
 						if (!n.closed && n.tag === opts.tag) {
 							n.closed = true;
@@ -423,10 +456,10 @@ function makeSW(options: HarnessOptions = {}): SWHarness {
 					actions: opts.actions,
 					silent: opts.silent,
 					renotify: opts.renotify,
-					shownAt: Date.now(),
+					shownAt: now(),
 					closed: false,
 					close() {
-						if (options.refuseYoungClose && Date.now() - rec.shownAt! < 30000) {
+						if ((options.refuseYoungClose || webkit) && now() - rec.shownAt! < 30000) {
 							return;
 						}
 
@@ -487,8 +520,13 @@ function makeSW(options: HarnessOptions = {}): SWHarness {
 							const tx: FakeReq = {};
 							const store = {
 								get(key: string) {
-									const r: FakeReq = {result: kv.get(key)};
+									const r: FakeReq = {};
+									// Read when it completes: a readwrite
+									// transaction's get and put run before
+									// the next one's, as IndexedDB serialises
+									// them.
 									queueMicrotask(() => {
+										r.result = kv.get(key);
 										r.onsuccess?.();
 									});
 									return r;
@@ -561,6 +599,9 @@ function makeSW(options: HarnessOptions = {}): SWHarness {
 		sentBySocket: (): string[][] => wsInstances.slice(socketsBefore).map((w) => w.sent),
 		socketTimeline: () =>
 			wsInstances.slice(socketsBefore).map((w) => ({bornAt: w.bornAt, quitAt: w.quitAt})),
+		advance(ms: number): void {
+			offset += ms;
+		},
 	};
 }
 
@@ -1163,6 +1204,9 @@ describe("service worker push notifications under WebKit (every push shows)", fu
 			sw,
 			`{"t":"read","target":"alice","ts":"${new Date(Date.now() + 5000).toISOString()}"}`
 		);
+		// Later than the read (the fixture's message time is fixed, so the
+		// show time is what tells it from what the read covered).
+		sw.advance(1);
 		await firePush(sw, msgPayload("alice", "pushtest", "and again"));
 
 		const live = sw.records.filter((n) => !n.closed);
@@ -1422,6 +1466,184 @@ describe("service worker push notifications under WebKit (every push shows)", fu
 		expect(sw.shown[0].tag).to.equal("push-net-1/alice");
 		expect(sw.shown[1].tag).to.equal("push-net-1/alice");
 		expect(sw.shown[1].title).to.not.include("alice");
+	});
+
+	describe("as WebKit shows them (no tag replacement, no close under 30 s)", function () {
+		const live = (sw: SWHarness): Rec[] => sw.records.filter((n) => !n.closed);
+		const soon = (): string => new Date(Date.now() + 5000).toISOString();
+
+		it("a conversation read on this phone within 30 s leaves nothing once the page tidies", async function () {
+			const sw = makeSW({userAgent: IOS_UA, webkitNotifications: true});
+
+			await firePush(sw, msgPayload("keeki", "#linux", "push works too"));
+			// The page read it (its close refused: the message is seconds
+			// old), then the server's relay came back to this device.
+			await fireMessage(sw, {type: "read", target: "#linux"});
+			await firePush(sw, `{"t":"read","target":"#linux","ts":"${soon()}"}`);
+
+			expect(
+				live(sw).map((n) => n.data.kind),
+				"both up while WebKit refuses the closes (the screenshot)"
+			).to.have.members(["push", "read"]);
+
+			sw.advance(32000);
+			await fireMessage(sw, {type: "tidy"});
+
+			expect(live(sw), "the message and the stub are gone").to.deep.equal([]);
+		});
+
+		it("a read on another device closes an old message at once and its stub on a later tidy", async function () {
+			const sw = makeSW({userAgent: IOS_UA, webkitNotifications: true});
+
+			await firePush(sw, msgPayload("keeki", "#linux", "hello"));
+			sw.advance(60000);
+			await firePush(sw, `{"t":"read","target":"#linux","ts":"${soon()}"}`);
+
+			expect(live(sw).map((n) => n.data.kind)).to.deep.equal(["read"]);
+
+			sw.advance(32000);
+			await fireMessage(sw, {type: "tidy"});
+			expect(live(sw)).to.deep.equal([]);
+		});
+
+		it("a refused close is retried by the next push even without the page", async function () {
+			const sw = makeSW({userAgent: IOS_UA, webkitNotifications: true});
+
+			await firePush(sw, msgPayload("keeki", "#linux", "hello"));
+			await firePush(sw, `{"t":"read","target":"#linux","ts":"${soon()}"}`);
+			sw.advance(32000);
+			await firePush(sw, msgPayload("bob", "pushtest", "later"));
+
+			expect(live(sw).map((n) => n.data.from)).to.deep.equal(["bob"]);
+		});
+
+		it("a second message merges into the newest copy and the older one goes", async function () {
+			const sw = makeSW({userAgent: IOS_UA, webkitNotifications: true});
+
+			await firePush(sw, msgPayload("alice", "pushtest", "one", "m1"));
+			sw.advance(40000);
+			await firePush(sw, msgPayload("alice", "pushtest", "two", "m2"));
+			sw.advance(40000);
+			await firePush(sw, msgPayload("alice", "pushtest", "three", "m3"));
+
+			const up = live(sw);
+			expect(up).to.have.lengthOf(1);
+			expect(up[0].data.count).to.equal(3);
+			expect(up[0].data.messages!.map((m) => m.text)).to.deep.equal(["one", "two", "three"]);
+		});
+
+		it("the badge counts only the newest copy under a tag", async function () {
+			const badges: number[] = [];
+			const sw = makeSW({userAgent: IOS_UA, webkitNotifications: true});
+
+			sw.sandbox.navigator.setAppBadge = (n: number) => badges.push(n);
+			await firePush(sw, msgPayload("alice", "pushtest", "one", "m1"));
+			await firePush(sw, msgPayload("alice", "pushtest", "two", "m2"));
+
+			expect(live(sw), "the first copy is too young to close").to.have.lengthOf(2);
+			expect(badges[badges.length - 1]).to.equal(2);
+		});
+
+		it("opening the app (tidy all) closes what was up before it, not what came after", async function () {
+			const sw = makeSW({userAgent: IOS_UA, webkitNotifications: true});
+
+			await firePush(sw, msgPayload("alice", "pushtest", "before"));
+			await fireMessage(sw, {type: "tidy", all: true});
+			sw.advance(1000);
+			await firePush(sw, msgPayload("bob", "pushtest", "after"));
+			sw.advance(32000);
+			await fireMessage(sw, {type: "tidy"});
+
+			expect(live(sw).map((n) => n.data.from)).to.deep.equal(["bob"]);
+		});
+
+		it("a page read covers a message whose server time is ahead of the phone's clock", async function () {
+			const sw = makeSW({userAgent: IOS_UA, webkitNotifications: true});
+			const ahead = new Date(Date.now() + 10000).toISOString();
+
+			await firePush(
+				sw,
+				`{"t":"msg","from":"alice","target":"pushtest","msgid":"m1","time":"${ahead}","text":"hi"}`
+			);
+			sw.advance(3000);
+			await fireMessage(sw, {type: "read", target: "alice"});
+			sw.advance(32000);
+			await fireMessage(sw, {type: "tidy"});
+
+			expect(live(sw)).to.deep.equal([]);
+		});
+
+		it("a message after a read starts afresh, without the read one its close left up", async function () {
+			const sw = makeSW({userAgent: IOS_UA, webkitNotifications: true});
+
+			await firePush(sw, msgPayload("alice", "pushtest", "old read one"));
+			sw.advance(2000);
+			await fireMessage(sw, {type: "read", target: "alice"});
+			sw.advance(5000);
+			await firePush(sw, msgPayload("alice", "pushtest", "new one"));
+
+			const newest = sw.shown[sw.shown.length - 1];
+			expect(newest.body).to.equal("new one");
+			expect(newest.data.count).to.equal(1);
+
+			sw.advance(32000);
+			await fireMessage(sw, {type: "tidy"});
+			expect(live(sw)).to.deep.equal([newest]);
+		});
+
+		it("the badge leaves out a read notification WebKit would not close yet", async function () {
+			const badges: number[] = [];
+			const sw = makeSW({userAgent: IOS_UA, webkitNotifications: true});
+
+			sw.sandbox.navigator.setAppBadge = (n: number) => badges.push(n);
+			sw.sandbox.navigator.clearAppBadge = () => badges.push(0);
+			await firePush(sw, msgPayload("alice", "pushtest", "hi"));
+			await fireMessage(sw, {type: "read", target: "alice"});
+
+			expect(live(sw), "its close was refused").to.have.lengthOf(1);
+			expect(badges[badges.length - 1]).to.equal(0);
+		});
+
+		it("networks opening together each keep their read (one shared database)", async function () {
+			const kv = new Map<string, unknown>([
+				[
+					"stash",
+					{
+						...STASH,
+						networks: [...STASH.networks, {...STASH.networks[0], uuid: "net-2"}],
+					},
+				],
+			]);
+			const one = makeSW({
+				userAgent: IOS_UA,
+				webkitNotifications: true,
+				scope: SCOPE + "push/net-1/",
+				kv,
+			});
+			const two = makeSW({
+				userAgent: IOS_UA,
+				webkitNotifications: true,
+				scope: SCOPE + "push/net-2/",
+				kv,
+			});
+
+			await Promise.all([
+				fireMessage(one, {type: "tidy", all: true}),
+				fireMessage(two, {type: "tidy", all: true}),
+			]);
+
+			const reads = kv.get("reads") as Array<{network: string}>;
+			expect(reads.map((r) => r.network).sort()).to.deep.equal(["net-1", "net-2"]);
+		});
+
+		it("a Chromium worker ignores tidy", async function () {
+			const sw = makeSW({userAgent: CHROME_UA});
+
+			await firePush(sw, msgPayload("alice", "pushtest", "hi"));
+			await fireMessage(sw, {type: "tidy", all: true});
+
+			expect(live(sw)).to.have.lengthOf(1);
+		});
 	});
 
 	it("a lenient worker shows nothing for a stalled handler (Chrome has its own budget)", async function () {
