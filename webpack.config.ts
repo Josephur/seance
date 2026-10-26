@@ -319,6 +319,7 @@ const config: webpack.Configuration = {
 			"process.env.SEANCE_RELEASE": JSON.stringify(buildIdentity.release),
 			"process.env.SEANCE_COMMIT": JSON.stringify(buildIdentity.commit ?? ""),
 			"process.env.SEANCE_BUILD": JSON.stringify(buildToken),
+			"process.env.FENGARICONF": "undefined",
 		}),
 		miniCssExtractPlugin,
 		new CopyPlugin({
@@ -414,7 +415,7 @@ const config: webpack.Configuration = {
 		}),
 		// socket.io uses debug, we don't need it
 		new webpack.NormalModuleReplacementPlugin(
-			/debug/,
+			/(^|[/\\])debug([/\\]|$)/,
 			path.resolve(__dirname, "scripts/noop.js")
 		),
 	],
