@@ -104,8 +104,7 @@ describe("dial ledger (irc/dialLedger.ts)", function () {
 			a.record(0);
 			b.record(10 * S);
 			a.record(20 * S);
-			b.record(30 * S);
-			expect(b.waitMs(35 * S)).to.equal(37 * S);
+			expect(b.waitMs(30 * S)).to.equal(32 * S);
 			expect(dialGateFor("other.example").waitMs(30 * S)).to.equal(0);
 		});
 
@@ -113,58 +112,15 @@ describe("dial ledger (irc/dialLedger.ts)", function () {
 			dialGateFor("irc.example").record(0);
 			dialGateFor("irc.example").record(10 * S);
 			dialGateFor("irc.example").record(20 * S);
-			dialGateFor("irc.example").record(30 * S);
-			expect(dialGateFor("irc.example").waitMs(35 * S)).to.equal(37 * S);
+			expect(dialGateFor("irc.example").waitMs(30 * S)).to.equal(32 * S);
 		});
 
-		it("lets in one dial more than nefarious2's default, then waits", function () {
+		it("prunes dials too old to matter", function () {
 			const gate = dialGateFor("irc.example");
 			gate.record(0);
-			gate.record(10 * S);
-			gate.record(20 * S);
-			expect(gate.waitMs(30 * S), "the fourth may try").to.equal(0);
-			gate.record(30 * S);
-			expect(gate.waitMs(31 * S), "the fifth waits").to.equal(41 * S);
-		});
-
-		it("prunes dials too old to matter, but never the chain's last few", function () {
-			const gate = dialGateFor("irc.example");
-			for (let i = 0; i < 7; i++) {
-				gate.record(i * 1000 * S);
-			}
+			gate.record(1000 * S);
 			const stored = JSON.parse(data.get("thelounge.state.dials") ?? "{}");
-			expect(stored["irc.example"].d).to.deep.equal([2, 3, 4, 5, 6].map((i) => i * 1000 * S));
-		});
-
-		it("a refusal reported late does not prune the chain and let a second retry in", function () {
-			// Dials and drops at 0/30, 60/90, 120/150; the fourth dial at
-			// 189 is let in, refused by a default server, and reported at 201.
-			const gate = dialGateFor("irc.example");
-			for (const [d, c] of [
-				[0, 30],
-				[60, 90],
-				[120, 150],
-			]) {
-				gate.record(d * S);
-				gate.closed(c * S);
-			}
-			expect(gate.waitMs(189 * S), "the fourth may try").to.equal(0);
-			gate.record(189 * S);
-			gate.closed(201 * S);
-			expect(gate.waitMs(202 * S), "the retry after it waits").to.be.above(0);
-		});
-
-		it("follows the server's drop reset, not the looser admission", function () {
-			// The server restarts its count once the last close is more than
-			// four windows (160 s) after the last dial.
-			const gate = dialGateFor("irc.example");
-			gate.record(0);
-			gate.record(10 * S);
-			gate.record(20 * S);
-			gate.closed(190 * S);
-			gate.record(191 * S);
-			gate.closed(192 * S);
-			expect(gate.waitMs(193 * S)).to.equal(0);
+			expect(stored["irc.example"]).to.deep.equal({d: [1000 * S], c: []});
 		});
 
 		it("ignores dials recorded in the future (a clock that ran ahead)", function () {
@@ -183,8 +139,7 @@ describe("dial ledger (irc/dialLedger.ts)", function () {
 			gate.closed(90 * S);
 			gate.record(120 * S);
 			gate.closed(150 * S);
-			gate.record(165 * S);
-			expect(dialGateFor("irc.example").waitMs(180 * S)).to.equal(27 * S);
+			expect(dialGateFor("irc.example").waitMs(180 * S)).to.equal(12 * S);
 		});
 
 		it("survives a broken record", function () {

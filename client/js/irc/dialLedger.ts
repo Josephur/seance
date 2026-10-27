@@ -41,24 +41,10 @@ export interface ThrottleRule {
 	periodMs: number;
 	/** Added to a wait: the dial takes a while to reach the server. */
 	marginMs: number;
-	/** The dials a chain may hold before the gate makes the next one wait,
-	 * when the gate is to admit more than the server (`limit` keeps
-	 * describing the server, whose drop reset it follows). */
-	admit?: number;
 }
 
 /** nefarious2's defaults (`ircd_features.c`). */
 export const NEFARIOUS_RULE: ThrottleRule = {limit: 4, periodMs: 40_000, marginMs: 1_000};
-
-/**
- * What the gate holds a dial to: one connection more than nefarious2's
- * default lets in. Networks set their own limit, often looser (AfterNET's
- * felt so), and waiting up to 42 s in front of a server that would have let
- * the dial in is the worse mistake: guessing one too many costs a single
- * refused dial, after which the record holds the default's whole chain and
- * the gate waits it out as before.
- */
-export const GATE_RULE: ThrottleRule = {...NEFARIOUS_RULE, admit: NEFARIOUS_RULE.limit + 1};
 
 export interface DialGate {
 	/** How long to wait before a dial at `now` would be accepted; 0 = dial now. */
@@ -129,7 +115,7 @@ export function throttleWaitMs(
 		last = at;
 	}
 
-	if (last === undefined || now - last >= gap || attempts + 1 < (rule.admit ?? rule.limit)) {
+	if (last === undefined || now - last >= gap || attempts + 1 < rule.limit) {
 		return 0;
 	}
 
@@ -145,25 +131,17 @@ function hostRecord(value: unknown): HostRecord {
 
 /** The gate for one server host, over the shared record. */
 export function dialGateFor(host: string): DialGate {
-	const rule = GATE_RULE;
+	const rule = NEFARIOUS_RULE;
 	const key = host.toLowerCase();
 	const read = () => hostRecord(readRecord(backend.get(STORAGE_KEY))[key]);
 
 	const add = (at: number, field: keyof HostRecord) => {
-		// Older than a whole refused chain can reach: it no longer counts —
-		// except the chain's last dials, enough to say the next one waits:
-		// a refusal reported late would otherwise prune a dial still in the
-		// server's chain and let a second refused retry through.
+		// Older than a whole refused chain can reach: it no longer counts.
 		const horizon = at - rule.limit * rule.periodMs;
 		const record = read();
 		record[field] = [...record[field], at];
-		const dials = [...record.d].sort((a, b) => a - b);
-		const kept = dials.filter(
-			(t, i) => t > horizon || i >= dials.length - (rule.admit ?? rule.limit)
-		);
-		const from = Math.min(horizon, kept[0] ?? horizon);
 		const all = {...readRecord(backend.get(STORAGE_KEY))};
-		all[key] = {d: kept, c: record.c.filter((t) => t >= from)};
+		all[key] = {d: record.d.filter((t) => t > horizon), c: record.c.filter((t) => t > horizon)};
 		backend.set(STORAGE_KEY, JSON.stringify(all));
 	};
 

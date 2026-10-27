@@ -10,10 +10,10 @@
 //
 // The dev ircd's own throttle is relaxed (100 / 1 s / 1 s), so nothing here
 // is refused by the server: what is checked is the client's ledger. The
-// page's WebSocket constructor is wrapped to count dials. Four dials are
-// written into `thelounge.state.dials` as if the app had been reopened four
-// times in quick succession (the gate lets in one more than nefarious2's
-// default of four), and the socket is dropped under the client; then:
+// page's WebSocket constructor is wrapped to count dials. Three dials are
+// written into `thelounge.state.dials` as if the app had been reopened three
+// times in quick succession, and the socket is dropped under the client;
+// then:
 //  - the automatic retry waits, with the throttle wording and a countdown,
 //    and opens no socket;
 //  - "Connect now" during the wait dials at once (the user asked) and the
@@ -41,10 +41,10 @@ const COUNT_DIALS = `(() => {
 	window.WebSocket = Counted;
 })()`;
 
-/** Four recent dials on record, as if the app had been reopened four times. */
+/** Three recent dials on record, as if the app had been reopened three times. */
 const SEED = `localStorage.setItem(${JSON.stringify(
 	KEY
-)}, JSON.stringify({localhost: {d: [Date.now() - 35000, Date.now() - 30000, Date.now() - 25000, Date.now() - 20000], c: []}}))`;
+)}, JSON.stringify({localhost: {d: [Date.now() - 30000, Date.now() - 25000, Date.now() - 20000], c: []}}))`;
 
 const LABEL = `document.querySelector(".connection-bar-label")?.textContent ?? ""`;
 const BAR_GONE = `!document.querySelector(".connection-bar")`;
