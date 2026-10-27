@@ -11,7 +11,6 @@ import {SettingsState} from "./settings";
 import {SharedConfiguration, LockedSharedConfiguration} from "../../shared/types/config";
 import {BrandingConfig, DEFAULT_BRANDING, brandingString} from "./branding";
 import type {UploadProgress} from "./upload";
-import type {JumpTarget} from "./helpers/jumpToMessage";
 import {conversationKey} from "./helpers/inbox";
 
 enum DesktopNotificationState {
@@ -56,8 +55,6 @@ export type State = {
 	userlistOpen: boolean;
 	/** The file upload in flight (`client/js/upload.ts`); `null` when idle. */
 	uploadProgress: UploadProgress | null;
-	/** A message the open conversation is to be taken to (helpers/jumpToMessage.ts). */
-	jumpTarget: JumpTarget | null;
 };
 
 const state = (): State => ({
@@ -79,7 +76,6 @@ const state = (): State => ({
 	sidebarDragging: false,
 	userlistOpen: storage.get("thelounge.state.userlist") !== "false",
 	uploadProgress: null,
-	jumpTarget: null,
 });
 
 type Getters = {
@@ -207,7 +203,6 @@ type Mutations = {
 	toggleUserlist(state: State): void;
 	userlistOpen(state: State, payload: State["userlistOpen"]): void;
 	uploadProgress(state: State, progress: State["uploadProgress"]): void;
-	jumpTarget(state: State, target: State["jumpTarget"]): void;
 };
 
 const mutations: Mutations = {
@@ -285,9 +280,6 @@ const mutations: Mutations = {
 	},
 	uploadProgress(state, progress) {
 		state.uploadProgress = progress;
-	},
-	jumpTarget(state, target) {
-		state.jumpTarget = target;
 	},
 };
 

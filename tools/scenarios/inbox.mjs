@@ -10,8 +10,8 @@
 //
 // The page sits in #seance while a second user mentions it there and in a
 // second channel and writes to it in private; then, after a reload, the page
-// opens the channel at a mention that 70 later lines have pushed out of the
-// first history page, and the private conversation from its one row.
+// opens the channel from one of its mentions, and the private conversation
+// from its one row.
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"; // dev ircd's self-signed cert
 
@@ -278,9 +278,7 @@ export default async function run(page) {
 	);
 	await page.screenshot("4-after-reload", {selector: POPUP, pad: 16});
 
-	// Opening an entry takes the channel to it: it is older than the first
-	// page, so the jump pages back for it.
-	const mention = `Array.from(document.querySelectorAll("#chat .msg")).find((m) => m.textContent.includes("never mind, found it"))`;
+	// Opening an entry opens its channel.
 	await page.evaluate(
 		`Array.from(document.querySelectorAll(".mentions-entry")).find((e) => e.textContent.includes("never mind, found it"))?.setAttribute("data-scenario", "target")`
 	);
@@ -290,13 +288,7 @@ export default async function run(page) {
 		`document.querySelector("#chat .header .title")?.textContent.includes("${OTHER}")`,
 		{label: `${OTHER} open`}
 	);
-	await page.waitFor(`!!${mention}`, {timeout: 20000, label: "the mention loaded"});
-	await page.sleep(800);
-	const inView = await page.evaluate(
-		`(() => { const m = ${mention}.getBoundingClientRect(); const c = document.querySelector("#chat .chat").getBoundingClientRect(); return m.top >= c.top && m.bottom <= c.bottom; })()`
-	);
-	await page.check("the conversation opened at the mention", inView);
-	await page.screenshot("5-at-the-mention", {selector: "#chat", pad: 0});
+	await page.screenshot("5-opened", {selector: "#chat", pad: 0});
 
 	await page.waitFor(`${badgeText} === "1"`, {timeout: 5000, label: "the badge at 1"});
 	await page.check(

@@ -53,7 +53,7 @@
 						<button
 							class="mentions-group-header"
 							:disabled="!group.conversation"
-							:title="group.conversation ? `Open ${group.target}` : undefined"
+							:title="group.conversation ? `Open ${group.target}` : group.missing"
 							@click="openGroup(group)"
 						>
 							<span class="mentions-group-name">{{ group.target }}</span>
@@ -76,6 +76,7 @@
 							Dismiss
 						</button>
 					</div>
+					<p v-if="group.missing" class="mentions-group-missing">{{ group.missing }}</p>
 					<!-- A click opens the conversation; the header is the keyboard's way. -->
 					<div
 						v-for="message in group.shown"
@@ -86,7 +87,7 @@
 							message.type,
 							{'mentions-entry-openable': group.conversation},
 						]"
-						@click="openFromRow($event, group, message)"
+						@click="openFromRow($event, group)"
 					>
 						<div class="mentions-info">
 							<span class="from" @click.stop>
@@ -233,6 +234,13 @@
 
 .mentions-group-header:disabled {
 	cursor: default;
+}
+
+.mentions-group-missing {
+	margin: 0;
+	padding: 0 0.75rem 0.25rem;
+	color: var(--body-color-muted);
+	font-size: 0.8125rem;
 }
 
 .mentions-group-name {
@@ -441,6 +449,8 @@ type GroupWithContext = {
 	networkName: string;
 	label: string;
 	conversation: NetChan | null;
+	/** Why a group without a conversation cannot be opened. */
+	missing: string;
 	/** A private conversation: one row, its newest line, and how much is unread. */
 	query: boolean;
 	unreadLabel: string;
@@ -481,6 +491,15 @@ export default defineComponent({
 					localetime: localetime(new Date(entry.time)),
 				}));
 				const unread = query ? conversation?.channel.unread ?? 0 : 0;
+				let missing = "";
+
+				if (!conversation) {
+					missing = !store.getters.findNetwork(group.network)
+						? "Its network isn't on this page: dismiss these."
+						: query
+						? `No conversation with ${target} open: open one to read these, or dismiss them.`
+						: `Not in ${target}: join it to read these, or dismiss them.`;
+				}
 
 				return {
 					key: group.key,
@@ -488,6 +507,7 @@ export default defineComponent({
 					networkName,
 					label: networkName ? `${target} on ${networkName}` : target,
 					conversation,
+					missing,
 					query,
 					unreadLabel: unread > 1 ? `${unread} unread` : "",
 					entries,
@@ -552,33 +572,20 @@ export default defineComponent({
 			dismissMentions(group.entries);
 		};
 
-		// Opening it reads it, and reading it clears its mentions (inbox:read);
-		// it opens at the mention (MessageList.vue's jump): the one clicked,
-		// or the header's oldest, or for a private conversation its first
-		// unread line, which the page knows before opening it reads it.
-		const openGroup = (group: GroupWithContext, entry = group.entries[0]) => {
+		// Opening it reads it, and reading it clears its mentions (inbox:read).
+		// A group without a conversation says why in its head.
+		const openGroup = (group: GroupWithContext) => {
 			if (!group.conversation) {
 				return;
 			}
 
-			const channel = group.conversation.channel;
-			store.commit("jumpTarget", {
-				chanId: channel.id,
-				...(group.query && channel.firstUnread ? {id: channel.firstUnread} : {}),
-				...(entry?.msgid ? {msgid: entry.msgid} : {}),
-				...(entry ? {time: entry.time} : {}),
-			});
 			isOpen.value = false;
-			switchToChannel(channel);
+			switchToChannel(group.conversation.channel);
 		};
 
 		// A click on the row opens the conversation; one on a link, a nick
 		// or a channel in the text, or a selection being made, does not.
-		const openFromRow = (
-			event: MouseEvent,
-			group: GroupWithContext,
-			entry: MentionWithContext
-		) => {
+		const openFromRow = (event: MouseEvent, group: GroupWithContext) => {
 			const target = event.target as HTMLElement | null;
 
 			if (target?.closest("a, button, .user, .inline-channel")) {
@@ -589,7 +596,7 @@ export default defineComponent({
 				return;
 			}
 
-			openGroup(group, group.query ? group.entries[0] : entry);
+			openGroup(group);
 		};
 
 		// What is shown: a muted conversation's entries stay out of it.
