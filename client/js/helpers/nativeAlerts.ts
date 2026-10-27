@@ -9,7 +9,10 @@
 
 import {isAndroidShell, isIOSShell, nativeCall, nativeListen} from "./capacitor";
 
-/** The ping, from the app bundle's copy of the web build. */
+/** The ping, from the app bundle's copy of the web build (`App/public/`).
+ * iOS only: the plugin looks a bare name up in `public/`'s top level alone,
+ * so the path is bundle-relative and goes to `UNNotificationSound` as is.
+ * Android's alert takes its channel's sound (PushService `messages`). */
 const IOS_SOUND = "public/audio/pop.wav";
 
 export function nativeAlertsAvailable(): boolean {
