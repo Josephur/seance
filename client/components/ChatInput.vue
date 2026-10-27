@@ -419,6 +419,15 @@ export default defineComponent({
 			}
 		);
 
+		// A refused send speaks for the conversation it was typed in, not for
+		// the next one opened in this composer.
+		watch(
+			() => props.channel.id,
+			() => {
+				sendRefused.value = false;
+			}
+		);
+
 		// The same `/connect` the sidebar's status icon sends; any window of
 		// the network routes to its client.
 		const connectNetwork = () => {
