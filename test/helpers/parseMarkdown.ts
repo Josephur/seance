@@ -91,6 +91,9 @@ describe("markdown — italic", () => {
 	it("leaves underscores inside words alone", () => {
 		expect(md("snake_case_name")).to.deep.equal([{text: "snake_case_name"}]);
 		expect(md("foo__bar__baz")).to.deep.equal([{text: "foo__bar__baz"}]);
+		// A letter outside the Basic Multilingual Plane, and a decomposed one
+		expect(md("𝑥_y_")).to.deep.equal([{text: "𝑥_y_"}]);
+		expect(md("é_y_")).to.deep.equal([{text: "é_y_"}]);
 	});
 });
 
@@ -146,6 +149,63 @@ describe("markdown — inline code", () => {
 		expect(md("\x02d0nk\x02`: hi d0nk`")).to.deep.equal([
 			{text: "d0nk", bold: true},
 			{text: "`: hi d0nk`"},
+		]);
+	});
+
+	it("gives up code glued to the end of a word", () => {
+		expect(md("foo`bar`")).to.deep.equal([{text: "foo`bar`"}]);
+		// The span is not code, so what it holds is Markdown again
+		expect(md("obj`__init__`")).to.deep.equal([
+			{text: "obj`"},
+			{text: "init", underline: true},
+			{text: "`"},
+		]);
+		// A decomposed letter is a letter, as the composed one is
+		expect(md("café`x`")).to.deep.equal([{text: "café`x`"}]);
+		expect(md("café`x`")).to.deep.equal([{text: "café`x`"}]);
+	});
+
+	it("opens code glued to a letter of a script without spaces", () => {
+		expect(md("请运行`npm install`命令")).to.deep.equal([
+			{text: "请运行"},
+			{text: "npm install", monospace: true},
+			{text: "命令"},
+		]);
+		expect(md("まず`npm install`を実行してください")).to.deep.equal([
+			{text: "まず"},
+			{text: "npm install", monospace: true},
+			{text: "を実行してください"},
+		]);
+		expect(md("スクリプト`ls`")).to.deep.equal([
+			{text: "スクリプト"},
+			{text: "ls", monospace: true},
+		]);
+		expect(md("명령`ls`을")).to.deep.equal([
+			{text: "명령"},
+			{text: "ls", monospace: true},
+			{text: "을"},
+		]);
+		expect(md("สั่ง`ls`ก่อน")).to.deep.equal([
+			{text: "สั่ง"},
+			{text: "ls", monospace: true},
+			{text: "ก่อน"},
+		]);
+		// Outside the Basic Multilingual Plane too
+		expect(md("𠀀`x`")).to.deep.equal([{text: "𠀀"}, {text: "x", monospace: true}]);
+	});
+
+	it("opens code right after an emphasis marker", () => {
+		expect(md("_see_`ls`")).to.deep.equal([
+			{text: "see", italic: true},
+			{text: "ls", monospace: true},
+		]);
+		expect(md("__x__`y`")).to.deep.equal([
+			{text: "x", underline: true},
+			{text: "y", monospace: true},
+		]);
+		expect(md("**x**`y`")).to.deep.equal([
+			{text: "x", bold: true},
+			{text: "y", monospace: true},
 		]);
 	});
 });
@@ -623,6 +683,8 @@ describe("markdown — composition", () => {
 	// run ends in "." because a backtick right after a word opens nothing.
 	it("merges an IRC monospace run into the inline code beside it", () => {
 		expect(md("\x11a.\x11`b`")).to.deep.equal([{text: "a.b", monospace: true}]);
+		// Ending in a letter, the run ends a word and the backticks stay
+		expect(md("\x11a\x11`b`")).to.deep.equal([{text: "a", monospace: true}, {text: "`b`"}]);
 	});
 
 	it("carries every wrap flag at once", () => {

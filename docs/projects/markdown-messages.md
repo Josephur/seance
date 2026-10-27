@@ -30,7 +30,7 @@ marker character makes it literal.
 | `*text*`, `_text_`                 | italic (`.irc-italic`); `_` only at word boundaries                                                                                                                                           |
 | `__text__`                         | underline (`.irc-underline`)                                                                                                                                                                  |
 | `~~text~~`                         | strikethrough (`.irc-strikethrough`)                                                                                                                                                          |
-| `` `code` ``, ` `code` `           | inline code (`.irc-monospace`), a verbatim span; the closing run must match the opening one, so ` `a `b` c` ` holds backticks                                                                 |
+| `` `code` ``, ` `code` `           | inline code (`.irc-monospace`), a verbatim span; the closing run must match the opening one, so ` `a `b` c` ` holds backticks; a run right after a word character opens nothing (see below)   |
 | ` ```[lang][:file]⏎code``` `       | code block (`<code class="md-code-block">`, rows, gutter, `lang` kept as the highlighter's tag, a `lang:file` tag names the file the label shows, single-line allowed)                        |
 | 3+ backticks                       | a fence: the closing run must be at least as long as the opening one, so a ````` fence holds a ` `` `                                                                                         |
 | `- text`                           | unordered list (`.md-list`/`.md-ul`, one item per line, marker drawn by CSS)                                                                                                                  |
@@ -45,6 +45,26 @@ marker character makes it literal.
 | `:name:`                           | emoji shortcode (gemoji aliases only — an unknown name is not emoji, so `10:30:45` stays a timestamp)                                                                                         |
 | `[text](url)`                      | masked link (`<a class="md-link" title=url target=_blank rel=noopener>`), schemes `http:`, `https:`, `web+irc:` only                                                                          |
 | `\*` etc.                          | backslash escapes any marker character (`-` and `$` included)                                                                                                                                 |
+
+**A backtick ending a word.** IRC nicks end in a backtick (`` d0nk` ``), and a
+line naming one twice would pair the two up as code. So, as `_` in
+`snake_case` opens no italics, a run of one or two backticks right after a
+letter, digit or `_` opens no inline code (`endsWord` in `parseMarkdown.ts`).
+What that costs and where it stops:
+
+- `` foo`bar` `` is not code, and the span is ordinary Markdown again:
+  `` obj`__init__` `` underlines `init`.
+- Scripts written without spaces between words — Han, Kana, Hangul, Thai, Lao,
+  Khmer, Myanmar, Tibetan — keep glued code, since that is how it is typed
+  there: `` 请运行`npm install`命令 `` is code.
+- An emphasis marker just closed is no word (`` _see_`ls` `` is italic, then
+  code); letters are read as code points with combining marks skipped, so
+  `𠀀`, a decomposed `é` and `𝑥` count as the letters they are (for `_` too).
+- Only that one nick shape is covered. A nick starting with a backtick
+  (`` `Ender ``), or ending in `[ ] \ ^ { | } -` before one (`` [d0nk]` ``,
+  `` Ender|` ``), still pairs up, and so does `_Ender_` as italics. The cure
+  for those is to make the channel's known nicks opaque to the scanner, as
+  URLs are — not yet done.
 
 ## How it works
 
