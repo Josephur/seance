@@ -12,7 +12,7 @@ import {cleanIrcMessage} from "../../../shared/irc";
 
 /** How many entries a device keeps; the oldest go first. */
 export const MAX_ENTRIES = 100;
-/** How many of those one conversation may hold, so a busy query cannot push the rest out. */
+/** How many of those one conversation may hold, so a busy channel cannot push the rest out (a query is one entry). */
 export const MAX_PER_CONVERSATION = 20;
 /** How many dismissals a device remembers. */
 export const MAX_DISMISSED = 200;

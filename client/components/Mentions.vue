@@ -494,11 +494,13 @@ export default defineComponent({
 				let missing = "";
 
 				if (!conversation) {
-					missing = !store.getters.findNetwork(group.network)
+					const network = store.getters.findNetwork(group.network);
+					const where = several && network ? ` on ${network.name}` : "";
+					missing = !network
 						? "Its network isn't on this page: dismiss these."
 						: query
-						? `No conversation with ${target} open: open one to read these, or dismiss them.`
-						: `Not in ${target}: join it to read these, or dismiss them.`;
+						? `No conversation with ${target}${where} open: open one to read these, or dismiss them.`
+						: `Not in ${target}${where}: join it to read these, or dismiss them.`;
 				}
 
 				return {
