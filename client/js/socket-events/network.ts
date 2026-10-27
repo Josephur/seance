@@ -127,6 +127,12 @@ socket.on("network:status", function (data) {
 		return;
 	}
 
+	if (data.connected) {
+		delete network.status.downSince;
+	} else if (network.status.downSince === undefined) {
+		network.status.downSince = Date.now();
+	}
+
 	network.status.connected = data.connected;
 	network.status.connecting = data.connecting;
 	network.status.secure = data.secure;

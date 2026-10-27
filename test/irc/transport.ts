@@ -944,6 +944,27 @@ describe("WsTransport: the dial gate (irc/dialLedger.ts)", function () {
 		expect(FakeWebSocket.instances).to.have.length(1);
 	});
 
+	it("a forced connect() (the user's Connect now) dials during the wait", function () {
+		const g = gate(30_000);
+		const {t} = make({reconnect: fastReconnect, gate: g});
+		t.connect();
+		clock.tick(10_000);
+		t.connect({force: true});
+		expect(FakeWebSocket.instances).to.have.length(1);
+		expect(t.state).to.equal("connecting");
+	});
+
+	it("after a forced dial is refused, the retry waits for the gate again", function () {
+		const g = gate(30_000);
+		const {t, events} = make({reconnect: fastReconnect, gate: g});
+		t.connect({force: true});
+		last().closed(1006, "", false);
+		expect(FakeWebSocket.instances).to.have.length(1);
+		expect(events[events.length - 1]).to.include({type: "reconnecting", throttled: true});
+		clock.tick(29_999);
+		expect(FakeWebSocket.instances).to.have.length(1);
+	});
+
 	it("never retries earlier than the gate allows after a close", function () {
 		const g = gate(0);
 		const {t, events} = make({reconnect: fastReconnect, gate: g});

@@ -17,7 +17,7 @@ function defaultPort(tls: boolean): number {
 const connect: Command = {
 	commands: ["connect", "server"],
 	allowDisconnected: true,
-	input({client, chan, args}) {
+	input({client, chan, args, opts}) {
 		const params = args.filter((arg) => arg.length > 0);
 
 		if (params.length === 0) {
@@ -29,7 +29,10 @@ const connect: Command = {
 				return;
 			}
 
-			client.connect();
+			// Typed or clicked ("Connect now"): the user asked, so it dials
+			// even while the server's throttle would refuse it. A saved
+			// command runs after every registration and asked nothing.
+			client.connect({force: opts?.auto !== true});
 			return;
 		}
 

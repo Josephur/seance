@@ -52,12 +52,18 @@ disconnect there (`m_quit.c`), which matters only when that other session is
 on another address. The
 replay is conservative about the server's whole seconds and the clocks' small
 difference: a gap restarts the count only at 42 s (162 s after a drop), and a
-dial waits for the same. Before any dial (a scheduled retry, the foreground poke, the
-user's Connect) the transport asks it whether the server would refuse, and if
-so waits out the gap. The strip says "Reconnecting to <network> in Ns: the
-server limits quick reconnects.", and Connect now waits too, because dialling
-would renew the window. The worst case is one wait of at most 42 s, never a
-spiral. It cannot see dials or drops from other devices behind the same
+dial waits for the same. Before a dial nobody asked for (a scheduled retry,
+the foreground poke) the transport asks it whether the server would refuse,
+and if so waits out the gap. The strip says "Reconnecting to <network> in Ns:
+the server limits quick reconnects."
+Connect now, the sidebar's status icon during a retry's wait, or a typed
+`/connect` dials at once whatever the ledger says (2026-10-26: a button that
+did nothing was the worse failure); a network's saved commands, which run
+after every registration, never do. If the server refuses the dial, the
+refusal is recorded and the retry after it waits. Once nobody presses
+anything, the worst case is one wait of at most 42 s, never a spiral; each
+press during a refusal renews the server's window, which is the user's call.
+It cannot see dials or drops from other devices behind the same
 address, nor tell whether another network on the same server still holds a
 connection (then the server would not reset at our drop, and the ledger waits
 when it need not).
