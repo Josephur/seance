@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 /* eslint-disable no-console */
-// Automated 2-client live testing of Lua scripting subsystem on
-// fractalrealities.afternet.org:9998 TLS over WebSocket.
+// Automated 2-client live testing of Lua scripting subsystem against the
+// dev ircd (tools/nefarious-dev/run.sh); `SEANCE_IRC_URL` points it at
+// another server (default wss://localhost:8443/).
 //
 // Boots 2 headless, background Chromium instances (zero screen windows):
 //   Bot A: Initiator and slash command tester
 //   Bot B: Auto-responder testing channel events and private messages
 //
 // Tests:
-//   1. Both bots connect to fractalrealities.afternet.org:9998 TLS (WSS) and join #seance
+//   1. Both bots connect to the ircd and join #seance
 //   2. Rate-limited channel event test in #seance: Bot A pings, Bot B Lua responds, Bot A Lua acks
 //   3. Rate-limited private message event test: Bot A PMs Bot B, Bot B Lua responds, Bot A Lua acks
 //   4. Custom slash command test (/testcmd in #seance)
@@ -22,6 +23,10 @@ import {fileURLToPath} from "node:url";
 import {startDevice} from "./lib/device.mjs";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
+const ircd = new URL(process.env.SEANCE_IRC_URL ?? "wss://localhost:8443/");
+const IRC_HOST = ircd.hostname + ircd.pathname.replace(/\/$/, "");
+const IRC_PORT = Number(ircd.port || (ircd.protocol === "wss:" ? 443 : 80));
+const IRC_TLS = ircd.protocol === "wss:";
 const PUBLIC_DIR = resolve(__dirname, "../../public");
 
 const MIME = {
@@ -171,10 +176,10 @@ async function main() {
 
 		const netB = {
 			uuid: `net-${nickB}`,
-			name: "AfterNET",
-			host: "fractalrealities.afternet.org",
-			port: 9998,
-			tls: true,
+			name: "ScriptTest",
+			host: IRC_HOST,
+			port: IRC_PORT,
+			tls: IRC_TLS,
 			nick: nickB,
 			username: nickB,
 			realname: "Seance Test Bot B",
@@ -195,7 +200,7 @@ async function main() {
 		`);
 
 		await botB.goto(url);
-		console.log(`[CONNECT] Bot B connecting to fractalrealities.afternet.org:9998 TLS...`);
+		console.log(`[CONNECT] Bot B connecting to ${ircd.href}...`);
 		await botB.waitFor(joined, {timeout: 30000, label: "Bot B joined #seance"});
 		console.log(`[OK] Bot B joined #seance successfully.`);
 
@@ -249,10 +254,10 @@ async function main() {
 
 		const netA = {
 			uuid: `net-${nickA}`,
-			name: "AfterNET",
-			host: "fractalrealities.afternet.org",
-			port: 9998,
-			tls: true,
+			name: "ScriptTest",
+			host: IRC_HOST,
+			port: IRC_PORT,
+			tls: IRC_TLS,
 			nick: nickA,
 			username: nickA,
 			realname: "Seance Test Bot A",
@@ -273,7 +278,7 @@ async function main() {
 		`);
 
 		await botA.goto(url);
-		console.log(`[CONNECT] Bot A connecting to fractalrealities.afternet.org:9998 TLS...`);
+		console.log(`[CONNECT] Bot A connecting to ${ircd.href}...`);
 		await botA.waitFor(joined, {timeout: 30000, label: "Bot A joined #seance"});
 		console.log(`[OK] Bot A joined #seance successfully.`);
 
