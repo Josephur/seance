@@ -1744,6 +1744,11 @@ async function showMessage(P, parsed, checkSeen, mustShow = false) {
 		actions,
 	});
 
+	// Under WebKit the copy merged from is still up beside this one.
+	if (prevShown && strictUserVisible()) {
+		tidyLater();
+	}
+
 	if (seenId) {
 		await idbAppend("seen", seenKey, SEEN_CAP);
 	}

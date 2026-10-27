@@ -1039,7 +1039,8 @@ What ships (`client/service-worker.js`, `client/js/webpush.ts`,
   worker therefore stamps every show (`data.shownAt`), merges from and
   re-shows the newest copy under a tag, counts only that one on the badge,
   and `tidy` closes every older copy under a tag and every stub past 30 s —
-  after every push and page read, and when the page sends `{type: "tidy"}`
+  after every push and page read, 31 s after a merge (if the worker lives
+  that long), and when the page sends `{type: "tidy"}`
   60 s after a quiet push for a message it took. A read relayed by push needs
   nothing more: its stub is the newest under the message's tag. A read on the
   page is sent again 32 s later, up to the newest message it read then (a

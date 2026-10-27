@@ -1535,9 +1535,9 @@ describe("service worker push notifications under WebKit (every push shows)", fu
 			expect(up[0].data.messages!.map((m) => m.text)).to.deep.equal(["one", "two", "three"]);
 		});
 
-		it("the badge counts only the newest copy under a tag", async function () {
+		it("a merge within 30 s counts once on the badge and closes the older copy later", async function () {
 			const badges: number[] = [];
-			const sw = makeSW({userAgent: IOS_UA, webkitNotifications: true});
+			const sw = makeSW({userAgent: IOS_UA, webkitNotifications: true, fastTimers: true});
 
 			sw.sandbox.navigator.setAppBadge = (n: number) => badges.push(n);
 			await firePush(sw, msgPayload("alice", "pushtest", "one", "m1"));
@@ -1545,6 +1545,12 @@ describe("service worker push notifications under WebKit (every push shows)", fu
 
 			expect(live(sw), "the first copy is too young to close").to.have.lengthOf(2);
 			expect(badges[badges.length - 1]).to.equal(2);
+
+			sw.advance(32000);
+			// The worker's retry, 31 s on its (here hundredfold) timers.
+			await new Promise((resolve) => setTimeout(resolve, 400));
+
+			expect(live(sw).map((n) => n.data.count)).to.deep.equal([2]);
 		});
 
 		it("a Chromium worker ignores tidy", async function () {
