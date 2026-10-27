@@ -431,7 +431,10 @@ async function main() {
 
 		console.log("[RELOAD] Reloading Bot A's page to verify cross-session survival...");
 		await botA.goto(url);
-		await botA.waitFor(joined, {timeout: 30000, label: "Bot A reconnected after reload"});
+		// Generous: a reload is a third connection from this address within
+		// seconds, and the client waits out the server's connection throttle
+		// (40 s gaps on nefarious2) rather than dial into it.
+		await botA.waitFor(joined, {timeout: 90000, label: "Bot A reconnected after reload"});
 		console.log(`[OK] Bot A reconnected after reload.`);
 
 		console.log("[CHECK] Checking storage key survival after reload...");
