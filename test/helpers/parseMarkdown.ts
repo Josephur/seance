@@ -133,6 +133,15 @@ describe("markdown — inline code", () => {
 		expect(md("``")).to.deep.equal([{text: "``"}]);
 		expect(md("a ` b")).to.deep.equal([{text: "a ` b"}]);
 	});
+
+	it("leaves a backtick ending a word literal, as in a nick", () => {
+		const line = "d0nk`: Ender: reminder from d0nk` — you're a bot.";
+		expect(md(line)).to.deep.equal([{text: line}]);
+		expect(md("d0nk`: try `ls`")).to.deep.equal([
+			{text: "d0nk`: try "},
+			{text: "ls", monospace: true},
+		]);
+	});
 });
 
 describe("markdown — inline code with longer runs", () => {
@@ -604,9 +613,10 @@ describe("markdown — composition", () => {
 	});
 
 	// `verbatim` is not a style key, so an IRC monospace run and the inline code
-	// next to it are one fragment and render as one `.irc-monospace` pill.
+	// next to it are one fragment and render as one `.irc-monospace` pill. The
+	// run ends in "." because a backtick right after a word opens nothing.
 	it("merges an IRC monospace run into the inline code beside it", () => {
-		expect(md("\x11a\x11`b`")).to.deep.equal([{text: "ab", monospace: true}]);
+		expect(md("\x11a.\x11`b`")).to.deep.equal([{text: "a.b", monospace: true}]);
 	});
 
 	it("carries every wrap flag at once", () => {

@@ -363,8 +363,10 @@ function scan(text: string): Scan {
 			}
 
 			// Inline code: a run of one or two backticks, closed by a run of
-			// exactly the same length, so ``a `b` c`` holds backticks
-			if (n <= 2) {
+			// exactly the same length, so ``a `b` c`` holds backticks. A run
+			// that ends a word opens nothing, as "_" in snake_case doesn't: IRC
+			// nicks like "d0nk`" would otherwise pair up across a line
+			if (n <= 2 && !isWordChar(text[i - 1])) {
 				const close = findRun(text, i + n, n, false);
 
 				if (close > i + n) {
