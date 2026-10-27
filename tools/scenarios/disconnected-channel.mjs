@@ -14,7 +14,9 @@
 //
 // Claims:
 //   1. connected: send enabled, no strip, nothing faded;
-//   2. the socket cut and dials refused: the strip says "Connecting to …",
+//   2. the socket cut and dials refused: no strip for the first seconds (a
+//      quick reconnect says nothing), then, once the network has been down
+//      for 10 s, the strip says "Connecting to …" or counts the retry down;
 //      the send button is disabled, the view and the sidebar rows fade;
 //   3. Enter with plain text keeps the draft (nothing is sent); a slash
 //      command re-enables the button;
@@ -138,8 +140,10 @@ async function check(page, proxy) {
 	proxy.refuse();
 	page.expectWsErrors = true;
 	proxy.cut();
+	await page.sleep(3000);
+	page.check("2. no strip while a reconnect may still be quick", (await page.count(BAR)) === 0);
 	await page.waitFor(`document.querySelector(${JSON.stringify(BAR)})`, {
-		timeout: 10000,
+		timeout: 15000,
 		label: "the connection strip",
 	});
 	await page.sleep(FADE_MS);

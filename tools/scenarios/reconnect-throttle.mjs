@@ -53,7 +53,7 @@ async function disconnect(page) {
 	await page.fill("#input", "/disconnect");
 	await page.evaluate(`document.querySelector("#form").requestSubmit()`);
 	await page.waitFor(`(${LABEL}).startsWith("Disconnected from")`, {
-		timeout: 10000,
+		timeout: 20000, // the strip shows after 10 s down (ChatInput.vue)
 		label: "the network disconnected",
 	});
 }
@@ -75,7 +75,7 @@ export default async function run(page) {
 	// Lost under the client: the transport's own retry asks the gate.
 	await page.evaluate("window.__lastWs.close()");
 	await page.waitFor(`/the server limits/.test(${LABEL})`, {
-		timeout: 10000,
+		timeout: 20000, // the strip shows after 10 s down (ChatInput.vue)
 		label: "the retry waits",
 	});
 
@@ -112,7 +112,7 @@ export default async function run(page) {
 	const beforeIcon = await page.evaluate("window.__dials");
 	await page.evaluate("window.__lastWs.close()");
 	await page.waitFor(`/the server limits/.test(${LABEL})`, {
-		timeout: 10000,
+		timeout: 20000, // the strip shows after 10 s down (ChatInput.vue)
 		label: "the retry waits again",
 	});
 	const iconLabel = await page.evaluate(
