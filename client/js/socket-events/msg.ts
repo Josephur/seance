@@ -127,7 +127,7 @@ socket.on("msg", function (data) {
 		recordSeenMsgid(data.msg.msgid);
 		webpush.recordSeenOnShell(receivingChannel.network.uuid, data.msg.msgid);
 		// Its push still shows under WebKit, quietly, beside what is up.
-		webpush.tidySoon(receivingChannel.network.uuid, webpush.TIDY_AFTER_PUSH_MS);
+		webpush.tidySoon(receivingChannel.network.uuid);
 	}
 
 	let messageLimit = 0;

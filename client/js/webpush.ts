@@ -36,6 +36,7 @@ import {
 } from "./helpers/nativePush";
 import {isAndroidShell} from "./helpers/capacitor";
 import {ChanType} from "../../shared/types/chan";
+import type {ClientChan} from "./types";
 
 /**
  * Web Push subscriptions (IRCv3 `draft/webpush`), one per network.
@@ -1506,6 +1507,27 @@ onNativeEndpointChange((uuid) => {
 		});
 });
 
+/** WebKit refuses a close within 30 s of a show, and replaces nothing by
+ * tag: what is left after that is closed by doing it again
+ * (service-worker.js `tidy`). */
+const AGAIN_AFTER_MS = 32_000;
+/** The same for a message the page took: its push reaches the worker later
+ * than the message reaches the page, and its quiet stub's 30 s start then. */
+const TIDY_AFTER_PUSH_MS = 60_000;
+const againTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+/** Run `fn` after `delay`, in place of what was waiting under `key`. */
+function again(key: string, delay: number, fn: () => void): void {
+	clearTimeout(againTimers.get(key));
+	againTimers.set(
+		key,
+		setTimeout(() => {
+			againTimers.delete(key);
+			fn();
+		}, delay)
+	);
+}
+
 // Opening the app means the user is catching up in-app: drop any push
 // notifications the workers are still showing (badge included). Each
 // network's worker keeps its own, so every registration is swept. The
@@ -1519,18 +1541,11 @@ socket.on("init", async () => {
 	}
 
 	try {
-		for (const registration of await navigator.serviceWorker.getRegistrations()) {
-			for (const n of await registration.getNotifications()) {
-				if (n.tag && n.tag.startsWith("push-")) {
-					n.close();
-				}
-			}
-
-			// WebKit refuses those closes for a notification under 30 s old:
-			// the worker remembers the opening and closes them later.
-			registration.active?.postMessage({type: "tidy", all: true});
-			tidyLater(registration.scope, () => registration.active ?? undefined);
-		}
+		await closePushNotifications();
+		// WebKit refuses those closes for a notification under 30 s old:
+		// close them again once it lets them through, but not what came since.
+		const openedAt = Date.now();
+		again("opened", AGAIN_AFTER_MS, () => void closePushNotifications(openedAt));
 
 		await idbSet("badge", {});
 
@@ -1541,6 +1556,18 @@ socket.on("init", async () => {
 		// no SW / not ready — nothing to clear
 	}
 });
+
+/** Close the push notifications every registration shows: all of them, or
+ * those shown before `before` (the worker's `data.shownAt`, on this clock). */
+async function closePushNotifications(before = Infinity): Promise<void> {
+	for (const registration of await navigator.serviceWorker.getRegistrations()) {
+		for (const n of await registration.getNotifications()) {
+			if (n.tag && n.tag.startsWith("push-") && (Number(n.data?.shownAt) || 0) < before) {
+				n.close();
+			}
+		}
+	}
+}
 
 /** The page took a pushable message on `uuid`: in the Android shell, its
  * push for this device shows nothing. A network this device is not
@@ -1556,7 +1583,9 @@ function recordSeenOnShell(uuid: string, msgid: string | undefined): void {
 // server's read push only follows a message it pushed — a notification the
 // page put on the worker while the account was attended has nobody else to
 // close it, and would otherwise come back counted in the next push.
-function readOnWorker(uuid: string, target: string): void {
+function readOnWorker(uuid: string, channel: ClientChan): void {
+	const target = channel.name;
+
 	// The shell, not the backend: its notifications are closed even after
 	// the distributor that brought them is gone.
 	if (isAndroidShell()) {
@@ -1564,77 +1593,33 @@ function readOnWorker(uuid: string, target: string): void {
 		return;
 	}
 
-	void pushWorkerFor(uuid).then((worker) => worker?.postMessage({type: "read", target}));
-	tidySoon(uuid);
-}
+	const send = (ts?: string) =>
+		void pushWorkerFor(uuid).then((worker) => worker?.postMessage({type: "read", target, ts}));
+	send();
 
-/** WebKit refuses a close within 30 s of a show and replaces nothing by
- * tag, so a read can leave a notification up beside the read stub that
- * followed it (service-worker.js `tidy`); once that time has passed, the
- * worker is asked to close what is left. */
-const TIDY_AFTER_MS = 32_000;
-/** The same for a message the page took: its push reaches the worker later
- * than the message reaches the page, and its quiet stub's 30 s start then. */
-const TIDY_AFTER_PUSH_MS = 60_000;
-/** Per key: the pending tidy's timer and due time, and the latest due time
- * asked for since (served by a second tidy once the first has run). */
-const tidyTimers = new Map<
-	string,
-	{timer: ReturnType<typeof setTimeout>; due: number; later?: number}
->();
+	// WebKit refuses a close within 30 s of a show: read it again once that
+	// has passed, up to the newest message read now (a server time, as the
+	// worker's are), so a message that came since stays.
+	const time = channel.messages.findLast((m) => !m.pending)?.time;
 
-function tidyLater(
-	key: string,
-	worker: () => ServiceWorker | undefined | Promise<ServiceWorker | undefined>,
-	delay = TIDY_AFTER_MS
-): void {
-	const due = Date.now() + delay;
-	const pending = tidyTimers.get(key);
-
-	// Never push a tidy back: a steady stream of messages would otherwise
-	// postpone it for as long as the conversation runs. One wanted sooner
-	// takes its place, and the one it displaces comes after it.
-	if (pending) {
-		if (due >= pending.due) {
-			pending.later = Math.max(pending.later ?? 0, due);
-			return;
-		}
-
-		clearTimeout(pending.timer);
-		tidyTimers.delete(key);
-		tidyLater(key, worker, delay);
-		const replaced = tidyTimers.get(key);
-
-		if (replaced) {
-			replaced.later = Math.max(pending.later ?? 0, pending.due);
-		}
-
-		return;
+	if (time && workerPush() && subs[uuid] !== undefined) {
+		const ts = new Date(time).toISOString();
+		again(`read ${uuid} ${target}`, AGAIN_AFTER_MS, () => send(ts));
 	}
-
-	tidyTimers.set(key, {
-		due,
-		timer: setTimeout(() => {
-			const later = tidyTimers.get(key)?.later;
-			tidyTimers.delete(key);
-			void Promise.resolve(worker()).then((w) => w?.postMessage({type: "tidy"}));
-
-			if (later !== undefined) {
-				tidyLater(key, worker, Math.max(0, later - Date.now()));
-			}
-		}, delay),
-	});
 }
 
-/** A notification on `uuid`'s push worker was just closed, or a push for a
- * message the page took is showing quietly there: tidy it once WebKit lets
- * the closes through. */
-function tidySoon(uuid: string, delay = TIDY_AFTER_MS): void {
+/** A push for a message the page took on `uuid` is showing quietly on its
+ * push worker: tidy it once WebKit lets the closes through. */
+function tidySoon(uuid: string): void {
 	if (pushBackend() === "native" || !workerPush() || subs[uuid] === undefined) {
 		return;
 	}
 
-	tidyLater(uuid, () => pushWorkerFor(uuid), delay);
+	again(
+		`tidy ${uuid}`,
+		TIDY_AFTER_PUSH_MS,
+		() => void pushWorkerFor(uuid).then((worker) => worker?.postMessage({type: "tidy"}))
+	);
 }
 
 /** The open conversation, when the user can see it. */
@@ -1651,7 +1636,7 @@ function readActive(): void {
 		return;
 	}
 
-	readOnWorker(active.network.uuid, active.channel.name);
+	readOnWorker(active.network.uuid, active.channel);
 }
 
 store.watch((state) => state.activeChannel, readActive);
@@ -1663,7 +1648,7 @@ socket.on("markread", (data) => {
 	const found = data.unread === 0 ? store.getters.findChannel(data.chan) : undefined;
 
 	if (found) {
-		readOnWorker(found.network.uuid, found.channel.name);
+		readOnWorker(found.network.uuid, found.channel);
 	}
 });
 
@@ -1830,7 +1815,6 @@ export default {
 	pushWorkerFor,
 	recordSeenOnShell,
 	tidySoon,
-	TIDY_AFTER_PUSH_MS,
 	pushPrompt,
 	answerPrompt,
 };

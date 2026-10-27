@@ -268,10 +268,6 @@ async function networkOrCache(event) {
 	}
 }
 
-/** A remembered read of every conversation of the network: the app was
- * opened (`tidy`, below). */
-const READ_ALL = "*";
-
 // Notifications requested by the page. Routing them through the worker (rather
 // than `new Notification()` in the page) is what makes them work on Android and
 // lets "notificationclick" below reopen the app when the tab is gone.
@@ -306,11 +302,6 @@ self.addEventListener("message", function (event) {
 				await closeForTarget(target, typeof ts === "string" ? ts : undefined);
 
 				if (strictUserVisible()) {
-					await rememberRead(
-						await networkOf(),
-						target,
-						typeof ts === "string" ? Date.parse(ts) : Infinity
-					);
 					await tidy();
 				}
 
@@ -320,21 +311,10 @@ self.addEventListener("message", function (event) {
 		return;
 	}
 
-	// The page, a while after a read or an opening: what WebKit refused to
-	// close then can go now. `all` (the app was opened) covers every
-	// conversation shown before it.
+	// The page, a while after a push for a message it took: what WebKit
+	// refused to close then can go now.
 	if (event.data && event.data.type === "tidy") {
-		const all = event.data.all === true;
-
-		event.waitUntil(
-			enqueuePush(async () => {
-				if (all && strictUserVisible()) {
-					await rememberRead(await networkOf(), READ_ALL, Infinity);
-				}
-
-				await tidy();
-			}).catch(() => undefined)
-		);
+		event.waitUntil(enqueuePush(tidy).catch(() => undefined));
 		return;
 	}
 
@@ -480,59 +460,10 @@ function isStub(n) {
 // is refused (above) — a read stub stood beside the message it was meant to
 // replace, and the message, read, stayed. `tidy` closes by hand what a tag
 // would have replaced and what a refused close left: every notification but
-// the newest under a tag, a stub past its lifetime, and what a read
-// remembered by `rememberRead` covers. It runs after every push and every
-// read (a close refused now succeeds on a later wake) and when the page asks
-// (`{type: "tidy"}`, sent once the 30 s have passed).
-
-let lastStamp = 0;
-let stampSeed = null;
-/** How long seeding may wait for IndexedDB: a stalled database must never
- * hold up a show (WebKit counts a push that shows nothing). */
-const STAMP_SEED_MS = 500;
-
-/** Start the counter past every stamp a previous life of this worker (or
- * another network's) left behind: the notifications still up and the
- * remembered reads outlive the worker, its counter does not. */
-function seedStamp() {
-	if (!stampSeed) {
-		stampSeed = (async () => {
-			let max = 0;
-
-			try {
-				for (const n of await self.registration.getNotifications()) {
-					max = Math.max(max, shownAt(n));
-				}
-			} catch (e) {
-				// nothing up to order against
-			}
-
-			const reads = await Promise.race([
-				idbGet("reads").catch(() => null),
-				new Promise((resolve) => setTimeout(() => resolve(null), STAMP_SEED_MS)),
-			]);
-
-			for (const r of Array.isArray(reads) ? reads : []) {
-				if (r && typeof r.at === "number") {
-					max = Math.max(max, r.at);
-				}
-			}
-
-			lastStamp = Math.max(lastStamp, max);
-		})();
-	}
-
-	return stampSeed;
-}
-
-/** A strictly increasing time for shows and reads: a show and a read in the
- * same millisecond, or either side of a worker restart, must still say which
- * came first. */
-async function stamp() {
-	await seedStamp();
-	lastStamp = Math.max(Date.now(), lastStamp + 1);
-	return lastStamp;
-}
+// the newest under a tag, and a stub past its lifetime. It runs after every
+// push and every read (a close refused now succeeds on a later wake) and
+// when the page asks (`{type: "tidy"}`); the page also sends its reads
+// again once the 30 s have passed (webpush.ts `again`).
 
 /** When a notification was shown (showSafely stamps it); 0 for one an older
  * worker showed, which is older than any this one did. */
@@ -569,90 +500,22 @@ function current(all) {
 	return all.filter((n) => byTag.get(n.tag || n) === n);
 }
 
-/** Reads `tidy` keeps closing until their notifications go: a day at most,
- * and the newest READS_CAP. */
-const READS_KEEP_MS = 24 * 60 * 60 * 1000;
-const READS_CAP = 50;
-
-/** Remember that `target` on `network` was read up to `cutoff` (epoch ms of
- * the server's message times; Infinity for a read of everything up, which
- * compares no clocks), so a close WebKit refused now is retried by `tidy`. */
-async function rememberRead(network, target, cutoff) {
-	const now = await stamp();
-	const name = target === READ_ALL ? READ_ALL : foldName(target || "");
-
-	return idbUpdate("reads", (prev) =>
-		[
-			...prev.filter(
-				(r) =>
-					r &&
-					typeof r.at === "number" &&
-					now - r.at < READS_KEEP_MS &&
-					!(r.network === network && r.target === name && r.cutoff <= cutoff)
-			),
-			{network, target: name, cutoff, at: now},
-		].slice(-READS_CAP)
-	);
-}
-
-/** The remembered reads, under WebKit (elsewhere a close is never refused,
- * so there is nothing to remember). */
-async function loadReads() {
-	if (!strictUserVisible()) {
-		return [];
-	}
-
-	try {
-		return (await idbGet("reads")) || [];
-	} catch (e) {
-		return [];
-	}
-}
-
-/** Whether a remembered read covers notification `n` (shown by `network`'s
- * worker): only one already up when the read was made, so a message that
- * came after it is never closed by it, whatever the clocks say. */
-function readCovers(reads, n, network) {
-	if (!n.data || isStub(n) || n.data.kind === "page") {
-		return false;
-	}
-
-	const time = n.data.time ? Date.parse(n.data.time) : NaN;
-	const net = n.data.network || network;
-	const target = typeof n.data.target === "string" ? foldName(n.data.target) : undefined;
-
-	return reads.some(
-		(r) =>
-			r.network === net &&
-			shownAt(n) < r.at &&
-			(r.target === READ_ALL || r.target === target) &&
-			(isNaN(time) || time <= r.cutoff)
-	);
-}
-
-/** Under WebKit, close what a tag would have replaced, a stub whose lifetime
- * is over and what a remembered read covers (see above). A close WebKit
- * refuses (the notification is under 30 s old) is simply tried again on
- * the next run. */
+/** Under WebKit, close what a tag would have replaced and a stub whose
+ * lifetime is over (see above). A close WebKit refuses (the notification is
+ * under 30 s old) is simply tried again on the next run. */
 async function tidy() {
 	if (!strictUserVisible()) {
 		return;
 	}
 
 	const now = Date.now();
-	const network = await networkOf();
 	const all = (await self.registration.getNotifications()).filter(
 		(n) => n.tag && n.tag.startsWith("push-")
 	);
 	const live = current(all);
-	const reads = await loadReads();
 
 	for (const n of all) {
-		if (
-			!live.includes(n) ||
-			(isStub(n) && now - shownAt(n) >= WEBKIT_SILENT_PUSH_TIMEOUT_MS) ||
-			readCovers(reads, n, network)
-		) {
+		if (!live.includes(n) || (isStub(n) && now - shownAt(n) >= WEBKIT_SILENT_PUSH_TIMEOUT_MS)) {
 			n.close();
 		}
 	}
@@ -717,11 +580,10 @@ async function idbSet(key, value) {
 /** Mirrors CAP in client/js/push-seen.ts: the "seen" ring's length. */
 const SEEN_CAP = 200;
 
-/** Replace the list stored under `key` with `change(list)` (unchanged when
- * it returns undefined), read and written in one transaction: the page and
- * every network's worker share the database, and a read and a write in two
- * transactions would lose whatever another wrote in between. */
-async function idbUpdate(key, change) {
+/** Append `value` to the list stored under `key` (newest last, capped),
+ * read and written in one transaction so the page's own appends to the
+ * same ring (push-seen.ts) cannot be lost. */
+async function idbAppend(key, value, cap) {
 	const db = await idbOpen();
 
 	return new Promise((resolve, reject) => {
@@ -730,24 +592,19 @@ async function idbUpdate(key, change) {
 		const get = store.get(key);
 
 		get.onsuccess = () => {
-			const next = change(Array.isArray(get.result) ? get.result : []);
+			const prev = Array.isArray(get.result) ? get.result : [];
 
-			if (next !== undefined) {
-				store.put(next, key);
+			if (prev.includes(value)) {
+				resolve();
+				return;
 			}
+
+			store.put([...prev, value].slice(-cap), key);
 		};
 
 		tx.oncomplete = () => resolve();
 		tx.onerror = () => reject(tx.error);
 	});
-}
-
-/** Append `value` to the list stored under `key` (newest last, capped), so
- * the page's own appends to the same ring (push-seen.ts) cannot be lost. */
-function idbAppend(key, value, cap) {
-	return idbUpdate(key, (prev) =>
-		prev.includes(value) ? undefined : [...prev, value].slice(-cap)
-	);
 }
 
 /** How long a throwaway connection may take to reach 001 (or finish). */
@@ -1333,12 +1190,7 @@ async function getStash() {
 async function updateBadge() {
 	// Under WebKit an older copy under the same tag is still listed until
 	// `tidy` closes it: only the newest counts.
-	// What a read covers is up only because WebKit refused its close.
-	const reads = await loadReads();
-	const network = reads.length ? await networkOf() : undefined;
-	const all = current(await self.registration.getNotifications()).filter(
-		(n) => !readCovers(reads, n, network)
-	);
+	const all = current(await self.registration.getNotifications());
 	// A read stub or a quiet show (showStub) says nothing is unread.
 	const mine = all.reduce((sum, n) => sum + (isStub(n) ? 0 : (n.data && n.data.count) || 1), 0);
 	let total = mine;
@@ -1660,9 +1512,6 @@ async function readRelay(target, ts, strict) {
 
 	if (strict) {
 		await showReadStub(target, ts);
-		await rememberRead(await networkOf(), target, ts ? Date.parse(ts) : Infinity).catch(
-			() => undefined
-		);
 	}
 
 	await updateBadge();
@@ -1829,12 +1678,9 @@ async function showMessage(P, parsed, checkSeen, mustShow = false) {
 	const legacyTag = "push-" + (replyTo || "activity");
 	const legacy =
 		legacyTag === tag ? [] : await self.registration.getNotifications({tag: legacyTag});
-	// Under WebKit a read notification whose close was refused is still
-	// listed: a new message starts afresh rather than bring it back.
-	const reads = await loadReads();
-	const prevShown = [newest(existing), newest(legacy)].find(
-		(n) => n && !readCovers(reads, n, network)
-	);
+	// Under WebKit the older copies under a tag are still listed: merge into
+	// the newest.
+	const prevShown = newest(existing) || newest(legacy);
 	const prev = prevShown && prevShown.data;
 	const added = P.addMessage(
 		(prev && prev.messages) || [],
@@ -1938,11 +1784,8 @@ async function closeFallbacks(tag, target) {
  * nothing up for it — a silent stub with no message text. */
 async function showQuiet(tag, target, network) {
 	const up = newest(await self.registration.getNotifications({tag}));
-	const reads = await loadReads();
 
-	// A notification a read covers is only still up because WebKit refused
-	// its close: showing it again would bring a read message back.
-	if (up && !isStub(up) && !readCovers(reads, up, network)) {
+	if (up && !isStub(up)) {
 		await reshowQuietly(up);
 	} else {
 		await showStub(tag, "quiet", target, network);
@@ -1987,7 +1830,7 @@ async function showSafely(title, options) {
 	}
 
 	// Which copy under a tag is the newest (WebKit keeps them all; `tidy`).
-	options = {...options, data: {...(options.data || {}), shownAt: await stamp()}};
+	options = {...options, data: {...(options.data || {}), shownAt: Date.now()}};
 
 	try {
 		await self.registration.showNotification(title, options);

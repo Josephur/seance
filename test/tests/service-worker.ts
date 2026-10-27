@@ -356,17 +356,6 @@ interface HarnessOptions {
 	 * the same tag (webpushd files each under its own UUID), and a close
 	 * within 30 s of the show is refused. */
 	webkitNotifications?: boolean;
-	/** Stop the clock: time moves only by `advance` (shows and reads in the
-	 * same millisecond). */
-	freezeClock?: boolean;
-	/** Where a frozen clock stands (default: when the harness is made). */
-	clockAt?: number;
-	/** The registration's notifications, to share them with a restarted
-	 * worker (a new harness over the same registration). */
-	records?: Rec[];
-	/** The IndexedDB contents, to share one database between two workers
-	 * (every network's worker shares the origin's). */
-	kv?: Map<string, unknown>;
 	/** Hold every `indexedDB.open` until this settles: storage that is slow,
 	 * not stalled (or, if it rejects, that fails once it answers). */
 	idbGate?: Promise<void>;
@@ -376,19 +365,13 @@ const SCOPE = "https://app.test/";
 
 function makeSW(options: HarnessOptions = {}): SWHarness {
 	const handlers: Record<string, Array<(ev: any) => void>> = {};
-	const records: Rec[] = options.records ?? [];
+	const records: Rec[] = [];
 	const shown: Rec[] = [];
 	const opened: string[] = [];
-	const kv = options.kv ?? new Map<string, unknown>();
-
-	if (!kv.has("stash")) {
-		kv.set("stash", options.stash ?? STASH);
-	}
-
+	const kv = new Map<string, unknown>([["stash", options.stash ?? STASH]]);
 	const socketsBefore = wsInstances.length;
 	let offset = 0;
-	const frozenAt = options.clockAt ?? Date.now();
-	const now = (): number => (options.freezeClock ? frozenAt : Date.now()) + offset;
+	const now = (): number => Date.now() + offset;
 
 	class ShiftedDate extends Date {
 		constructor(...args: any[]) {
@@ -529,13 +512,8 @@ function makeSW(options: HarnessOptions = {}): SWHarness {
 							const tx: FakeReq = {};
 							const store = {
 								get(key: string) {
-									const r: FakeReq = {};
-									// Read when it completes: a readwrite
-									// transaction's get and put run before
-									// the next one's, as IndexedDB serialises
-									// them.
+									const r: FakeReq = {result: kv.get(key)};
 									queueMicrotask(() => {
-										r.result = kv.get(key);
 										r.onsuccess?.();
 									});
 									return r;
@@ -1213,9 +1191,6 @@ describe("service worker push notifications under WebKit (every push shows)", fu
 			sw,
 			`{"t":"read","target":"alice","ts":"${new Date(Date.now() + 5000).toISOString()}"}`
 		);
-		// Later than the read (the fixture's message time is fixed, so the
-		// show time is what tells it from what the read covered).
-		sw.advance(1);
 		await firePush(sw, msgPayload("alice", "pushtest", "and again"));
 
 		const live = sw.records.filter((n) => !n.closed);
@@ -1480,8 +1455,10 @@ describe("service worker push notifications under WebKit (every push shows)", fu
 	describe("as WebKit shows them (no tag replacement, no close under 30 s)", function () {
 		const live = (sw: SWHarness): Rec[] => sw.records.filter((n) => !n.closed);
 		const soon = (): string => new Date(Date.now() + 5000).toISOString();
+		/** The message fixtures' time, which the page's second read names. */
+		const READ_UP_TO = "2026-09-02T19:59:00.000Z";
 
-		it("a conversation read on this phone within 30 s leaves nothing once the page tidies", async function () {
+		it("a conversation read on this phone within 30 s leaves nothing once the page reads it again", async function () {
 			const sw = makeSW({userAgent: IOS_UA, webkitNotifications: true});
 
 			await firePush(sw, msgPayload("keeki", "#linux", "push works too"));
@@ -1496,9 +1473,26 @@ describe("service worker push notifications under WebKit (every push shows)", fu
 			).to.have.members(["push", "read"]);
 
 			sw.advance(32000);
-			await fireMessage(sw, {type: "tidy"});
+			await fireMessage(sw, {type: "read", target: "#linux", ts: READ_UP_TO});
 
 			expect(live(sw), "the message and the stub are gone").to.deep.equal([]);
+		});
+
+		it("the page's second read leaves a message that came after the first", async function () {
+			const sw = makeSW({userAgent: IOS_UA, webkitNotifications: true});
+
+			await firePush(sw, msgPayload("alice", "pushtest", "read one"));
+			await fireMessage(sw, {type: "read", target: "alice"});
+			sw.advance(20000);
+			await firePush(
+				sw,
+				`{"t":"msg","from":"alice","target":"pushtest","msgid":"m2","time":"${soon()}","text":"unread"}`
+			);
+			sw.advance(32000);
+			await fireMessage(sw, {type: "read", target: "alice", ts: READ_UP_TO});
+
+			expect(live(sw)).to.have.lengthOf(1);
+			expect(live(sw)[0].body).to.include("unread");
 		});
 
 		it("a read on another device closes an old message at once and its stub on a later tidy", async function () {
@@ -1515,7 +1509,7 @@ describe("service worker push notifications under WebKit (every push shows)", fu
 			expect(live(sw)).to.deep.equal([]);
 		});
 
-		it("a refused close is retried by the next push even without the page", async function () {
+		it("a read relayed within 30 s takes the message's place on the next tidy", async function () {
 			const sw = makeSW({userAgent: IOS_UA, webkitNotifications: true});
 
 			await firePush(sw, msgPayload("keeki", "#linux", "hello"));
@@ -1553,167 +1547,11 @@ describe("service worker push notifications under WebKit (every push shows)", fu
 			expect(badges[badges.length - 1]).to.equal(2);
 		});
 
-		it("opening the app (tidy all) closes what was up before it, not what came after", async function () {
-			const sw = makeSW({userAgent: IOS_UA, webkitNotifications: true});
-
-			await firePush(sw, msgPayload("alice", "pushtest", "before"));
-			await fireMessage(sw, {type: "tidy", all: true});
-			sw.advance(1000);
-			await firePush(sw, msgPayload("bob", "pushtest", "after"));
-			sw.advance(32000);
-			await fireMessage(sw, {type: "tidy"});
-
-			expect(live(sw).map((n) => n.data.from)).to.deep.equal(["bob"]);
-		});
-
-		it("a page read covers a message whose server time is ahead of the phone's clock", async function () {
-			const sw = makeSW({userAgent: IOS_UA, webkitNotifications: true});
-			const ahead = new Date(Date.now() + 10000).toISOString();
-
-			await firePush(
-				sw,
-				`{"t":"msg","from":"alice","target":"pushtest","msgid":"m1","time":"${ahead}","text":"hi"}`
-			);
-			sw.advance(3000);
-			await fireMessage(sw, {type: "read", target: "alice"});
-			sw.advance(32000);
-			await fireMessage(sw, {type: "tidy"});
-
-			expect(live(sw)).to.deep.equal([]);
-		});
-
-		it("a message after a read starts afresh, without the read one its close left up", async function () {
-			const sw = makeSW({userAgent: IOS_UA, webkitNotifications: true});
-
-			await firePush(sw, msgPayload("alice", "pushtest", "old read one"));
-			sw.advance(2000);
-			await fireMessage(sw, {type: "read", target: "alice"});
-			sw.advance(5000);
-			await firePush(sw, msgPayload("alice", "pushtest", "new one"));
-
-			const newest = sw.shown[sw.shown.length - 1];
-			expect(newest.body).to.equal("new one");
-			expect(newest.data.count).to.equal(1);
-
-			sw.advance(32000);
-			await fireMessage(sw, {type: "tidy"});
-			expect(live(sw)).to.deep.equal([newest]);
-		});
-
-		it("the badge leaves out a read notification WebKit would not close yet", async function () {
-			const badges: number[] = [];
-			const sw = makeSW({userAgent: IOS_UA, webkitNotifications: true});
-
-			sw.sandbox.navigator.setAppBadge = (n: number) => badges.push(n);
-			sw.sandbox.navigator.clearAppBadge = () => badges.push(0);
-			await firePush(sw, msgPayload("alice", "pushtest", "hi"));
-			await fireMessage(sw, {type: "read", target: "alice"});
-
-			expect(live(sw), "its close was refused").to.have.lengthOf(1);
-			expect(badges[badges.length - 1]).to.equal(0);
-		});
-
-		it("networks opening together each keep their read (one shared database)", async function () {
-			const kv = new Map<string, unknown>([
-				[
-					"stash",
-					{
-						...STASH,
-						networks: [...STASH.networks, {...STASH.networks[0], uuid: "net-2"}],
-					},
-				],
-			]);
-			const one = makeSW({
-				userAgent: IOS_UA,
-				webkitNotifications: true,
-				scope: SCOPE + "push/net-1/",
-				kv,
-			});
-			const two = makeSW({
-				userAgent: IOS_UA,
-				webkitNotifications: true,
-				scope: SCOPE + "push/net-2/",
-				kv,
-			});
-
-			await Promise.all([
-				fireMessage(one, {type: "tidy", all: true}),
-				fireMessage(two, {type: "tidy", all: true}),
-			]);
-
-			const reads = kv.get("reads") as Array<{network: string}>;
-			expect(reads.map((r) => r.network).sort()).to.deep.equal(["net-1", "net-2"]);
-		});
-
-		it("a message shown in the same millisecond as a read is not covered by it", async function () {
-			const sw = makeSW({userAgent: IOS_UA, webkitNotifications: true, freezeClock: true});
-
-			await firePush(sw, msgPayload("alice", "pushtest", "old"));
-			await fireMessage(sw, {type: "read", target: "alice"});
-			await firePush(sw, msgPayload("alice", "pushtest", "unread"));
-			sw.advance(32000);
-			await fireMessage(sw, {type: "tidy"});
-
-			expect(live(sw).map((n) => n.body)).to.deep.equal(["unread"]);
-		});
-
-		it("a worker restart keeps shows and reads in order (the stamps outlive the counter)", async function () {
-			const at = Date.now();
-			const kv = new Map<string, unknown>();
-			const records: Rec[] = [];
-			const opts = {
-				userAgent: IOS_UA,
-				webkitNotifications: true,
-				freezeClock: true,
-				clockAt: at,
-				kv,
-				records,
-			};
-			const first = makeSW(opts);
-
-			await firePush(first, msgPayload("alice", "pushtest", "old"));
-			await fireMessage(first, {type: "tidy", all: true});
-
-			// The worker is stopped and started again in the same millisecond.
-			const second = makeSW(opts);
-			await firePush(second, msgPayload("bob", "pushtest", "unread"));
-			// A notification refuses its close on its own harness's clock.
-			first.advance(32000);
-			second.advance(32000);
-			await fireMessage(second, {type: "tidy"});
-
-			expect(live(second).map((n) => n.body)).to.deep.equal(["unread"]);
-		});
-
-		it("a read after a restart covers what the previous life showed in the same millisecond", async function () {
-			const at = Date.now();
-			const kv = new Map<string, unknown>();
-			const records: Rec[] = [];
-			const opts = {
-				userAgent: IOS_UA,
-				webkitNotifications: true,
-				freezeClock: true,
-				clockAt: at,
-				kv,
-				records,
-			};
-
-			const first = makeSW(opts);
-			await firePush(first, msgPayload("alice", "pushtest", "old"));
-			const second = makeSW(opts);
-			await fireMessage(second, {type: "read", target: "alice"});
-			first.advance(32000);
-			second.advance(32000);
-			await fireMessage(second, {type: "tidy"});
-
-			expect(live(second)).to.deep.equal([]);
-		});
-
 		it("a Chromium worker ignores tidy", async function () {
 			const sw = makeSW({userAgent: CHROME_UA});
 
 			await firePush(sw, msgPayload("alice", "pushtest", "hi"));
-			await fireMessage(sw, {type: "tidy", all: true});
+			await fireMessage(sw, {type: "tidy"});
 
 			expect(live(sw)).to.have.lengthOf(1);
 		});
