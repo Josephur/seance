@@ -18,6 +18,7 @@ declare module "fengari" {
 		export const LUA_ERRERR: number;
 
 		export const LUA_MULTRET: number;
+		export const LUA_REGISTRYINDEX: number;
 
 		export const LUA_TNONE: number;
 		export const LUA_TNIL: number;
@@ -42,6 +43,7 @@ declare module "fengari" {
 			mask: number,
 			count: number
 		): void;
+		export function lua_gethookcount(L: any): number;
 		export function lua_gettop(L: any): number;
 		export function lua_settop(L: any, idx: number): void;
 		export function lua_pushvalue(L: any, idx: number): void;
@@ -56,6 +58,7 @@ declare module "fengari" {
 		export function lua_isuserdata(L: any, idx: number): boolean;
 		export function lua_istable(L: any, idx: number): boolean;
 		export function lua_isnil(L: any, idx: number): boolean;
+		export function lua_isnoneornil(L: any, idx: number): boolean;
 		export function lua_isfunction(L: any, idx: number): boolean;
 		export function lua_isboolean(L: any, idx: number): boolean;
 		export function lua_type(L: any, idx: number): number;
@@ -100,6 +103,7 @@ declare module "fengari" {
 		export function lua_pcall(L: any, nargs: number, nresults: number, msgh: number): number;
 		export function lua_error(L: any): number;
 		export function lua_pop(L: any, n: number): void;
+		export function lua_remove(L: any, idx: number): void;
 	}
 
 	export namespace lauxlib {
@@ -108,9 +112,29 @@ declare module "fengari" {
 		export function luaL_loadstring(L: any, s: Uint8Array | string): number;
 		export function luaL_tolstring(L: any, idx: number, len?: any): Uint8Array;
 		export function luaL_error(L: any, fmt: Uint8Array | string, ...args: any[]): number;
+		export function luaL_requiref(
+			L: any,
+			modname: Uint8Array | string,
+			openf: (L: any) => number,
+			glb: number
+		): void;
+		export function luaL_ref(L: any, t: number): number;
 	}
 
 	export namespace lualib {
 		export function luaL_openlibs(L: any): void;
+
+		export const LUA_COLIBNAME: string;
+		export const LUA_TABLIBNAME: string;
+		export const LUA_STRLIBNAME: string;
+		export const LUA_MATHLIBNAME: string;
+		export const LUA_UTF8LIBNAME: string;
+
+		export function luaopen_base(L: any): number;
+		export function luaopen_coroutine(L: any): number;
+		export function luaopen_table(L: any): number;
+		export function luaopen_string(L: any): number;
+		export function luaopen_math(L: any): number;
+		export function luaopen_utf8(L: any): number;
 	}
 }

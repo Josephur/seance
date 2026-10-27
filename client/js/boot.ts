@@ -21,7 +21,7 @@ import {
 } from "./helpers/linkTarget";
 import * as saved from "./irc/saved-networks";
 import type {SavedNetwork} from "./irc/saved-networks";
-import {parseJoinList, type IrcClient} from "./irc/client";
+import {parseJoinList} from "./irc/client";
 import {ChanState} from "../../shared/types/chan";
 import socket from "./socket";
 import {loadMentions} from "./mentions";
@@ -128,61 +128,14 @@ export async function boot(): Promise<void> {
 				nick: active?.network.nick ?? "",
 			};
 		},
-		send(line, networkUuid) {
-			let client: IrcClient | undefined;
-
-			if (networkUuid) {
-				client = clientForNetwork(networkUuid);
-			} else {
-				const active = store.state.activeChannel;
-
-				if (active) {
-					client = clientForNetwork(active.network.uuid);
-				}
-			}
-
-			if (!client) {
-				const clients = allClients();
-				client = clients[0];
-			}
-
-			if (client && client.isConnected) {
-				client.send(line);
-			}
+		clientFor(networkUuid) {
+			const active = store.state.activeChannel;
+			const uuid = networkUuid ?? active?.network.uuid;
+			return (uuid ? clientForNetwork(uuid) : undefined) ?? allClients()[0];
 		},
-		reply(msg, text) {
-			const target =
-				msg.target.startsWith("#") || msg.target.startsWith("&") ? msg.target : msg.from;
-
-			if (!target || !text) {
-				return;
-			}
-
-			let client: IrcClient | undefined;
-
-			for (const c of allClients()) {
-				if (c.name.toLowerCase() === msg.network.toLowerCase()) {
-					client = c;
-					break;
-				}
-			}
-
-			if (!client) {
-				const active = store.state.activeChannel;
-
-				if (active) {
-					client = clientForNetwork(active.network.uuid);
-				}
-			}
-
-			if (!client) {
-				const clients = allClients();
-				client = clients[0];
-			}
-
-			if (client && client.isConnected) {
-				client.send(`PRIVMSG ${target} :${text}`);
-			}
+		clientNamed(name) {
+			const lower = name.toLowerCase();
+			return allClients().find((c) => c.name.toLowerCase() === lower);
 		},
 		print(text) {
 			const active = store.state.activeChannel;

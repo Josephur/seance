@@ -1,16 +1,23 @@
 /**
  * Sandboxed Lua execution engine using Fengari.
  *
- * Provides a secure, isolated runtime with:
+ * Provides an isolated runtime with:
  * - Lazy-loaded Fengari chunk
- * - Instruction limit hook (LUA_MASKCOUNT) to safely abort infinite loops
- * - Stripped dangerous Lua globals (io, os, package, debug, file loaders)
- * - Safe bridge for the `seance` API
+ * - Only the base, coroutine, table, string, math and utf8 libraries: no
+ *   `io`, `os`, `package`/`require` or `debug` exist, not even in the
+ *   registry's loaded-module table
+ * - `load` limited to source text (no bytecode), no `string.dump`, `dofile`
+ *   or `loadfile`, and a cap on what `string.rep` may build
+ * - An instruction limit hook (LUA_MASKCOUNT) that aborts runaway code; new
+ *   coroutines inherit it and count against the same budget
+ * - One environment per script, each with its own read-only `seance` table
+ *   bound to that script's id, and the dispatch tables kept in locals no
+ *   script can reach
  */
 
 import type * as FengariType from "fengari";
 import type {ScriptMessageEvent} from "./types";
-import {loadScriptData, saveScriptData} from "./storage";
+import {ScriptStorageError, loadScriptData, saveScriptData} from "./storage";
 
 let fengariPromise: Promise<typeof FengariType> | null = null;
 
@@ -31,25 +38,170 @@ export interface SandboxHost {
 }
 
 const MAX_INSTRUCTIONS = 100000;
+const HOOK_INTERVAL = 1000;
+/** The longest string `string.rep` may build, in bytes. */
+export const MAX_REP_LENGTH = 1 << 20;
+/** The storage bucket and error owner of `/lua` snippets. */
+const SNIPPET_ID = "global";
+/** How deep a Lua table is followed when it is handed to JavaScript. */
+const MAX_TABLE_DEPTH = 8;
+
+// Runs once per state with the host functions as its argument and returns
+// the internals the engine calls. Everything a script could use to break
+// another script lives in its locals.
+const BOOTSTRAP = `
+	local host = ...
+	local base_load, pcall, error, type, tostring, setmetatable, select, ipairs, pairs =
+		load, pcall, error, type, tostring, setmetatable, select, ipairs, pairs
+	local lower, insert, rep = string.lower, table.insert, string.rep
+	local max_rep = host.max_rep
+
+	-- Source text only: Lua's undumper trusts the bytecode it is given.
+	load = function(chunk, name, mode, ...)
+		if select("#", ...) > 0 then
+			return base_load(chunk, name, "t", ...)
+		end
+		return base_load(chunk, name, "t")
+	end
+	dofile, loadfile, string.dump = nil, nil, nil
+
+	string.rep = function(s, n, sep)
+		if type(n) == "number" and n > 1 then
+			local size = #tostring(s) * n
+			if sep ~= nil then
+				size = size + #tostring(sep) * (n - 1)
+			end
+			if size > max_rep then
+				error("string.rep: result too large", 2)
+			end
+		end
+		return rep(s, n, sep)
+	end
+
+	local handlers, commands, envs = {}, {}, {}
+
+	local function readonly()
+		error("seance is read-only", 2)
+	end
+
+	local function api_for(id)
+		local storage = setmetatable({}, {
+			__index = {
+				get = function(key) return host.storage_get(id, key) end,
+				set = function(key, value)
+					local err = host.storage_set(id, key, value)
+					if err then error(err, 2) end
+				end,
+			},
+			__newindex = readonly,
+			__metatable = false,
+		})
+
+		local api = {
+			send = host.send,
+			reply = host.reply,
+			print = host.print,
+			storage = storage,
+			on = function(evt, fn)
+				if type(evt) ~= "string" or type(fn) ~= "function" then return end
+				local key = lower(evt)
+				local list = handlers[key]
+				if not list then
+					list = {}
+					handlers[key] = list
+				end
+				insert(list, {id = id, fn = fn})
+			end,
+			register_command = function(name, fn)
+				if type(name) ~= "string" or type(fn) ~= "function" then return end
+				commands[lower(name)] = {id = id, fn = fn}
+			end,
+		}
+
+		return setmetatable({}, {
+			__index = function(_, k)
+				local v = api[k]
+				if v ~= nil then return v end
+				return host.context(k)
+			end,
+			__newindex = readonly,
+			__metatable = false,
+		})
+	end
+
+	local function env_for(id)
+		local env = envs[id]
+		if not env then
+			env = setmetatable({seance = api_for(id)}, {__index = _G})
+			envs[id] = env
+		end
+		return env
+	end
+
+	local function load_script(id, code)
+		return base_load(code, nil, "t", env_for(id))
+	end
+
+	local function dispatch(evt, data)
+		local list = handlers[lower(evt)]
+		if not list then return end
+		for _, h in ipairs(list) do
+			host.begin()
+			local ok, err = pcall(h.fn, data)
+			if not ok then
+				host.error(h.id, "Error in " .. evt .. " handler: " .. tostring(err))
+			end
+		end
+	end
+
+	local function run_command(name, args, rest)
+		local cmd = commands[lower(name)]
+		if not cmd then return false end
+		host.begin()
+		local ok, err = pcall(cmd.fn, args, rest)
+		if not ok then
+			host.error(cmd.id, "Error in /" .. name .. " command: " .. tostring(err))
+		end
+		return true
+	end
+
+	local function has_command(name)
+		return commands[lower(name)] ~= nil
+	end
+
+	local function command_names()
+		local names = {}
+		for k in pairs(commands) do
+			insert(names, k)
+		end
+		return names
+	end
+
+	return {
+		load = load_script,
+		dispatch = dispatch,
+		run = run_command,
+		has = has_command,
+		names = command_names,
+	}
+`;
 
 export class LuaSandbox {
 	private fengari: typeof FengariType;
 	private L: any;
 	private host: SandboxHost;
-	private currentScriptId?: string;
 	private instructionCount = 0;
+	/** Registry reference to the table BOOTSTRAP returned. */
+	private internals = 0;
 
 	private constructor(fengari: typeof FengariType, host: SandboxHost) {
 		this.fengari = fengari;
 		this.host = host;
-		const {lua, lauxlib, lualib} = fengari;
 
-		this.L = lauxlib.luaL_newstate();
-		lualib.luaL_openlibs(this.L);
-
+		this.L = fengari.lauxlib.luaL_newstate();
+		this.openSafeLibs();
 		this.setupInstructionHook();
-		this.sanitizeGlobals();
-		this.injectHostBridge();
+		this.bootstrap();
 	}
 
 	public static async create(host: SandboxHost): Promise<LuaSandbox> {
@@ -57,38 +209,55 @@ export class LuaSandbox {
 		return new LuaSandbox(fengari, host);
 	}
 
-	private setupInstructionHook(): void {
-		const {lua, to_luastring} = this.fengari;
-		lua.lua_sethook(
-			this.L,
-			(state: any) => {
-				this.instructionCount += 1000;
+	private openSafeLibs(): void {
+		const {lua, lauxlib, lualib, to_luastring} = this.fengari;
+		const libs: [string, (L: any) => number][] = [
+			["_G", lualib.luaopen_base],
+			[lualib.LUA_COLIBNAME, lualib.luaopen_coroutine],
+			[lualib.LUA_TABLIBNAME, lualib.luaopen_table],
+			[lualib.LUA_STRLIBNAME, lualib.luaopen_string],
+			[lualib.LUA_MATHLIBNAME, lualib.luaopen_math],
+			[lualib.LUA_UTF8LIBNAME, lualib.luaopen_utf8],
+		];
 
-				if (this.instructionCount > MAX_INSTRUCTIONS) {
-					lua.lua_pushstring(
-						state,
-						to_luastring("Instruction limit exceeded (possible infinite loop)")
-					);
-					lua.lua_error(state);
-				}
-			},
-			lua.LUA_MASKCOUNT,
-			1000
+		for (const [name, open] of libs) {
+			lauxlib.luaL_requiref(this.L, to_luastring(name), open, 1);
+			lua.lua_pop(this.L, 1);
+		}
+	}
+
+	private readonly hook = (state: any): void => {
+		const {lua, to_luastring} = this.fengari;
+		this.instructionCount += lua.lua_gethookcount(state);
+
+		if (this.instructionCount > MAX_INSTRUCTIONS) {
+			// From here every instruction raises, so a pcall in a loop cannot
+			// catch the error and go round again: the loop around it dies on
+			// its next instruction.
+			lua.lua_sethook(state, this.hook, lua.LUA_MASKCOUNT, 1);
+			lua.lua_sethook(this.L, this.hook, lua.LUA_MASKCOUNT, 1);
+			lua.lua_pushstring(
+				state,
+				to_luastring("Instruction limit exceeded (possible infinite loop)")
+			);
+			lua.lua_error(state);
+		}
+	};
+
+	private setupInstructionHook(): void {
+		// Set on the main state before any script runs; lua_newthread copies
+		// it to every coroutine, and they all charge the same counter.
+		this.fengari.lua.lua_sethook(
+			this.L,
+			this.hook,
+			this.fengari.lua.LUA_MASKCOUNT,
+			HOOK_INTERVAL
 		);
 	}
 
 	private resetInstructions(): void {
 		this.instructionCount = 0;
-	}
-
-	private sanitizeGlobals(): void {
-		const {lua, to_luastring} = this.fengari;
-		const dangerous = ["io", "os", "package", "debug", "dofile", "loadfile"];
-
-		for (const name of dangerous) {
-			lua.lua_pushnil(this.L);
-			lua.lua_setglobal(this.L, to_luastring(name));
-		}
+		this.setupInstructionHook();
 	}
 
 	private getString(state: any, idx: number): string {
@@ -97,67 +266,66 @@ export class LuaSandbox {
 		return str ? to_jsstring(str) : "";
 	}
 
-	private injectHostBridge(): void {
+	private bootstrap(): void {
 		const {lua, lauxlib, to_luastring} = this.fengari;
+		const L = this.L;
 
-		// 1. Error callback: _SEANCE_ERROR(msg)
-		lua.lua_pushcfunction(this.L, (state: any) => {
-			const str = this.getString(state, 1);
-			this.host.onError(str, this.currentScriptId);
+		const fn = (name: string, f: (state: any) => number) => {
+			lua.lua_pushcfunction(L, f);
+			lua.lua_setfield(L, -2, to_luastring(name));
+		};
+
+		if (lauxlib.luaL_loadstring(L, to_luastring(BOOTSTRAP)) !== lua.LUA_OK) {
+			throw new Error(`Lua bootstrap: ${this.getString(L, -1)}`);
+		}
+
+		lua.lua_newtable(L);
+		lua.lua_pushinteger(L, MAX_REP_LENGTH);
+		lua.lua_setfield(L, -2, to_luastring("max_rep"));
+
+		fn("begin", () => {
+			this.resetInstructions();
 			return 0;
 		});
-		lua.lua_setglobal(this.L, to_luastring("_SEANCE_ERROR"));
 
-		// 2. seance table
-		lua.lua_newtable(this.L);
+		fn("error", (state) => {
+			const id = this.getString(state, 1);
+			this.host.onError(this.getString(state, 2), id === SNIPPET_ID ? undefined : id);
+			return 0;
+		});
 
 		// seance.send(line, networkUuid?)
-		lua.lua_pushcfunction(this.L, (state: any) => {
+		fn("send", (state) => {
 			const line = this.getString(state, 1);
-			let net: string | undefined;
-
-			if (lua.lua_isstring(state, 2)) {
-				net = this.getString(state, 2);
-			}
-
+			const net = lua.lua_isstring(state, 2) ? this.getString(state, 2) : undefined;
 			this.host.send(line, net);
 			return 0;
 		});
-		lua.lua_setfield(this.L, -2, to_luastring("send"));
 
 		// seance.reply(msgTable, text)
-		lua.lua_pushcfunction(this.L, (state: any) => {
+		fn("reply", (state) => {
 			if (!lua.lua_istable(state, 1)) {
 				return 0;
 			}
 
 			const text = this.getString(state, 2);
-			const msgObj = this.toJsValue(1) as ScriptMessageEvent;
+			const msgObj = this.toJsValue(1, state) as ScriptMessageEvent;
 
-			if (msgObj && typeof text === "string") {
+			if (msgObj && typeof msgObj.target === "string") {
 				this.host.reply(msgObj, text);
 			}
 
 			return 0;
 		});
-		lua.lua_setfield(this.L, -2, to_luastring("reply"));
 
-		// seance.print(text)
-		lua.lua_pushcfunction(this.L, (state: any) => {
-			const text = this.getString(state, 1);
-			this.host.print(text);
+		fn("print", (state) => {
+			this.host.print(this.getString(state, 1));
 			return 0;
 		});
-		lua.lua_setfield(this.L, -2, to_luastring("print"));
 
-		// storage table: seance.storage.get(k), seance.storage.set(k, v)
-		lua.lua_newtable(this.L);
-
-		lua.lua_pushcfunction(this.L, (state: any) => {
-			const key = this.getString(state, 1);
-			const id = this.currentScriptId || "global";
-			const data = loadScriptData(id);
-			const val = data[key];
+		fn("storage_get", (state) => {
+			const data = loadScriptData(this.getString(state, 1));
+			const val = data[this.getString(state, 2)];
 
 			if (val === undefined) {
 				lua.lua_pushnil(state);
@@ -167,110 +335,67 @@ export class LuaSandbox {
 
 			return 1;
 		});
-		lua.lua_setfield(this.L, -2, to_luastring("get"));
 
-		lua.lua_pushcfunction(this.L, (state: any) => {
-			const key = this.getString(state, 1);
-			const id = this.currentScriptId || "global";
+		fn("storage_set", (state) => {
+			const id = this.getString(state, 1);
+			const key = this.getString(state, 2);
 			const data = loadScriptData(id);
 
-			if (lua.lua_isnil(state, 2)) {
+			if (lua.lua_isnoneornil(state, 3)) {
 				delete data[key];
 			} else {
-				const val = this.getString(state, 2);
-				data[key] = val;
+				data[key] = this.getString(state, 3);
 			}
 
-			saveScriptData(id, data);
+			try {
+				saveScriptData(id, data);
+			} catch (err) {
+				if (!(err instanceof ScriptStorageError)) {
+					throw err;
+				}
+
+				lua.lua_pushstring(state, to_luastring(`seance.storage: ${err.message}`));
+				return 1; // raised by the Lua side, at the caller's level
+			}
+
 			return 0;
 		});
-		lua.lua_setfield(this.L, -2, to_luastring("set"));
 
-		lua.lua_setfield(this.L, -2, to_luastring("storage"));
-
-		// Add metatable for dynamic properties (current_channel, current_network, nick)
-		lua.lua_newtable(this.L); // metatable
-		lua.lua_pushcfunction(this.L, (state: any) => {
-			const prop = this.getString(state, 2);
+		// seance.current_channel, seance.current_network, seance.nick
+		fn("context", (state) => {
+			const prop = this.getString(state, 1);
 			const ctx = this.host.getCurrentContext();
+			const value =
+				prop === "current_channel"
+					? ctx.channel
+					: prop === "current_network"
+					? ctx.network
+					: prop === "nick"
+					? ctx.nick
+					: undefined;
 
-			if (prop === "current_channel") {
-				lua.lua_pushstring(state, to_luastring(ctx.channel));
-				return 1;
+			if (value === undefined) {
+				lua.lua_pushnil(state);
+			} else {
+				lua.lua_pushstring(state, to_luastring(value));
 			}
 
-			if (prop === "current_network") {
-				lua.lua_pushstring(state, to_luastring(ctx.network));
-				return 1;
-			}
-
-			if (prop === "nick") {
-				lua.lua_pushstring(state, to_luastring(ctx.nick));
-				return 1;
-			}
-
-			lua.lua_pushnil(state);
 			return 1;
 		});
-		lua.lua_setfield(this.L, -2, to_luastring("__index"));
-		lua.lua_setmetatable(this.L, -2);
 
-		lua.lua_setglobal(this.L, to_luastring("seance"));
+		if (lua.lua_pcall(L, 1, 1, 0) !== lua.LUA_OK) {
+			throw new Error(`Lua bootstrap: ${this.getString(L, -1)}`);
+		}
 
-		// 3. Bootstrap standard dispatch structures and helper functions
-		const bootstrap = `
-			_SEANCE_HANDLERS = {}
-			_SEANCE_COMMANDS = {}
+		this.internals = lauxlib.luaL_ref(L, lua.LUA_REGISTRYINDEX);
+	}
 
-			seance.on = function(evt, fn)
-				if type(evt) ~= "string" or type(fn) ~= "function" then return end
-				local key = string.lower(evt)
-				if not _SEANCE_HANDLERS[key] then _SEANCE_HANDLERS[key] = {} end
-				table.insert(_SEANCE_HANDLERS[key], fn)
-			end
-
-			seance.register_command = function(name, fn)
-				if type(name) ~= "string" or type(fn) ~= "function" then return end
-				_SEANCE_COMMANDS[string.lower(name)] = fn
-			end
-
-			function _SEANCE_DISPATCH(evt, data)
-				local handlers = _SEANCE_HANDLERS[string.lower(evt)]
-				if not handlers then return end
-				for _, fn in ipairs(handlers) do
-					local ok, err = pcall(fn, data)
-					if not ok then
-						_SEANCE_ERROR("Error in " .. evt .. " handler: " .. tostring(err))
-					end
-				end
-			end
-
-			function _SEANCE_RUN_COMMAND(name, args, rest)
-				local cmd = _SEANCE_COMMANDS[string.lower(name)]
-				if cmd then
-					local ok, err = pcall(cmd, args, rest)
-					if not ok then
-						_SEANCE_ERROR("Error in /" .. name .. " command: " .. tostring(err))
-					end
-					return true
-				end
-				return false
-			end
-
-			function _SEANCE_HAS_COMMAND(name)
-				return _SEANCE_COMMANDS[string.lower(name)] ~= nil
-			end
-
-			function _SEANCE_COMMAND_NAMES()
-				local names = {}
-				for k, _ in pairs(_SEANCE_COMMANDS) do
-					table.insert(names, k)
-				end
-				return names
-			end
-		`;
-
-		lauxlib.luaL_dostring(this.L, to_luastring(bootstrap));
+	/** Push one of the functions BOOTSTRAP returned. */
+	private pushInternal(name: string): void {
+		const {lua, to_luastring} = this.fengari;
+		lua.lua_rawgeti(this.L, lua.LUA_REGISTRYINDEX, this.internals);
+		lua.lua_getfield(this.L, -1, to_luastring(name));
+		lua.lua_remove(this.L, -2);
 	}
 
 	public pushValue(val: unknown): void {
@@ -304,40 +429,44 @@ export class LuaSandbox {
 		}
 	}
 
-	public toJsValue(idx: number): unknown {
-		const {lua, lauxlib, to_jsstring} = this.fengari;
-		const type = lua.lua_type(this.L, idx);
+	/** A Lua value as JavaScript; tables are followed MAX_TABLE_DEPTH deep (a cycle ends there). */
+	public toJsValue(idx: number, state: any = this.L, depth = 0): unknown {
+		const {lua, to_jsstring} = this.fengari;
+		const type = lua.lua_type(state, idx);
 
 		switch (type) {
 			case lua.LUA_TNIL:
 				return undefined;
 			case lua.LUA_TBOOLEAN:
-				return lua.lua_toboolean(this.L, idx);
+				return lua.lua_toboolean(state, idx);
 			case lua.LUA_TNUMBER:
-				return lua.lua_tonumber(this.L, idx);
+				return lua.lua_tonumber(state, idx);
 
 			case lua.LUA_TSTRING: {
-				const str = lua.lua_tostring(this.L, idx);
+				const str = lua.lua_tostring(state, idx);
 				return str ? to_jsstring(str) : "";
 			}
 
 			case lua.LUA_TTABLE: {
-				const obj: Record<string, unknown> = {};
-				const absIdx = idx < 0 ? lua.lua_gettop(this.L) + idx + 1 : idx;
-				lua.lua_pushnil(this.L);
+				if (depth >= MAX_TABLE_DEPTH) {
+					return undefined;
+				}
 
-				while (lua.lua_next(this.L, absIdx) !== 0) {
-					const k = String(this.toJsValue(-2));
-					const v = this.toJsValue(-1);
-					obj[k] = v;
-					lua.lua_pop(this.L, 1);
+				const obj: Record<string, unknown> = {};
+				const absIdx = idx < 0 ? lua.lua_gettop(state) + idx + 1 : idx;
+				lua.lua_pushnil(state);
+
+				while (lua.lua_next(state, absIdx) !== 0) {
+					const k = String(this.toJsValue(-2, state, depth + 1));
+					obj[k] = this.toJsValue(-1, state, depth + 1);
+					lua.lua_pop(state, 1);
 				}
 
 				return obj;
 			}
 
 			default:
-				return `[lua ${to_jsstring(lua.lua_typename(this.L, type))}]`;
+				return `[lua ${to_jsstring(lua.lua_typename(state, type))}]`;
 		}
 	}
 
@@ -345,34 +474,43 @@ export class LuaSandbox {
 		code: string,
 		scriptId?: string
 	): {success: boolean; result?: string; error?: string} {
-		const {lua, lauxlib, to_luastring, to_jsstring} = this.fengari;
+		const {lua, lauxlib, to_jsstring} = this.fengari;
+		const L = this.L;
+		lua.lua_settop(L, 0);
 		this.resetInstructions();
-		this.currentScriptId = scriptId;
 
-		const loadStatus = lauxlib.luaL_loadstring(this.L, to_luastring(code));
+		const fail = () => {
+			const error = to_jsstring(lauxlib.luaL_tolstring(L, -1));
+			lua.lua_settop(L, 0);
+			return {success: false, error};
+		};
 
-		if (loadStatus !== lua.LUA_OK) {
-			const err = to_jsstring(lauxlib.luaL_tolstring(this.L, -1));
-			lua.lua_pop(this.L, 1);
-			return {success: false, error: err};
+		this.pushInternal("load");
+		this.pushValue(scriptId ?? SNIPPET_ID);
+		this.pushValue(code);
+
+		if (lua.lua_pcall(L, 2, 2, 0) !== lua.LUA_OK) {
+			return fail();
 		}
 
-		const callStatus = lua.lua_pcall(this.L, 0, lua.LUA_MULTRET, 0);
-
-		if (callStatus !== lua.LUA_OK) {
-			const err = to_jsstring(lauxlib.luaL_tolstring(this.L, -1));
-			lua.lua_pop(this.L, 1);
-			return {success: false, error: err};
+		if (lua.lua_isnil(L, -2)) {
+			return fail(); // a syntax error: load's second result
 		}
 
-		const nres = lua.lua_gettop(this.L);
+		lua.lua_pop(L, 1);
+
+		if (lua.lua_pcall(L, 0, lua.LUA_MULTRET, 0) !== lua.LUA_OK) {
+			return fail();
+		}
+
+		const nres = lua.lua_gettop(L);
 		const results: string[] = [];
 
 		for (let i = 1; i <= nres; i++) {
 			results.push(String(this.toJsValue(i)));
 		}
 
-		lua.lua_settop(this.L, 0);
+		lua.lua_settop(L, 0);
 
 		return {
 			success: true,
@@ -380,62 +518,37 @@ export class LuaSandbox {
 		};
 	}
 
-	public dispatch(event: string, payload: unknown): void {
-		const {lua, to_luastring} = this.fengari;
+	/** Call one of the internals; its first result, or undefined when it failed. */
+	private call(name: string, args: unknown[]): unknown {
+		const {lua} = this.fengari;
+		const top = lua.lua_gettop(this.L);
 		this.resetInstructions();
-		lua.lua_getglobal(this.L, to_luastring("_SEANCE_DISPATCH"));
-		this.pushValue(event);
-		this.pushValue(payload);
-		lua.lua_pcall(this.L, 2, 0, 0);
+		this.pushInternal(name);
+
+		for (const arg of args) {
+			this.pushValue(arg);
+		}
+
+		const status = lua.lua_pcall(this.L, args.length, 1, 0);
+		const result = status === lua.LUA_OK ? this.toJsValue(-1) : undefined;
+		lua.lua_settop(this.L, top);
+		return result;
+	}
+
+	public dispatch(event: string, payload: unknown): void {
+		this.call("dispatch", [event, payload]);
 	}
 
 	public runCommand(name: string, args: string[], rest: string): boolean {
-		const {lua, to_luastring} = this.fengari;
-		this.resetInstructions();
-		lua.lua_getglobal(this.L, to_luastring("_SEANCE_RUN_COMMAND"));
-		this.pushValue(name);
-		this.pushValue(args);
-		this.pushValue(rest);
-		const status = lua.lua_pcall(this.L, 3, 1, 0);
-
-		if (status !== lua.LUA_OK) {
-			lua.lua_pop(this.L, 1);
-			return false;
-		}
-
-		const handled = lua.lua_toboolean(this.L, -1);
-		lua.lua_pop(this.L, 1);
-		return Boolean(handled);
+		return this.call("run", [name, args, rest]) === true;
 	}
 
 	public hasCommand(name: string): boolean {
-		const {lua, to_luastring} = this.fengari;
-		lua.lua_getglobal(this.L, to_luastring("_SEANCE_HAS_COMMAND"));
-		this.pushValue(name);
-		const status = lua.lua_pcall(this.L, 1, 1, 0);
-
-		if (status !== lua.LUA_OK) {
-			lua.lua_pop(this.L, 1);
-			return false;
-		}
-
-		const has = lua.lua_toboolean(this.L, -1);
-		lua.lua_pop(this.L, 1);
-		return Boolean(has);
+		return this.call("has", [name]) === true;
 	}
 
 	public getRegisteredCommandNames(): string[] {
-		const {lua, to_luastring} = this.fengari;
-		lua.lua_getglobal(this.L, to_luastring("_SEANCE_COMMAND_NAMES"));
-		const status = lua.lua_pcall(this.L, 0, 1, 0);
-
-		if (status !== lua.LUA_OK) {
-			lua.lua_pop(this.L, 1);
-			return [];
-		}
-
-		const res = this.toJsValue(-1);
-		lua.lua_pop(this.L, 1);
+		const res = this.call("names", []);
 		return res && typeof res === "object" ? Object.values(res as Record<string, string>) : [];
 	}
 

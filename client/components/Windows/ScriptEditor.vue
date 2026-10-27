@@ -203,6 +203,10 @@
 					</button>
 				</div>
 
+				<div v-if="saveError" class="script-error-banner" role="alert">
+					<strong>Not saved:</strong> {{ saveError }}
+				</div>
+
 				<div v-if="selected.lastError" class="script-error-banner" role="alert">
 					<strong>Error:</strong> {{ selected.lastError }}
 				</div>
@@ -214,6 +218,7 @@
 					<textarea
 						ref="codeArea"
 						v-model="selected.code"
+						:maxlength="maxCodeLength"
 						class="input script-code-area"
 						aria-label="Lua code"
 						placeholder="-- Write your Lua code here"
@@ -623,6 +628,8 @@ import {
 	saveScripts,
 	scriptFolders,
 	DEFAULT_FOLDER,
+	MAX_CODE_LENGTH,
+	ScriptStorageError,
 } from "../../js/irc/scripting/storage";
 import type {Script} from "../../js/irc/scripting/types";
 import {scriptManager} from "../../js/irc/scripting/manager";
@@ -644,6 +651,7 @@ export default defineComponent({
 		const statusFilter = ref<"all" | "enabled" | "disabled" | "error">("all");
 		const folderFilter = ref<string | null>(null);
 		const statusMsg = ref("");
+		const saveError = ref("");
 		const importInput = ref<HTMLInputElement>();
 		const codeArea = ref<HTMLTextAreaElement>();
 		const gutter = ref<HTMLElement>();
@@ -723,22 +731,38 @@ export default defineComponent({
 			}
 
 			scripts.value.sort(compareScripts);
-			saveScripts(scripts.value);
+
+			try {
+				saveScripts(scripts.value);
+			} catch (err) {
+				if (!(err instanceof ScriptStorageError)) {
+					throw err;
+				}
+
+				saveError.value = err.message;
+				return false;
+			}
+
+			saveError.value = "";
 			void scriptManager.reload();
+			return true;
 		};
 
 		const schedulePersist = () => {
 			clearTimeout(saveTimer);
 			saveTimer = setTimeout(() => {
-				persistNow();
-				flash("Saved");
+				if (persistNow()) {
+					flash("Saved");
+				}
 			}, 600);
 		};
 
 		const flushPersist = () => {
 			clearTimeout(saveTimer);
-			persistNow();
-			flash("Saved");
+
+			if (persistNow()) {
+				flash("Saved");
+			}
 		};
 
 		onUnmounted(() => {
@@ -894,7 +918,19 @@ export default defineComponent({
 				return;
 			}
 
+			// Characters are at most four bytes: refuse before reading a huge file.
+			if (file.size > MAX_CODE_LENGTH * 4) {
+				flash(`${file.name} is too long to import`);
+				return;
+			}
+
 			const code = await file.text();
+
+			if (code.length > MAX_CODE_LENGTH) {
+				flash(`${file.name} is over ${MAX_CODE_LENGTH.toLocaleString("en")} characters`);
+				return;
+			}
+
 			const base =
 				file.name
 					.replace(/\.lua$/i, "")
@@ -953,6 +989,8 @@ export default defineComponent({
 			countInFolder,
 			lineCount,
 			statusMsg,
+			saveError,
+			maxCodeLength: MAX_CODE_LENGTH,
 			importInput,
 			codeArea,
 			gutter,

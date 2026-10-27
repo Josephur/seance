@@ -8,14 +8,30 @@ import type {Script, ScriptStorageBackend} from "./types";
 export const STORAGE_KEY = "thelounge.scripts";
 export const STORAGE_PREFIX = "thelounge.script_storage.";
 
+// Sizes are in characters, which is what a browser's localStorage quota
+// counts (about 5M per origin, shared with the networks, the query logs and
+// every other setting). Scripting as a whole stays under 400k of it.
 export const MAX_SCRIPTS = 50;
 export const MAX_NAME_LENGTH = 32;
-export const MAX_CODE_LENGTH = 50000;
+/** One script's source. */
+export const MAX_CODE_LENGTH = 16_000;
+/** Read limit only: a script saved under the old 50k limit still loads. */
+const MAX_STORED_CODE_LENGTH = 50_000;
+/** The whole library as stored. */
+export const MAX_LIBRARY_LENGTH = 256_000;
+/** One script's `seance.storage`, as stored. */
+export const MAX_DATA_LENGTH = 16_000;
+/** Every script's `seance.storage` together. */
+export const MAX_TOTAL_DATA_LENGTH = 128_000;
+const MAX_ERROR_LENGTH = 500;
 export const MAX_FOLDER_LENGTH = 40;
 export const MAX_DESCRIPTION_LENGTH = 120;
 export const DEFAULT_FOLDER = "Unsorted";
 
 const NAME_PATTERN = /^[a-z0-9][a-z0-9_-]*$/i;
+
+/** A save refused for its size, or one the browser's storage did not keep. */
+export class ScriptStorageError extends Error {}
 
 /**
  * A folder is a short free-text label (letters, digits, spaces and a few
@@ -114,7 +130,7 @@ export function isValidScript(entry: unknown): entry is Script {
 		typeof name === "string" &&
 		isValidScriptName(name) &&
 		typeof code === "string" &&
-		code.length <= MAX_CODE_LENGTH &&
+		code.length <= MAX_STORED_CODE_LENGTH &&
 		typeof enabled === "boolean"
 	);
 }
@@ -169,13 +185,45 @@ export function loadScripts(): Script[] {
 	}
 }
 
+/** Write `value`, and check it landed: the localStorage wrapper swallows a full quota. */
+function write(key: string, value: string): void {
+	backend.set(key, value);
+
+	if (backend.get(key) !== value) {
+		throw new ScriptStorageError("There isn't room on this device to save that.");
+	}
+}
+
+/** Save the library; throws {@link ScriptStorageError} and changes nothing when it does not fit. */
 export function saveScripts(list: Script[]): void {
 	if (list.length === 0) {
 		backend.remove(STORAGE_KEY);
 		return;
 	}
 
-	backend.set(STORAGE_KEY, JSON.stringify(list));
+	const long = list.find((s) => s.code.length > MAX_CODE_LENGTH);
+
+	if (long) {
+		throw new ScriptStorageError(
+			`“${long.name}” is over ${MAX_CODE_LENGTH.toLocaleString("en")} characters.`
+		);
+	}
+
+	const json = JSON.stringify(
+		list.map((s) =>
+			s.lastError && s.lastError.length > MAX_ERROR_LENGTH
+				? {...s, lastError: `${s.lastError.slice(0, MAX_ERROR_LENGTH)}…`}
+				: s
+		)
+	);
+
+	if (json.length > MAX_LIBRARY_LENGTH) {
+		throw new ScriptStorageError(
+			`Your scripts are over ${MAX_LIBRARY_LENGTH.toLocaleString("en")} characters together.`
+		);
+	}
+
+	write(STORAGE_KEY, json);
 }
 
 export function getScript(id: string): Script | undefined {
@@ -218,13 +266,40 @@ export function loadScriptData(scriptId: string): Record<string, string> {
 	}
 }
 
+/** Save one script's data; throws {@link ScriptStorageError} and changes nothing when it does not fit. */
 export function saveScriptData(scriptId: string, data: Record<string, string>): void {
-	const keys = Object.keys(data);
+	const key = `${STORAGE_PREFIX}${scriptId}`;
 
-	if (keys.length === 0) {
-		backend.remove(`${STORAGE_PREFIX}${scriptId}`);
+	if (Object.keys(data).length === 0) {
+		backend.remove(key);
 		return;
 	}
 
-	backend.set(`${STORAGE_PREFIX}${scriptId}`, JSON.stringify(data));
+	const json = JSON.stringify(data);
+
+	if (json.length > MAX_DATA_LENGTH) {
+		throw new ScriptStorageError(
+			`seance.storage is over ${MAX_DATA_LENGTH.toLocaleString(
+				"en"
+			)} characters for this script.`
+		);
+	}
+
+	let total = json.length;
+
+	for (const other of backend.keys()) {
+		if (other.startsWith(STORAGE_PREFIX) && other !== key) {
+			total += backend.get(other)?.length ?? 0;
+		}
+	}
+
+	if (total > MAX_TOTAL_DATA_LENGTH) {
+		throw new ScriptStorageError(
+			`seance.storage is over ${MAX_TOTAL_DATA_LENGTH.toLocaleString(
+				"en"
+			)} characters for all scripts together.`
+		);
+	}
+
+	write(key, json);
 }

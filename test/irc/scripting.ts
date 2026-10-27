@@ -1,7 +1,15 @@
 import {expect} from "chai";
+import sinon from "ts-sinon";
+import socket from "../../client/js/socket";
 import {
 	loadScripts,
 	saveScripts,
+	saveScript,
+	ScriptStorageError,
+	MAX_CODE_LENGTH,
+	MAX_DATA_LENGTH,
+	MAX_LIBRARY_LENGTH,
+	MAX_TOTAL_DATA_LENGTH,
 	deleteScript,
 	isValidScriptName,
 	loadScriptData,
@@ -14,9 +22,16 @@ import {
 	normalizeFolder,
 	scriptFolders,
 } from "../../client/js/irc/scripting/storage";
-import {LuaSandbox, type SandboxHost} from "../../client/js/irc/scripting/engine";
+import {LuaSandbox, MAX_REP_LENGTH, type SandboxHost} from "../../client/js/irc/scripting/engine";
 import type {Script, ScriptMessageEvent} from "../../client/js/irc/scripting/types";
-import {scriptManager, SCRIPTING_DISABLED_ERROR} from "../../client/js/irc/scripting/manager";
+import {
+	scriptManager,
+	setContextProvider,
+	MAX_QUEUED_LINES,
+	SCRIPTING_DISABLED_ERROR,
+} from "../../client/js/irc/scripting/manager";
+import {IRCU_FAKE_LAG} from "../../client/js/irc/fakelag";
+import {register, setup} from "./support";
 import {isScriptingEnabled, setScriptingEnabled} from "../../client/js/irc/scripting/enabled";
 
 describe("Lua scripting subsystem", function () {
@@ -29,6 +44,7 @@ describe("Lua scripting subsystem", function () {
 				get: (k) => store.get(k) ?? null,
 				set: (k, v) => void store.set(k, v),
 				remove: (k) => void store.delete(k),
+				keys: () => [...store.keys()],
 			});
 		});
 
@@ -138,6 +154,76 @@ describe("Lua scripting subsystem", function () {
 				"z",
 			]);
 		});
+
+		it("refuses a script over the size limit and keeps what was stored", function () {
+			const ok: Script = {id: "a", name: "a", folder: "Unsorted", code: "x", enabled: true};
+			saveScripts([ok]);
+			const long = {...ok, code: "x".repeat(MAX_CODE_LENGTH + 1)};
+			expect(() => saveScripts([long])).to.throw(
+				ScriptStorageError,
+				/over 16,000 characters/
+			);
+			expect(loadScripts()[0].code).to.equal("x");
+		});
+
+		it("refuses a library over the total limit", function () {
+			const code = "x".repeat(MAX_CODE_LENGTH);
+			const list: Script[] = [];
+
+			for (let i = 0; list.length * MAX_CODE_LENGTH <= MAX_LIBRARY_LENGTH; i++) {
+				list.push({id: `s${i}`, name: `s${i}`, folder: "Unsorted", code, enabled: true});
+			}
+
+			expect(() => saveScripts(list)).to.throw(ScriptStorageError, /together/);
+			expect(store.has(STORAGE_KEY)).to.be.false;
+		});
+
+		it("still loads a script saved under the old, larger limit", function () {
+			const code = "x".repeat(MAX_CODE_LENGTH + 100);
+			store.set(STORAGE_KEY, JSON.stringify([{id: "old", name: "old", code, enabled: true}]));
+			expect(loadScripts()).to.have.lengthOf(1);
+		});
+
+		it("reports a write the browser's storage did not keep", function () {
+			useStorageBackend({
+				get: (k) => store.get(k) ?? null,
+				// localStorage's wrapper swallows a full quota like this
+				set() {},
+				remove: (k) => void store.delete(k),
+				keys: () => [...store.keys()],
+			});
+			const script: Script = {
+				id: "a",
+				name: "a",
+				folder: "Unsorted",
+				code: "x",
+				enabled: true,
+			};
+			expect(() => saveScript(script)).to.throw(ScriptStorageError, /room/);
+			expect(() => saveScriptData("a", {k: "v"})).to.throw(ScriptStorageError, /room/);
+		});
+
+		it("caps each script's data and all of it together", function () {
+			expect(() => saveScriptData("a", {k: "x".repeat(MAX_DATA_LENGTH)})).to.throw(
+				ScriptStorageError,
+				/for this script/
+			);
+			expect(store.has(`${STORAGE_PREFIX}a`)).to.be.false;
+
+			const chunk = "x".repeat(MAX_DATA_LENGTH - 100);
+			let n = 0;
+
+			while ((n + 1) * MAX_DATA_LENGTH <= MAX_TOTAL_DATA_LENGTH) {
+				saveScriptData(`s${n++}`, {k: chunk});
+			}
+
+			expect(() => saveScriptData(`s${n}`, {k: chunk})).to.throw(
+				ScriptStorageError,
+				/all scripts together/
+			);
+			// Rewriting a bucket counts it once, not twice.
+			saveScriptData("s0", {k: chunk});
+		});
 	});
 
 	describe("sandbox engine (irc/scripting/engine.ts)", function () {
@@ -181,6 +267,7 @@ describe("Lua scripting subsystem", function () {
 				get: (k) => mockStore.get(k) ?? null,
 				set: (k, v) => void mockStore.set(k, v),
 				remove: (k) => void mockStore.delete(k),
+				keys: () => [...mockStore.keys()],
 			});
 			sandbox = await LuaSandbox.create(mockHost);
 		});
@@ -202,18 +289,31 @@ describe("Lua scripting subsystem", function () {
 			expect(res.error).to.be.a("string");
 		});
 
-		it("sanitizes dangerous globals (io, os, package, debug)", function () {
+		it("opens no io, os, package or debug library, not even through require", function () {
 			const res = sandbox.eval(`
-				assert(io == nil, "io should be nil")
-				assert(os == nil, "os should be nil")
-				assert(package == nil, "package should be nil")
-				assert(debug == nil, "debug should be nil")
-				assert(dofile == nil, "dofile should be nil")
-				assert(loadfile == nil, "loadfile should be nil")
+				assert(io == nil and os == nil and package == nil and debug == nil)
+				assert(require == nil and dofile == nil and loadfile == nil)
+				assert(string.dump == nil)
 				return "secure"
 			`);
 			expect(res.success).to.be.true;
 			expect(res.result).to.equal("secure");
+		});
+
+		it("loads source text only, never bytecode", function () {
+			const res = sandbox.eval(`
+				local fn, err = load("\\27Lua")
+				assert(fn == nil and err:find("binary"), err)
+				return load("return 1 + 1")(), load("return x", "c", "t", {x = 5})()
+			`);
+			expect(res.success, res.error).to.be.true;
+			expect(res.result).to.equal("2  5");
+		});
+
+		it("caps what string.rep may build", function () {
+			const res = sandbox.eval(`return pcall(string.rep, "x", ${MAX_REP_LENGTH + 1})`);
+			expect(res.result).to.include("false").and.include("too large");
+			expect(sandbox.eval(`return #("ab"):rep(3, ",")`).result).to.equal("8");
 		});
 
 		it("aborts infinite loops with instruction count hook", function () {
@@ -221,6 +321,78 @@ describe("Lua scripting subsystem", function () {
 			const res = sandbox.eval("while true do end");
 			expect(res.success).to.be.false;
 			expect(res.error).to.include("Instruction limit exceeded");
+		});
+
+		it("counts coroutines and does not let pcall catch the limit and go round again", function () {
+			this.timeout(5000);
+
+			for (const code of [
+				"return coroutine.resume(coroutine.create(function() while true do end end))",
+				"return pcall(coroutine.wrap(function() while true do end end))",
+				"while true do pcall(function() while true do end end) end",
+			]) {
+				const res = sandbox.eval(code);
+				expect(res.success, code).to.be.false;
+				expect(res.error).to.include("Instruction limit exceeded");
+			}
+
+			// The next call starts with a fresh budget.
+			expect(sandbox.eval("return 1").result).to.equal("1");
+		});
+
+		it("keeps seance read-only and the dispatch internals out of reach", function () {
+			const res = sandbox.eval(`
+				local ok, err = pcall(function() seance.send = nil end)
+				assert(not ok and err:find("read%-only"), err)
+				assert(getmetatable(seance) == false)
+				assert(_SEANCE_HANDLERS == nil and _SEANCE_DISPATCH == nil and _SEANCE_ERROR == nil)
+				return "ok"
+			`);
+			expect(res.success, res.error).to.be.true;
+		});
+
+		it("gives each script its own globals", function () {
+			sandbox.eval("x = 1", "one");
+			expect(sandbox.eval("return tostring(x)", "two").result).to.equal("nil");
+			expect(sandbox.eval("return x", "one").result).to.equal("1");
+		});
+
+		it("credits storage and errors to the script whose handler ran", function () {
+			const owners: (string | undefined)[] = [];
+			const host = {...mockHost, onError: (_e: string, id?: string) => void owners.push(id)};
+			sandbox.close();
+
+			return LuaSandbox.create(host).then((sb) => {
+				sandbox = sb;
+				sb.eval(`seance.on("message", function() seance.storage.set("k", "A") end)`, "A");
+				sb.eval(
+					`seance.on("message", function() seance.storage.set("k", "B"); error("boom") end)`,
+					"B"
+				);
+				sb.eval(`seance.register_command("c", function() error("cmd") end)`, "C");
+				sb.dispatch("message", {text: "hi"});
+				sb.runCommand("c", [], "");
+				expect(loadScriptData("A")).to.deep.equal({k: "A"});
+				expect(loadScriptData("B")).to.deep.equal({k: "B"});
+				expect(owners).to.deep.equal(["B", "C"]);
+			});
+		});
+
+		it("raises seance.storage's limit as a Lua error", function () {
+			const res = sandbox.eval(
+				`seance.storage.set("k", string.rep("x", ${MAX_DATA_LENGTH}))`,
+				"big"
+			);
+			expect(res.success).to.be.false;
+			expect(res.error).to.include("seance.storage:").and.include("for this script");
+		});
+
+		it("survives a table that contains itself", function () {
+			const res = sandbox.eval(
+				`local t = {target = "#c"}; t.self = t; seance.reply(t, "hi")`
+			);
+			expect(res.success, res.error).to.be.true;
+			expect(repliedLines).to.have.lengthOf(1);
 		});
 
 		it("supports seance.on('message') event handlers", function () {
@@ -390,6 +562,95 @@ describe("Lua scripting subsystem", function () {
 		});
 	});
 
+	describe("what scripts send (irc/scripting/manager.ts)", function () {
+		let store: Map<string, string>;
+		let clock: sinon.SinonFakeTimers;
+		let printed: string[];
+		let ownSpy = false;
+
+		beforeEach(async function () {
+			store = new Map<string, string>();
+			useStorageBackend({
+				get: (k) => store.get(k) ?? null,
+				set: (k, v) => void store.set(k, v),
+				remove: (k) => void store.delete(k),
+				keys: () => [...store.keys()],
+			});
+			printed = [];
+
+			if (!(socket.dispatch as any).isSinonProxy) {
+				sinon.spy(socket, "dispatch");
+				ownSpy = true;
+			}
+
+			saveScripts([
+				{
+					id: "bot",
+					name: "bot",
+					folder: "Unsorted",
+					// Answers everything, its own lines included: the loop
+					// the echo guard is for.
+					code: `seance.on("message", function(m) seance.reply(m, "pong") end)`,
+					enabled: true,
+				},
+			]);
+			setScriptingEnabled(true);
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			await scriptManager.reload();
+			clock = sinon.useFakeTimers({now: Date.parse("2026-10-27T12:00:00.000Z")});
+		});
+
+		afterEach(function () {
+			clock.restore();
+			setContextProvider(null);
+			setScriptingEnabled(false);
+			scriptManager.teardown();
+			useStorageBackend(null);
+
+			if (ownSpy) {
+				(socket.dispatch as sinon.SinonSpy).restore();
+				ownSpy = false;
+			}
+		});
+
+		function connected(fakeLag = IRCU_FAKE_LAG) {
+			const h = setup({fakeLag});
+			register(h);
+			setContextProvider({
+				getContext: () => ({channel: "#seance", network: h.client.name, nick: "alice"}),
+				print: (text) => void printed.push(text),
+				clientFor: () => h.client,
+				clientNamed: () => h.client,
+			});
+			return h;
+		}
+
+		it("sends a handler's reply through the fake-lag queue and ignores its own echo", function () {
+			const h = connected();
+			h.transport.line(":bob!b@host PRIVMSG #seance :!ping");
+			clock.tick(30_000);
+			expect(h.sent()).to.deep.equal(["PRIVMSG #seance :pong"]);
+
+			h.transport.line(":alice!alice@host PRIVMSG #seance :pong");
+			clock.tick(30_000);
+			expect(h.sent()).to.deep.equal([]);
+		});
+
+		it("drops what does not fit in the queue and says so", function () {
+			const h = connected();
+
+			for (let i = 0; i < MAX_QUEUED_LINES + 5; i++) {
+				h.transport.line(`:bob!b@host PRIVMSG #seance :hi ${i}`);
+			}
+
+			expect(printed.some((p) => p.includes("already waiting"))).to.be.true;
+			clock.tick(600_000);
+			const sent = h.sent().filter((l) => l === "PRIVMSG #seance :pong");
+			expect(sent.length).to.be.at.most(MAX_QUEUED_LINES + 3);
+			expect(sent.length).to.be.lessThan(MAX_QUEUED_LINES + 5);
+		});
+	});
+
 	describe("manager gate (irc/scripting/manager.ts + enabled.ts)", function () {
 		let store: Map<string, string>;
 
@@ -399,6 +660,7 @@ describe("Lua scripting subsystem", function () {
 				get: (k) => store.get(k) ?? null,
 				set: (k, v) => void store.set(k, v),
 				remove: (k) => void store.delete(k),
+				keys: () => [...store.keys()],
 			});
 			setScriptingEnabled(false);
 			scriptManager.teardown();
