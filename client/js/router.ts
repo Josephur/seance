@@ -82,12 +82,6 @@ const router = createRouter({
 					path: "aliases",
 					component: AliasSettings,
 				},
-				{
-					// The editor used to live here; it is a full-screen
-					// window now (below), so old links land there.
-					path: "scripts",
-					redirect: {name: "ScriptEditor"},
-				},
 			],
 		},
 		{

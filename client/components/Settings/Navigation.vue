@@ -91,10 +91,6 @@
 	content: "\f120"; /* https://fontawesome.com/icons/terminal */
 }
 
-.settings-menu .scripts::before {
-	content: "\f121"; /* https://fontawesome.com/icons/code */
-}
-
 .settings-menu button:hover,
 .settings-menu button.active {
 	color: var(--body-color);
