@@ -141,6 +141,12 @@ describe("markdown — inline code", () => {
 			{text: "d0nk`: try "},
 			{text: "ls", monospace: true},
 		]);
+		expect(md("d0nk``: hi d0nk``")).to.deep.equal([{text: "d0nk``: hi d0nk``"}]);
+		// Bold on the nick splits the fragments, but the word still ends at the backtick
+		expect(md("\x02d0nk\x02`: hi d0nk`")).to.deep.equal([
+			{text: "d0nk", bold: true},
+			{text: "`: hi d0nk`"},
+		]);
 	});
 });
 
