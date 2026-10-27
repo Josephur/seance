@@ -348,6 +348,8 @@ function showPageNotification(event, payload) {
 					icon: "img/icon-192.png",
 					body: payload.body,
 					timestamp: payload.timestamp,
+					// The page's sound setting; the OS plays the sound otherwise.
+					silent: payload.silent === true,
 					data: {
 						kind: "page",
 						network: payload.network,
@@ -1592,8 +1594,9 @@ function reshowQuietly(n) {
  * itself, and is asking for it to be shown). `mustShow` (a push under
  * WebKit, above) shows the notification even when the message adds nothing
  * to it: same tag, same count, so a redelivery or a message the page took
- * first is one notification, re-shown, and never a silent push. */
-async function showMessage(P, parsed, checkSeen, mustShow = false) {
+ * first is one notification, re-shown, and never a silent push. `silent`
+ * (the page's own alert, with its sound setting off) shows it without one. */
+async function showMessage(P, parsed, checkSeen, mustShow = false, silent = false) {
 	const msgid = typeof parsed.tags.msgid === "string" ? parsed.tags.msgid : undefined;
 
 	const line = P.lineIndexOf(parsed.tags);
@@ -1729,6 +1732,7 @@ async function showMessage(P, parsed, checkSeen, mustShow = false) {
 	await showSafely(title, {
 		tag,
 		renotify: added.isNew,
+		silent,
 		icon: "img/icon-192.png",
 		body,
 		timestamp: time ? Date.parse(time) : undefined,
@@ -1820,7 +1824,9 @@ async function handlePageMessageNow(payload) {
 			target: payload.target,
 			text: typeof m.text === "string" ? m.text : "",
 		},
-		false
+		false,
+		false,
+		payload.silent === true
 	);
 }
 
