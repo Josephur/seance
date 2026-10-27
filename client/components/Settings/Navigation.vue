@@ -11,7 +11,6 @@
 			<SettingTabItem name="Appearance" class-name="appearance" to="appearance" />
 			<SettingTabItem name="Notifications" class-name="notifications" to="notifications" />
 			<SettingTabItem name="Aliases" class-name="aliases" to="aliases" />
-			<SettingTabItem name="Scripts" class-name="scripts" to="scripts" />
 		</ul>
 	</aside>
 </template>

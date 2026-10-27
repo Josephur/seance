@@ -12,8 +12,22 @@ import {MessageType} from "../../../../shared/types/msg";
 import type {Channel} from "../channel";
 import type {IrcClient} from "../client";
 import {LuaSandbox, type SandboxHost} from "./engine";
+import {isScriptingEnabled, onScriptingEnabledChange} from "./enabled";
 import {loadScripts, saveScript, getScript} from "./storage";
-import type {Script, ScriptMessageEvent} from "./types";
+import type {
+	Script,
+	ScriptMessageEvent,
+	ScriptJoinEvent,
+	ScriptPartEvent,
+	ScriptQuitEvent,
+	ScriptKickEvent,
+	ScriptNickEvent,
+	ScriptTopicEvent,
+	ScriptModeEvent,
+} from "./types";
+
+export const SCRIPTING_DISABLED_ERROR =
+	"Scripting is disabled. Enable it in Settings → General → Enable Scripting.";
 
 export interface ActiveContextProvider {
 	getContext(): {channel: string; network: string; nick: string};
@@ -39,7 +53,26 @@ class ScriptManager implements SandboxHost {
 		nick: string;
 	};
 
+	/** Whether the sandbox exists — the Fengari chunk has been loaded. */
+	public get loaded(): boolean {
+		return this.sandbox !== null;
+	}
+
+	/** Drop the sandbox (and with it the loaded Lua state) at once. */
+	public teardown(): void {
+		if (this.sandbox) {
+			this.sandbox.close();
+			this.sandbox = null;
+		}
+
+		this.initPromise = null;
+	}
+
 	public async init(): Promise<void> {
+		if (!isScriptingEnabled()) {
+			return;
+		}
+
 		if (this.initPromise) {
 			return this.initPromise;
 		}
@@ -59,6 +92,10 @@ class ScriptManager implements SandboxHost {
 	}
 
 	public async ensureSandbox(): Promise<LuaSandbox> {
+		if (!isScriptingEnabled()) {
+			throw new Error(SCRIPTING_DISABLED_ERROR);
+		}
+
 		if (!this.sandbox) {
 			this.sandbox = await LuaSandbox.create(this);
 		}
@@ -67,6 +104,11 @@ class ScriptManager implements SandboxHost {
 	}
 
 	public async reload(): Promise<void> {
+		if (!isScriptingEnabled()) {
+			this.teardown();
+			return;
+		}
+
 		if (this.sandbox) {
 			this.sandbox.close();
 			this.sandbox = null;
@@ -100,6 +142,10 @@ class ScriptManager implements SandboxHost {
 		code: string,
 		ctx?: {chan?: Channel; client?: IrcClient}
 	): Promise<{success: boolean; result?: string; error?: string}> {
+		if (!isScriptingEnabled()) {
+			return {success: false, error: SCRIPTING_DISABLED_ERROR};
+		}
+
 		if (ctx) {
 			this.activeContextOverride = {
 				client: ctx.client,
@@ -141,6 +187,97 @@ class ScriptManager implements SandboxHost {
 		} catch (err) {
 			// eslint-disable-next-line no-console
 			console.error("[scripting] Error dispatching send event:", err);
+		}
+	}
+
+	public dispatchJoin(event: ScriptJoinEvent): void {
+		if (!this.sandbox) {
+			return;
+		}
+
+		try {
+			this.sandbox.dispatch("join", event);
+		} catch (err) {
+			// eslint-disable-next-line no-console
+			console.error("[scripting] Error dispatching join event:", err);
+		}
+	}
+
+	public dispatchPart(event: ScriptPartEvent): void {
+		if (!this.sandbox) {
+			return;
+		}
+
+		try {
+			this.sandbox.dispatch("part", event);
+		} catch (err) {
+			// eslint-disable-next-line no-console
+			console.error("[scripting] Error dispatching part event:", err);
+		}
+	}
+
+	public dispatchQuit(event: ScriptQuitEvent): void {
+		if (!this.sandbox) {
+			return;
+		}
+
+		try {
+			this.sandbox.dispatch("quit", event);
+		} catch (err) {
+			// eslint-disable-next-line no-console
+			console.error("[scripting] Error dispatching quit event:", err);
+		}
+	}
+
+	public dispatchKick(event: ScriptKickEvent): void {
+		if (!this.sandbox) {
+			return;
+		}
+
+		try {
+			this.sandbox.dispatch("kick", event);
+		} catch (err) {
+			// eslint-disable-next-line no-console
+			console.error("[scripting] Error dispatching kick event:", err);
+		}
+	}
+
+	public dispatchNick(event: ScriptNickEvent): void {
+		if (!this.sandbox) {
+			return;
+		}
+
+		try {
+			this.sandbox.dispatch("nick", event);
+		} catch (err) {
+			// eslint-disable-next-line no-console
+			console.error("[scripting] Error dispatching nick event:", err);
+		}
+	}
+
+	public dispatchTopic(event: ScriptTopicEvent): void {
+		if (!this.sandbox) {
+			return;
+		}
+
+		try {
+			this.sandbox.dispatch("topic", event);
+		} catch (err) {
+			// eslint-disable-next-line no-console
+			console.error("[scripting] Error dispatching topic event:", err);
+		}
+	}
+
+	public dispatchMode(event: ScriptModeEvent): void {
+		if (!this.sandbox) {
+			return;
+		}
+
+		try {
+			this.sandbox.dispatch("mode", event);
+		} catch (err) {
+			// eslint-disable-next-line no-console
+			console.error("[scripting] Error dispatching mode event:", err);
 		}
 	}
 
@@ -279,3 +416,16 @@ class ScriptManager implements SandboxHost {
 }
 
 export const scriptManager = new ScriptManager();
+
+// The General → Enable Scripting switch (settings.ts writes the flag):
+// turning it on loads Fengari and the enabled scripts; turning it off
+// closes the Lua state at once, so no handler or command can fire again.
+onScriptingEnabledChange((enabled) => {
+	if (enabled) {
+		// Deferred: at boot this fires from settings applyAll, before boot
+		// has installed the context provider the scripts print/send through.
+		queueMicrotask(() => void scriptManager.init());
+	} else {
+		scriptManager.teardown();
+	}
+});

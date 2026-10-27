@@ -175,6 +175,11 @@ export async function boot(): Promise<void> {
 				}
 			}
 
+			if (!client) {
+				const clients = allClients();
+				client = clients[0];
+			}
+
 			if (client && client.isConnected) {
 				client.send(`PRIVMSG ${target} :${text}`);
 			}

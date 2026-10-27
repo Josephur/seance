@@ -315,8 +315,11 @@ export class LuaSandbox {
 				return lua.lua_toboolean(this.L, idx);
 			case lua.LUA_TNUMBER:
 				return lua.lua_tonumber(this.L, idx);
-			case lua.LUA_TSTRING:
-				return to_jsstring(lauxlib.luaL_tolstring(this.L, idx));
+
+			case lua.LUA_TSTRING: {
+				const str = lua.lua_tostring(this.L, idx);
+				return str ? to_jsstring(str) : "";
+			}
 
 			case lua.LUA_TTABLE: {
 				const obj: Record<string, unknown> = {};

@@ -6,9 +6,26 @@ Seance includes an embedded, sandboxed Lua scripting runtime powered by [Fengari
 
 ## Architecture & Sandboxing
 
-### Zero Initial Overhead (Lazy Loaded)
+### Off Unless Enabled (the master switch)
 
-Fengari is packaged into an asynchronous chunk (`js/fengari.js`). If a user has no active scripts and does not open the Scripts settings, Fengari is **never downloaded** (0 byte impact on normal app boot).
+Scripting is gated by **Settings → General → Enable Scripting** (setting
+`enableScripting`, default off). The flag lives in
+`client/js/irc/scripting/enabled.ts`; `settings.ts` writes it and the script
+manager subscribes to it.
+
+While it is off:
+
+- Fengari is packaged into an asynchronous chunk (`js/fengari.js`) and is
+  **never downloaded** — the manager never creates its sandbox (not at boot,
+  not for `/lua`, not for a syntax check), so there is 0 byte impact.
+- No script handler fires, no script command is known, `/lua` answers that
+  scripting is disabled, and the sidebar shows no scripting icon.
+- Scripts and their data are kept; turning the switch back on reloads the
+  enabled scripts.
+
+Turning it off closes the Lua state at once (`scriptManager.teardown()`), so
+nothing a script registered can fire again. Turning it on loads Fengari and
+the enabled scripts on demand.
 
 ### Strict Security Sandbox
 
@@ -61,6 +78,75 @@ seance.on("send", function(data)
 end)
 ```
 
+```lua
+seance.on("join", function(data)
+    -- data.network: Network name
+    -- data.channel: Channel name
+    -- data.nick:    Joined nick
+    -- data.account: Optional account name (if extended-join)
+    -- data.ident:   Username
+    -- data.host:    Hostname
+    -- data.self:    boolean (true if own client joined)
+end)
+```
+
+```lua
+seance.on("part", function(data)
+    -- data.network: Network name
+    -- data.channel: Channel name
+    -- data.nick:    Parting nick
+    -- data.message: Optional part message
+    -- data.self:    boolean (true if own client parted)
+end)
+```
+
+```lua
+seance.on("quit", function(data)
+    -- data.network: Network name
+    -- data.nick:    Quit nick
+    -- data.message: Optional quit message
+end)
+```
+
+```lua
+seance.on("kick", function(data)
+    -- data.network: Network name
+    -- data.channel: Channel name
+    -- data.nick:    Kicker nick
+    -- data.kicked:  Kicked nick
+    -- data.reason:  Optional kick reason
+    -- data.self:    boolean (true if own client was kicked)
+end)
+```
+
+```lua
+seance.on("nick", function(data)
+    -- data.network: Network name
+    -- data.oldNick: Previous nickname
+    -- data.newNick: New nickname
+    -- data.self:    boolean (true if own client renamed)
+end)
+```
+
+```lua
+seance.on("topic", function(data)
+    -- data.network: Network name
+    -- data.channel: Channel name
+    -- data.topic:   New topic text
+    -- data.nick:    Setter nickname
+end)
+```
+
+```lua
+seance.on("mode", function(data)
+    -- data.network: Network name
+    -- data.target:  Channel or nickname
+    -- data.mode:    Mode string (e.g. "+o", "-b")
+    -- data.params:  Array of mode parameters
+    -- data.from:    Setter nickname
+end)
+```
+
 ### Slash Commands
 
 #### `seance.register_command(name, callback)`
@@ -106,12 +192,21 @@ seance.storage.set("last_seen", os and os.date and os.date() or "now")
 
 ## User Interface & Commands
 
-1. **Settings → Scripts**:
+1. **The script editor** (full-screen window at `/scripts`):
 
-   - Manage Lua scripts (create, edit, delete, toggle active).
-   - Starter templates for common tasks (Auto-Responder, Custom Command).
-   - Syntax validation button ("Check").
-   - Live error reporting if a script has an issue.
+   - Opened from the scripting icon at the bottom of the sidebar, next to
+     Settings and Help — it only appears while Enable Scripting is on. The
+     old Settings → Scripts tab is gone (`/settings/scripts` redirects here).
+   - **Library organization**: every script is filed under a _folder_ (free
+     text, `Unsorted` when unset; scripts written before folders land there)
+     with an optional one-line description. The library pane groups scripts
+     by folder, offers folder chips with counts, a status filter
+     (All / Active / Disabled / With errors) and a search over name, folder,
+     description and code. Scripts sort by folder, then name.
+   - Create, edit (full-height editor with line numbers), duplicate, delete,
+     toggle active, export/import as `.lua` files, starter templates
+     (Auto-Responder files under _Automation_, /slap under _Commands_),
+     "Check syntax", and live error reporting. Edits save automatically.
 
 2. **`/lua <code>` Command**:
 

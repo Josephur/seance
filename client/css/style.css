@@ -700,6 +700,8 @@ p {
 
 #footer .settings::before { content: "\f013"; /* http://fontawesome.io/icon/cog/ */ }
 
+#footer .scripts::before { content: "\f121"; /* https://fontawesome.com/icons/code */ }
+
 #footer .help::before { content: "\f059"; /* http://fontawesome.io/icon/question/ */ }
 
 #form #upload::before { content: "\f0c6"; /* https://fontawesome.com/icons/paperclip?style=solid */ }

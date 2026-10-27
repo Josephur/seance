@@ -80,6 +80,37 @@
 			</div>
 		</div>
 		<div>
+			<h2>Scripting</h2>
+			<div>
+				<label class="opt">
+					<input
+						v-switch
+						:checked="store.state.settings.enableScripting"
+						type="checkbox"
+						name="enableScripting"
+					/>
+					Enable Scripting
+					<span
+						class="tooltipped tooltipped-n tooltipped-no-delay"
+						aria-label="Runs your Lua scripts and /lua commands in a sandbox. While this is off, the Lua interpreter is not loaded at all and no script runs."
+					>
+						<button class="extra-help" />
+					</span>
+				</label>
+				<p class="scripting-hint">
+					<template v-if="store.state.settings.enableScripting">
+						Scripting is on.
+						<router-link to="/scripts">Open the script editor</router-link>
+						or use the scripting icon at the bottom of the sidebar.
+					</template>
+					<template v-else>
+						Off: the Lua interpreter is not loaded, scripts do not run, and
+						<code>/lua</code> is disabled. Your scripts are kept.
+					</template>
+				</p>
+			</div>
+		</div>
+		<div>
 			<h2>Typing notifications</h2>
 			<div>
 				<label class="opt">
@@ -169,7 +200,8 @@
 </template>
 
 <style>
-#settings .settings-backup p {
+#settings .settings-backup p,
+#settings .scripting-hint {
 	color: var(--body-color-muted);
 }
 

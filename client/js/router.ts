@@ -16,7 +16,7 @@ import AppearanceSettings from "../components/Settings/Appearance.vue";
 import GeneralSettings from "../components/Settings/General.vue";
 import NotificationSettings from "../components/Settings/Notifications.vue";
 import AliasSettings from "../components/Settings/Aliases.vue";
-import ScriptSettings from "../components/Settings/Scripts.vue";
+import ScriptEditor from "../components/Windows/ScriptEditor.vue";
 import NetworkSettings from "../components/Settings/Networks.vue";
 import {ClientChan} from "./types";
 import {shouldShowGeneralSettings} from "./helpers/settingsTabs";
@@ -83,11 +83,25 @@ const router = createRouter({
 					component: AliasSettings,
 				},
 				{
-					name: "Scripts",
+					// The editor used to live here; it is a full-screen
+					// window now (below), so old links land there.
 					path: "scripts",
-					component: ScriptSettings,
+					redirect: {name: "ScriptEditor"},
 				},
 			],
+		},
+		{
+			name: "ScriptEditor",
+			path: "/scripts",
+			component: ScriptEditor,
+			beforeEnter(to, from, next) {
+				if (!store.state.settings.enableScripting) {
+					next({name: "General"});
+					return;
+				}
+
+				next();
+			},
 		},
 		{
 			name: "Help",

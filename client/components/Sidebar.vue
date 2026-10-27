@@ -45,6 +45,20 @@
 					></button> </router-link
 			></span>
 			<span
+				v-if="store.state.settings.enableScripting"
+				class="tooltipped tooltipped-n tooltipped-no-touch"
+				aria-label="Scripts"
+				><router-link v-slot:default="{navigate, isActive}" to="/scripts" custom>
+					<button
+						:class="['icon', 'scripts', {active: isActive}]"
+						role="tab"
+						aria-controls="script-editor"
+						aria-label="Scripts"
+						:aria-selected="isActive"
+						@click="navigate"
+					></button> </router-link
+			></span>
+			<span
 				class="tooltipped tooltipped-n tooltipped-no-touch"
 				:aria-label="
 					store.state.serverConfiguration?.isUpdateAvailable

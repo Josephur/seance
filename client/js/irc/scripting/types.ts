@@ -10,8 +10,13 @@ export interface Script {
 	name: string;
 	code: string;
 	enabled: boolean;
+	/** Library folder the script is filed under (see storage `normalizeFolder`). */
+	folder: string;
+	/** One-line note shown and searched in the script library. */
+	description?: string;
 	lastError?: string;
 	createdAt?: number;
+	updatedAt?: number;
 }
 
 export interface ScriptMessageEvent {
@@ -22,6 +27,61 @@ export interface ScriptMessageEvent {
 	type: "message" | "notice" | "action";
 	self: boolean;
 	tags?: Record<string, string>;
+}
+
+export interface ScriptJoinEvent {
+	network: string;
+	channel: string;
+	nick: string;
+	account?: string;
+	ident?: string;
+	host?: string;
+	self: boolean;
+}
+
+export interface ScriptPartEvent {
+	network: string;
+	channel: string;
+	nick: string;
+	message?: string;
+	self: boolean;
+}
+
+export interface ScriptQuitEvent {
+	network: string;
+	nick: string;
+	message?: string;
+}
+
+export interface ScriptKickEvent {
+	network: string;
+	channel: string;
+	nick: string;
+	kicked: string;
+	reason?: string;
+	self: boolean;
+}
+
+export interface ScriptNickEvent {
+	network: string;
+	oldNick: string;
+	newNick: string;
+	self: boolean;
+}
+
+export interface ScriptTopicEvent {
+	network: string;
+	channel: string;
+	topic: string;
+	nick: string;
+}
+
+export interface ScriptModeEvent {
+	network: string;
+	target: string;
+	mode: string;
+	params: string[];
+	from: string;
 }
 
 export interface ScriptCommandContext {
