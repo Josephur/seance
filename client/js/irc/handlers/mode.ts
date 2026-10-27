@@ -97,6 +97,7 @@ const mode: Handler = (client, msg) => {
 	if (!client.replaying) {
 		scriptManager.dispatchMode({
 			network: client.name,
+			networkUuid: client.uuid,
 			target,
 			mode: modes,
 			params,

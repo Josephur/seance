@@ -20,6 +20,7 @@ const part: Handler = (client, msg) => {
 	if (!client.replaying) {
 		scriptManager.dispatchPart({
 			network: client.name,
+			networkUuid: client.uuid,
 			channel: name,
 			nick,
 			message: reason || undefined,

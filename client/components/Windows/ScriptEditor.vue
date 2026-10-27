@@ -881,15 +881,11 @@ export default defineComponent({
 				return;
 			}
 
-			const res = await scriptManager.evalSnippet(script.code);
-
-			if (res.success) {
-				script.lastError = undefined;
-				flash("Syntax OK!");
-			} else {
-				script.lastError = res.error;
-				flash("Syntax error");
-			}
+			// Compiled, never run: running it would fire its top-level code
+			// and register its handlers a second time.
+			const error = await scriptManager.checkSyntax(script.code);
+			script.lastError = error;
+			flash(error === undefined ? "Syntax OK!" : "Syntax error");
 
 			// Not flushPersist: that would flash "Saved" over the verdict.
 			persistNow();

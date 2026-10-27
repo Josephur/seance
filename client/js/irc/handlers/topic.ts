@@ -31,6 +31,7 @@ const topicChange: Handler = (client, msg) => {
 
 	scriptManager.dispatchTopic({
 		network: client.name,
+		networkUuid: client.uuid,
 		channel: chan.name,
 		topic,
 		nick,

@@ -129,13 +129,12 @@ export async function boot(): Promise<void> {
 			};
 		},
 		clientFor(networkUuid) {
+			if (networkUuid !== undefined) {
+				return clientForNetwork(networkUuid);
+			}
+
 			const active = store.state.activeChannel;
-			const uuid = networkUuid ?? active?.network.uuid;
-			return (uuid ? clientForNetwork(uuid) : undefined) ?? allClients()[0];
-		},
-		clientNamed(name) {
-			const lower = name.toLowerCase();
-			return allClients().find((c) => c.name.toLowerCase() === lower);
+			return (active ? clientForNetwork(active.network.uuid) : undefined) ?? allClients()[0];
 		},
 		print(text) {
 			const active = store.state.activeChannel;

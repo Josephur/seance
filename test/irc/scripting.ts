@@ -387,6 +387,56 @@ describe("Lua scripting subsystem", function () {
 			expect(res.error).to.include("seance.storage:").and.include("for this script");
 		});
 
+		it("survives an error object whose __tostring loops or fails", function () {
+			this.timeout(5000);
+
+			for (const body of ["while true do end", 'error("x")', "return {}"]) {
+				const res = sandbox.eval(
+					`error(setmetatable({}, {__tostring = function() ${body} end}))`
+				);
+				expect(res.error).to.equal("(error object is a table value)");
+			}
+
+			sandbox.eval(
+				`seance.on("message", function() error(setmetatable({}, {__tostring = function() error("x") end})) end)`,
+				"a"
+			);
+			sandbox.eval(
+				`seance.on("message", function() seance.storage.set("ran", "yes") end)`,
+				"b"
+			);
+			sandbox.dispatch("message", {});
+			expect(errors).to.deep.equal([
+				"Error in message handler: (error object is a table value)",
+			]);
+			expect(loadScriptData("b")).to.deep.equal({ran: "yes"});
+			expect(sandbox.eval("return 1 + 1").result).to.equal("2");
+		});
+
+		it("turns a JavaScript exception in a host function into a Lua error", async function () {
+			sandbox.close();
+			sandbox = await LuaSandbox.create({
+				...mockHost,
+				print() {
+					throw new TypeError("boom");
+				},
+			});
+			const res = sandbox.eval(`return pcall(seance.print, "x")`);
+			expect(res.result).to.equal("false  internal error: boom");
+			expect(sandbox.eval("return 1 + 1").result).to.equal("2");
+		});
+
+		it("checks syntax without running anything", function () {
+			expect(sandbox.check(`seance.print("ran")`)).to.be.undefined;
+			expect(printedLines).to.deep.equal([]);
+			expect(sandbox.check("function (")).to.be.a("string");
+		});
+
+		it("reads only strings back from storage", function () {
+			mockStore.set(`${STORAGE_PREFIX}mixed`, JSON.stringify({n: 5, o: {}, s: "ok"}));
+			expect(loadScriptData("mixed")).to.deep.equal({s: "ok"});
+		});
+
 		it("survives a table that contains itself", function () {
 			const res = sandbox.eval(
 				`local t = {target = "#c"}; t.self = t; seance.reply(t, "hi")`
@@ -619,8 +669,8 @@ describe("Lua scripting subsystem", function () {
 			setContextProvider({
 				getContext: () => ({channel: "#seance", network: h.client.name, nick: "alice"}),
 				print: (text) => void printed.push(text),
-				clientFor: () => h.client,
-				clientNamed: () => h.client,
+				clientFor: (uuid) =>
+					uuid === undefined || uuid === h.client.uuid ? h.client : undefined,
 			});
 			return h;
 		}
@@ -633,6 +683,34 @@ describe("Lua scripting subsystem", function () {
 
 			h.transport.line(":alice!alice@host PRIVMSG #seance :pong");
 			clock.tick(30_000);
+			expect(h.sent()).to.deep.equal([]);
+		});
+
+		it("answers our own line in a query at its target, not ourselves", function () {
+			const h = connected();
+			h.transport.line(":alice!alice@host PRIVMSG bob :hi");
+			clock.tick(30_000);
+			expect(h.sent()).to.deep.equal(["PRIVMSG bob :pong"]);
+		});
+
+		it("drops a line for a network that is not there", function () {
+			const h = connected();
+			scriptManager.send("PRIVMSG #seance :hi", "no-such-network");
+			clock.tick(30_000);
+			expect(h.sent()).to.deep.equal([]);
+		});
+
+		it("drops queued lines when scripting is turned off", function () {
+			const h = connected();
+
+			for (let i = 0; i < 5; i++) {
+				h.transport.line(`:bob!b@host PRIVMSG #seance :hi ${i}`);
+			}
+
+			const before = h.sent().length;
+			setScriptingEnabled(false);
+			clock.tick(600_000);
+			expect(before).to.be.lessThan(5);
 			expect(h.sent()).to.deep.equal([]);
 		});
 
@@ -682,6 +760,44 @@ describe("Lua scripting subsystem", function () {
 			expect(scriptManager.getCommandNames()).to.deep.equal([]);
 			await scriptManager.init();
 			expect(scriptManager.loaded).to.be.false;
+		});
+
+		it("never installs a sandbox that finished loading after scripting was turned off", async function () {
+			saveScripts([{id: "r", name: "r", folder: "Unsorted", code: "x = 1", enabled: true}]);
+			setScriptingEnabled(true);
+			const loading = scriptManager.reload();
+			setScriptingEnabled(false);
+			await loading;
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			expect(scriptManager.loaded).to.be.false;
+		});
+
+		it("loads each script once when reloads overlap", async function () {
+			saveScripts([
+				{
+					id: "once",
+					name: "once",
+					folder: "Unsorted",
+					code: `seance.on("message", function() seance.storage.set("n", tostring((tonumber(seance.storage.get("n")) or 0) + 1)) end)`,
+					enabled: true,
+				},
+			]);
+			setScriptingEnabled(true);
+			await Promise.all([
+				scriptManager.reload(),
+				scriptManager.reload(),
+				scriptManager.init(),
+			]);
+			scriptManager.dispatchMessage({
+				network: "n",
+				networkUuid: "u",
+				target: "#c",
+				from: "bob",
+				text: "hi",
+				type: "message",
+				self: false,
+			});
+			expect(loadScriptData("once")).to.deep.equal({n: "1"});
 		});
 
 		it("loads enabled scripts when turned on and tears them down when turned off", async function () {

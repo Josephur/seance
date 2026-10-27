@@ -21,6 +21,8 @@ export interface Script {
 
 export interface ScriptMessageEvent {
 	network: string;
+	/** The connection's uuid: `seance.send(line, networkUuid)` targets it. */
+	networkUuid: string;
 	target: string;
 	from: string;
 	text: string;
@@ -31,6 +33,7 @@ export interface ScriptMessageEvent {
 
 export interface ScriptJoinEvent {
 	network: string;
+	networkUuid: string;
 	channel: string;
 	nick: string;
 	account?: string;
@@ -41,6 +44,7 @@ export interface ScriptJoinEvent {
 
 export interface ScriptPartEvent {
 	network: string;
+	networkUuid: string;
 	channel: string;
 	nick: string;
 	message?: string;
@@ -49,12 +53,14 @@ export interface ScriptPartEvent {
 
 export interface ScriptQuitEvent {
 	network: string;
+	networkUuid: string;
 	nick: string;
 	message?: string;
 }
 
 export interface ScriptKickEvent {
 	network: string;
+	networkUuid: string;
 	channel: string;
 	nick: string;
 	kicked: string;
@@ -64,6 +70,7 @@ export interface ScriptKickEvent {
 
 export interface ScriptNickEvent {
 	network: string;
+	networkUuid: string;
 	oldNick: string;
 	newNick: string;
 	self: boolean;
@@ -71,6 +78,7 @@ export interface ScriptNickEvent {
 
 export interface ScriptTopicEvent {
 	network: string;
+	networkUuid: string;
 	channel: string;
 	topic: string;
 	nick: string;
@@ -78,6 +86,7 @@ export interface ScriptTopicEvent {
 
 export interface ScriptModeEvent {
 	network: string;
+	networkUuid: string;
 	target: string;
 	mode: string;
 	params: string[];

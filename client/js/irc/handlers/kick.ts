@@ -36,6 +36,7 @@ const kick: Handler = (client, msg) => {
 
 	scriptManager.dispatchKick({
 		network: client.name,
+		networkUuid: client.uuid,
 		channel: chan.name,
 		nick: kicker,
 		kicked,

@@ -84,6 +84,13 @@ const BOOTSTRAP = `
 		error("seance is read-only", 2)
 	end
 
+	-- Never through __tostring: a script's error object could loop or fail.
+	local function describe(err)
+		local kind = type(err)
+		if kind == "string" or kind == "number" then return tostring(err) end
+		return "(error object is a " .. kind .. " value)"
+	end
+
 	local function api_for(id)
 		local storage = setmetatable({}, {
 			__index = {
@@ -142,6 +149,12 @@ const BOOTSTRAP = `
 		return base_load(code, nil, "t", env_for(id))
 	end
 
+	local function check(code)
+		local fn, err = base_load(code, nil, "t")
+		if fn then return true end
+		return err
+	end
+
 	local function dispatch(evt, data)
 		local list = handlers[lower(evt)]
 		if not list then return end
@@ -149,7 +162,7 @@ const BOOTSTRAP = `
 			host.begin()
 			local ok, err = pcall(h.fn, data)
 			if not ok then
-				host.error(h.id, "Error in " .. evt .. " handler: " .. tostring(err))
+				host.error(h.id, "Error in " .. evt .. " handler: " .. describe(err))
 			end
 		end
 	end
@@ -160,7 +173,7 @@ const BOOTSTRAP = `
 		host.begin()
 		local ok, err = pcall(cmd.fn, args, rest)
 		if not ok then
-			host.error(cmd.id, "Error in /" .. name .. " command: " .. tostring(err))
+			host.error(cmd.id, "Error in /" .. name .. " command: " .. describe(err))
 		end
 		return true
 	end
@@ -179,6 +192,7 @@ const BOOTSTRAP = `
 
 	return {
 		load = load_script,
+		check = check,
 		dispatch = dispatch,
 		run = run_command,
 		has = has_command,
@@ -199,6 +213,7 @@ export class LuaSandbox {
 		this.host = host;
 
 		this.L = fengari.lauxlib.luaL_newstate();
+		this.catchNativeErrors();
 		this.openSafeLibs();
 		this.setupInstructionHook();
 		this.bootstrap();
@@ -207,6 +222,37 @@ export class LuaSandbox {
 	public static async create(host: SandboxHost): Promise<LuaSandbox> {
 		const fengari = await getFengari();
 		return new LuaSandbox(fengari, host);
+	}
+
+	/**
+	 * A JavaScript exception thrown inside the VM (a host function, Fengari
+	 * itself) becomes an ordinary Lua error. Without this Fengari leaves the
+	 * state unusable: every later call fails, and every script with it.
+	 */
+	private catchNativeErrors(): void {
+		const {lua, to_luastring} = this.fengari;
+		lua.lua_atnativeerror(this.L, (state: any) => {
+			const err: unknown = lua.lua_touserdata(state, 1);
+			const text = err instanceof Error ? err.message : String(err);
+			lua.lua_pushstring(state, to_luastring(`internal error: ${text}`));
+			return 1;
+		});
+	}
+
+	/**
+	 * The value at `idx` as an error message, without calling `__tostring`:
+	 * outside a protected call a metamethod that loops or fails would panic
+	 * the whole state.
+	 */
+	private errorText(idx: number): string {
+		const {lua, to_jsstring} = this.fengari;
+		const type = lua.lua_type(this.L, idx);
+
+		if (type === lua.LUA_TSTRING || type === lua.LUA_TNUMBER) {
+			return to_jsstring(lua.lua_tostring(this.L, idx));
+		}
+
+		return `(error object is a ${to_jsstring(lua.lua_typename(this.L, type))} value)`;
 	}
 
 	private openSafeLibs(): void {
@@ -474,13 +520,13 @@ export class LuaSandbox {
 		code: string,
 		scriptId?: string
 	): {success: boolean; result?: string; error?: string} {
-		const {lua, lauxlib, to_jsstring} = this.fengari;
+		const {lua} = this.fengari;
 		const L = this.L;
 		lua.lua_settop(L, 0);
 		this.resetInstructions();
 
 		const fail = () => {
-			const error = to_jsstring(lauxlib.luaL_tolstring(L, -1));
+			const error = this.errorText(-1);
 			lua.lua_settop(L, 0);
 			return {success: false, error};
 		};
@@ -533,6 +579,12 @@ export class LuaSandbox {
 		const result = status === lua.LUA_OK ? this.toJsValue(-1) : undefined;
 		lua.lua_settop(this.L, top);
 		return result;
+	}
+
+	/** Compile `code` without running it: undefined when it is valid, else the syntax error. */
+	public check(code: string): string | undefined {
+		const res = this.call("check", [code]);
+		return res === true ? undefined : String(res ?? "Lua error");
 	}
 
 	public dispatch(event: string, payload: unknown): void {

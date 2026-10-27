@@ -37,6 +37,8 @@ declare module "fengari" {
 		export const LUA_MASKRET: number;
 
 		export function lua_close(L: any): void;
+		export function lua_atnativeerror(L: any, errorf: (L: any) => number): void;
+		export function lua_touserdata(L: any, idx: number): unknown;
 		export function lua_sethook(
 			L: any,
 			func: ((L: any, ar: any) => void) | null,

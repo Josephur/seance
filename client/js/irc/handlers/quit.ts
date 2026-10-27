@@ -19,6 +19,7 @@ const quit: Handler = (client, msg) => {
 	if (!client.replaying) {
 		scriptManager.dispatchQuit({
 			network: client.name,
+			networkUuid: client.uuid,
 			nick,
 			message: reason || undefined,
 		});

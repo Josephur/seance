@@ -18,6 +18,7 @@ const nick: Handler = (client, msg) => {
 	if (!client.replaying) {
 		scriptManager.dispatchNick({
 			network: client.name,
+			networkUuid: client.uuid,
 			oldNick,
 			newNick,
 			self: client.isSelf(oldNick) || client.isSelf(newNick),

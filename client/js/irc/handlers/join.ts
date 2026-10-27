@@ -25,6 +25,7 @@ const join: Handler = (client, msg) => {
 	if (!client.replaying) {
 		scriptManager.dispatchJoin({
 			network: client.name,
+			networkUuid: client.uuid,
 			channel: name,
 			nick,
 			account: account === "*" ? undefined : account,

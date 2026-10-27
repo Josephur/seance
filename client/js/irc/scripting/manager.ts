@@ -44,10 +44,8 @@ export const SCRIPTING_DISABLED_ERROR =
 export interface ActiveContextProvider {
 	getContext(): {channel: string; network: string; nick: string};
 	print(text: string): void;
-	/** The network a script's line goes to: by uuid, else the open one, else the first. */
+	/** The network with this uuid (none when it is gone); without one, the open network, else the first. */
 	clientFor(networkUuid?: string): IrcClient | undefined;
-	/** The network an event came from, by its name. */
-	clientNamed(name: string): IrcClient | undefined;
 }
 
 /**
@@ -79,13 +77,18 @@ function spokenLine(line: string): {target: string; text: string} | null {
 	return {target: match[1], text: action ? action[1] : match[2]};
 }
 
-function echoKey(network: string, target: string, text: string): string {
-	return `${network}\n${target.toLowerCase()}\n${text}`;
+function echoKey(networkUuid: string, target: string, text: string): string {
+	return `${networkUuid}\n${target.toLowerCase()}\n${text}`;
 }
 
 class ScriptManager implements SandboxHost {
 	private sandbox: LuaSandbox | null = null;
+	/** Bumped whenever the sandbox is thrown away: a sandbox still loading for an older one is closed, not installed. */
+	private generation = 0;
+	private creating: Promise<LuaSandbox> | null = null;
 	private queueSeq = 0;
+	/** Connections holding queued script lines, to drop them when scripting is turned off. */
+	private queuedOn = new Set<IrcClient>();
 	/** What scripts said, so its echo does not wake the handlers that said it. */
 	private ownLines = new Map<string, number>();
 	private initPromise: Promise<void> | null = null;
@@ -102,14 +105,26 @@ class ScriptManager implements SandboxHost {
 		return this.sandbox !== null;
 	}
 
-	/** Drop the sandbox (and with it the loaded Lua state) at once. */
-	public teardown(): void {
+	private discard(): void {
+		this.generation++;
+		this.creating = null;
+
 		if (this.sandbox) {
 			this.sandbox.close();
 			this.sandbox = null;
 		}
+	}
 
+	/** Drop the sandbox (and with it the loaded Lua state) and every line still queued, at once. */
+	public teardown(): void {
+		this.discard();
 		this.initPromise = null;
+
+		for (const client of this.queuedOn) {
+			client.background.drop((key) => key.startsWith(QUEUE_KEY));
+		}
+
+		this.queuedOn.clear();
 	}
 
 	public async init(): Promise<void> {
@@ -136,15 +151,33 @@ class ScriptManager implements SandboxHost {
 	}
 
 	public async ensureSandbox(): Promise<LuaSandbox> {
-		if (!isScriptingEnabled()) {
-			throw new Error(SCRIPTING_DISABLED_ERROR);
-		}
+		for (;;) {
+			if (!isScriptingEnabled()) {
+				throw new Error(SCRIPTING_DISABLED_ERROR);
+			}
 
-		if (!this.sandbox) {
-			this.sandbox = await LuaSandbox.create(this);
-		}
+			if (this.sandbox) {
+				return this.sandbox;
+			}
 
-		return this.sandbox;
+			const generation = this.generation;
+			this.creating ??= LuaSandbox.create(this);
+			const creating = this.creating;
+			const sandbox = await creating;
+
+			if (this.creating === creating) {
+				this.creating = null;
+			}
+
+			if (generation === this.generation && !this.sandbox && isScriptingEnabled()) {
+				this.sandbox = sandbox;
+				return sandbox;
+			}
+
+			if (this.sandbox !== sandbox) {
+				sandbox.close(); // superseded while Fengari loaded: go round (or stop, if turned off)
+			}
+		}
 	}
 
 	public async reload(): Promise<void> {
@@ -153,21 +186,26 @@ class ScriptManager implements SandboxHost {
 			return;
 		}
 
-		if (this.sandbox) {
-			this.sandbox.close();
-			this.sandbox = null;
-		}
+		this.discard();
+		const generation = this.generation;
 
-		const scripts = loadScripts();
-		const enabledScripts = scripts.filter((s) => s.enabled);
-
-		if (enabledScripts.length === 0) {
+		if (!loadScripts().some((s) => s.enabled)) {
 			return;
 		}
 
-		const sandbox = await this.ensureSandbox();
+		let sandbox: LuaSandbox;
 
-		for (const script of enabledScripts) {
+		try {
+			sandbox = await this.ensureSandbox();
+		} catch {
+			return; // turned off meanwhile
+		}
+
+		if (generation !== this.generation) {
+			return; // a newer reload owns the sandbox and loads the scripts
+		}
+
+		for (const script of loadScripts().filter((s) => s.enabled)) {
 			const res = sandbox.eval(script.code, script.id);
 
 			if (!res.success) {
@@ -180,14 +218,39 @@ class ScriptManager implements SandboxHost {
 		}
 	}
 
+	/** Compile `code` without running it: undefined when it is valid, else the syntax error. */
+	public async checkSyntax(code: string): Promise<string | undefined> {
+		try {
+			return (await this.ensureSandbox()).check(code);
+		} catch (err) {
+			return err instanceof Error ? err.message : String(err);
+		}
+	}
+
 	public async evalSnippet(
 		code: string,
 		ctx?: {chan?: Channel; client?: IrcClient}
 	): Promise<{success: boolean; result?: string; error?: string}> {
-		if (!isScriptingEnabled()) {
+		let sandbox: LuaSandbox;
+
+		try {
+			sandbox = await this.ensureSandbox();
+		} catch {
 			return {success: false, error: SCRIPTING_DISABLED_ERROR};
 		}
 
+		// Only now, and only for the synchronous run: an event handler that
+		// fires while Fengari loads must not send as if the user typed it.
+		this.useContext(ctx);
+
+		try {
+			return sandbox.eval(code, undefined);
+		} finally {
+			this.activeContextOverride = undefined;
+		}
+	}
+
+	private useContext(ctx?: {chan?: Channel; client?: IrcClient}): void {
 		if (ctx) {
 			this.activeContextOverride = {
 				client: ctx.client,
@@ -197,13 +260,6 @@ class ScriptManager implements SandboxHost {
 				nick: ctx.client?.nick ?? "",
 			};
 		}
-
-		try {
-			const sandbox = await this.ensureSandbox();
-			return sandbox.eval(code, undefined);
-		} finally {
-			this.activeContextOverride = undefined;
-		}
 	}
 
 	public dispatchMessage(event: ScriptMessageEvent): void {
@@ -212,7 +268,7 @@ class ScriptManager implements SandboxHost {
 		}
 
 		if (event.self) {
-			const key = echoKey(event.network, event.target, event.text);
+			const key = echoKey(event.networkUuid, event.target, event.text);
 			const until = this.ownLines.get(key);
 
 			if (until !== undefined) {
@@ -354,15 +410,7 @@ class ScriptManager implements SandboxHost {
 			return false;
 		}
 
-		if (ctx) {
-			this.activeContextOverride = {
-				client: ctx.client,
-				chan: ctx.chan,
-				channel: ctx.chan?.name ?? "",
-				network: ctx.client?.name ?? "",
-				nick: ctx.client?.nick ?? "",
-			};
-		}
+		this.useContext(ctx);
 
 		try {
 			return this.sandbox.runCommand(name, args, rest);
@@ -381,55 +429,58 @@ class ScriptManager implements SandboxHost {
 
 	// --- SandboxHost implementation ---
 
-	public send(line: string, networkUuid?: string): void {
+	/** The client a script means: the network it named, else the one the user typed in, else the open one. */
+	private clientOf(networkUuid?: string): IrcClient | undefined {
 		const asked = this.activeContextOverride?.client;
-		const client = asked ?? contextProvider?.clientFor(networkUuid);
+
+		if (networkUuid !== undefined && networkUuid !== asked?.uuid) {
+			return contextProvider?.clientFor(networkUuid);
+		}
+
+		return asked ?? contextProvider?.clientFor();
+	}
+
+	/** At once in a command the user typed on that network, else paced. */
+	private deliver(client: IrcClient, line: string): void {
+		this.rememberOwnLine(client, line);
+
+		if (client === this.activeContextOverride?.client) {
+			client.send(line);
+		} else {
+			this.sendPaced(client, line);
+		}
+	}
+
+	public send(line: string, networkUuid?: string): void {
+		const client = this.clientOf(networkUuid);
 
 		if (!client || !client.isConnected || line.length === 0) {
 			// eslint-disable-next-line no-console
-			console.warn("[scripting] seance.send dropped; no active network connection");
+			console.warn("[scripting] seance.send dropped; no connected network for it");
 			return;
 		}
 
-		this.rememberOwnLine(client, line);
-
-		if (asked) {
-			client.send(line); // a command the user typed: they are waiting
-			return;
-		}
-
-		this.sendPaced(client, line);
+		this.deliver(client, line);
 	}
 
 	public reply(msg: ScriptMessageEvent, text: string): void {
-		const target =
-			msg.target.startsWith("#") || msg.target.startsWith("&") ? msg.target : msg.from;
+		const client = this.clientOf(
+			typeof msg.networkUuid === "string" ? msg.networkUuid : undefined
+		);
 
-		if (!target || !text) {
+		if (!client || !client.isConnected || !text) {
 			return;
 		}
 
-		const line = `PRIVMSG ${target} :${text}`;
-		const asked = this.activeContextOverride?.client;
-		const client =
-			asked ??
-			(typeof msg.network === "string"
-				? contextProvider?.clientNamed(msg.network)
-				: undefined) ??
-			contextProvider?.clientFor();
+		// A channel answers in the channel; a query answers the other side,
+		// which for our own line is its target.
+		const target = client.isChannelName(msg.target) || msg.self ? msg.target : msg.from;
 
-		if (!client || !client.isConnected) {
+		if (!target) {
 			return;
 		}
 
-		this.rememberOwnLine(client, line);
-
-		if (asked) {
-			client.send(line);
-			return;
-		}
-
-		this.sendPaced(client, line);
+		this.deliver(client, `PRIVMSG ${target} :${text}`);
 	}
 
 	private sendPaced(client: IrcClient, line: string): void {
@@ -440,6 +491,7 @@ class ScriptManager implements SandboxHost {
 			return;
 		}
 
+		this.queuedOn.add(client);
 		client.background.add({
 			key: `${QUEUE_KEY}${++this.queueSeq}`,
 			cost: client.fakeLag.cost(line),
@@ -465,7 +517,7 @@ class ScriptManager implements SandboxHost {
 		}
 
 		this.ownLines.set(
-			echoKey(client.name, spoken.target, spoken.text),
+			echoKey(client.uuid, spoken.target, spoken.text),
 			Date.now() + ECHO_MEMORY_MS
 		);
 	}

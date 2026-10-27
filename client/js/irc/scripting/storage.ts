@@ -257,10 +257,19 @@ export function loadScriptData(scriptId: string): Record<string, string> {
 	}
 
 	try {
-		const parsed = JSON.parse(raw);
-		return typeof parsed === "object" && parsed !== null
-			? (parsed as Record<string, string>)
-			: {};
+		const parsed: unknown = JSON.parse(raw);
+		const data: Record<string, string> = {};
+
+		if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+			// Only strings: a restored file could hold anything.
+			for (const [key, value] of Object.entries(parsed)) {
+				if (typeof value === "string") {
+					data[key] = value;
+				}
+			}
+		}
+
+		return data;
 	} catch {
 		return {};
 	}

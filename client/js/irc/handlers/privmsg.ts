@@ -126,6 +126,7 @@ function handleMessage(
 
 		scriptManager.dispatchMessage({
 			network: client.name,
+			networkUuid: client.uuid,
 			target,
 			from: nick,
 			text,
