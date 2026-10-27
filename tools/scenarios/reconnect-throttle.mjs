@@ -53,7 +53,7 @@ async function disconnect(page) {
 	await page.fill("#input", "/disconnect");
 	await page.evaluate(`document.querySelector("#form").requestSubmit()`);
 	await page.waitFor(`(${LABEL}).startsWith("Disconnected from")`, {
-		timeout: 20000, // the strip shows after 10 s down (ChatInput.vue)
+		timeout: 10000,
 		label: "the network disconnected",
 	});
 }

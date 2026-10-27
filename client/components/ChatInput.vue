@@ -322,8 +322,10 @@ export default defineComponent({
 
 		// The strip waits until the network has been down for
 		// CONNECTION_BAR_GRACE_MS: a resume or a dropped socket usually
-		// reconnects within seconds, and a strip for that is noise. A message
-		// the composer kept because the network is down shows it at once.
+		// reconnects within seconds, and a strip for that is noise. With
+		// nothing retrying (a /disconnect, a failed SASL login) there is no
+		// quick reconnect to wait for, and a message the composer kept
+		// because the network is down shows it at once too.
 		const now = ref(Date.now());
 		const sendRefused = ref(false);
 
@@ -332,10 +334,11 @@ export default defineComponent({
 				return false;
 			}
 
-			const since = props.network.status.downSince;
+			const {downSince: since, connecting, retryAt} = props.network.status;
 
 			return (
 				sendRefused.value ||
+				(!connecting && retryAt === undefined) ||
 				(since !== undefined && now.value - since >= CONNECTION_BAR_GRACE_MS)
 			);
 		});
