@@ -4,7 +4,9 @@ import {
 	MAX_PER_CONVERSATION,
 	EXCERPT_FROM,
 	addEntries,
+	conversationEntries,
 	conversationKey,
+	dismissalOf,
 	dropMessage,
 	entryFor,
 	excerptText,
@@ -148,6 +150,30 @@ describe("helpers/inbox.ts", function () {
 				{key: "net-1/m1", network: "net-1", target: "#seance", time: entry().time},
 			];
 			expect(addEntries([], [entry()], gone)).to.deep.equal([]);
+		});
+	});
+
+	describe("conversationEntries", function () {
+		it("is one conversation's entries, by the server's case folding", function () {
+			const list = [
+				entry({msgid: "a"}),
+				entry({msgid: "b", target: "#other"}),
+				entry({msgid: "c", network: "net-2"}),
+				entry({msgid: "d", target: "#Seance"}),
+			];
+			expect(conversationEntries(list, "net-1", "#SEANCE").map((e) => e.msgid)).to.deep.equal(
+				["a", "d"]
+			);
+		});
+
+		it("dismissed on a part, keeps a rejoin's catch-up from bringing them back", function () {
+			const list = [
+				entry({msgid: "a", time: minute(1)}),
+				entry({msgid: "b", time: minute(2)}),
+			];
+			const gone = conversationEntries(list, "net-1", "#seance").map(dismissalOf);
+			const later = entry({msgid: "c", time: minute(3)});
+			expect(addEntries([], [...list, later], gone)).to.deep.equal([later]);
 		});
 	});
 

@@ -161,6 +161,21 @@ export function addEntries(
 	return ordered.filter((e) => !dropped.has(e)).slice(-MAX_ENTRIES);
 }
 
+/** What dismissing `entry` remembers. */
+export function dismissalOf(entry: InboxEntry): Dismissal {
+	return {key: entryKey(entry), network: entry.network, target: entry.target, time: entry.time};
+}
+
+/** The entries of `target` on `network`. */
+export function conversationEntries(
+	list: InboxEntry[],
+	network: string,
+	target: string
+): InboxEntry[] {
+	const key = conversationKey(network, target);
+	return list.filter((e) => conversationKey(e.network, e.target) === key);
+}
+
 /**
  * `target` on `network` was read up to `time`: drop what it covers. Works
  * for entries and dismissals alike (a dismissal past the read point has

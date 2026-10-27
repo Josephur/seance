@@ -58,7 +58,9 @@ Every device builds the same list from what the server already gives it:
   remembered (`thelounge.mentions.dismissed`, 200 at most) so the next
   catch-up does not bring it back, until the conversation is read past it.
   A dismissal holds back what it covered, not a later line under the same
-  key: a private conversation's next message comes in.
+  key: a private conversation's next message comes in. Parting a channel
+  or closing a query dismisses its entries, so a rejoin's catch-up does
+  not bring them back either.
 - **Muted** conversations keep their entries, hidden (`visibleMentions`)
   and left out of every count; unmuting shows those still unread. A
   deliberate choice: muting is about not being interrupted, and the

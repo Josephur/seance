@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-shadow */
 
-import {ActionContext, createStore, Store, useStore as baseUseStore} from "vuex";
+import {createStore, Store, useStore as baseUseStore} from "vuex";
 import {createSettingsStore} from "./store-settings";
 import storage from "./localStorage";
 import type {ClientChan, ClientNetwork, NetChan} from "./types";
@@ -288,28 +288,10 @@ export type TypedCommit = <T extends keyof Mutations>(
 	payload?: Parameters<Mutations[T]>[1] | null,
 	options?: {root?: boolean}
 ) => ReturnType<Mutations[T]>;
-type TypedActionContext = Omit<ActionContext<State, State>, "commit"> & {
-	commit: TypedCommit;
-};
-
-type Actions = {
-	partChannel(context: TypedActionContext, payload: NetChan): void;
-};
-
-const actions: Actions = {
-	partChannel({commit, state}, netChan) {
-		const key = conversationKey(netChan.network.uuid, netChan.channel.name);
-		commit(
-			"mentions",
-			state.mentions.filter((e) => conversationKey(e.network, e.target) !== key)
-		);
-	},
-};
 
 const storePattern = {
 	state,
 	mutations,
-	actions,
 	getters,
 };
 

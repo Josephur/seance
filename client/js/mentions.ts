@@ -10,6 +10,8 @@ import type {InboxEntry} from "../../shared/types/mention";
 import {
 	MAX_DISMISSED,
 	addEntries,
+	conversationEntries,
+	dismissalOf,
 	dropMessage,
 	entryKey,
 	parseDismissed,
@@ -76,14 +78,11 @@ export function dropMentionOf(network: string, target: string, msgid: string, by
 /** On this device only, remembered until the conversation is read past them. */
 export function dismissMentions(entries: InboxEntry[]): void {
 	const keys = new Set(entries.map(entryKey));
-	setDismissed([
-		...dismissed,
-		...entries.map((e) => ({
-			key: entryKey(e),
-			network: e.network,
-			target: e.target,
-			time: e.time,
-		})),
-	]);
+	setDismissed([...dismissed, ...entries.map(dismissalOf)]);
 	commitIfChanged(store.state.mentions.filter((e) => !keys.has(entryKey(e))));
+}
+
+/** Every entry of a conversation left (a part, a closed query), dismissed. */
+export function dismissConversation(network: string, target: string): void {
+	dismissMentions(conversationEntries(store.state.mentions, network, target));
 }
