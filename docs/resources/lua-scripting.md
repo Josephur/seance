@@ -50,6 +50,14 @@ password, bouncer token or query log), only the `seance.*` table. How
 - **`seance` is read-only** (`__newindex` raises, `__metatable` is locked),
   and the handler and command tables live in locals of the bootstrap chunk,
   out of every script's reach.
+- **No script can break the state for the others**: a JavaScript exception
+  inside the VM becomes a Lua error (`lua_atnativeerror`), and error objects
+  are described without their `__tostring` (one that loops or fails used to
+  panic Fengari and leave every later call failing).
+- **Loading is ordered**: every reload or switch-off bumps a generation, and
+  a sandbox that finishes loading Fengari for an older one is closed instead
+  of installed, so turning scripting off while it loads leaves nothing
+  running and overlapping reloads load each script once.
 
 ### Limits
 
@@ -93,6 +101,8 @@ Subscribes to client events.
 ```lua
 seance.on("message", function(msg)
     -- msg.network: Network name (e.g. "SeanceDev")
+    -- msg.networkUuid: The connection's id (every event has one; two
+    --                  connections can share a name)
     -- msg.target:  Channel or nickname (e.g. "#channel")
     -- msg.from:    Sender nick
     -- msg.text:    Message content
@@ -116,6 +126,7 @@ end)
 ```lua
 seance.on("join", function(data)
     -- data.network: Network name
+    -- data.networkUuid: The connection's id
     -- data.channel: Channel name
     -- data.nick:    Joined nick
     -- data.account: Optional account name (if extended-join)
@@ -128,6 +139,7 @@ end)
 ```lua
 seance.on("part", function(data)
     -- data.network: Network name
+    -- data.networkUuid: The connection's id
     -- data.channel: Channel name
     -- data.nick:    Parting nick
     -- data.message: Optional part message
@@ -138,6 +150,7 @@ end)
 ```lua
 seance.on("quit", function(data)
     -- data.network: Network name
+    -- data.networkUuid: The connection's id
     -- data.nick:    Quit nick
     -- data.message: Optional quit message
 end)
@@ -146,6 +159,7 @@ end)
 ```lua
 seance.on("kick", function(data)
     -- data.network: Network name
+    -- data.networkUuid: The connection's id
     -- data.channel: Channel name
     -- data.nick:    Kicker nick
     -- data.kicked:  Kicked nick
@@ -157,6 +171,7 @@ end)
 ```lua
 seance.on("nick", function(data)
     -- data.network: Network name
+    -- data.networkUuid: The connection's id
     -- data.oldNick: Previous nickname
     -- data.newNick: New nickname
     -- data.self:    boolean (true if own client renamed)
@@ -166,6 +181,7 @@ end)
 ```lua
 seance.on("topic", function(data)
     -- data.network: Network name
+    -- data.networkUuid: The connection's id
     -- data.channel: Channel name
     -- data.topic:   New topic text
     -- data.nick:    Setter nickname
@@ -175,6 +191,7 @@ end)
 ```lua
 seance.on("mode", function(data)
     -- data.network: Network name
+    -- data.networkUuid: The connection's id
     -- data.target:  Channel or nickname
     -- data.mode:    Mode string (e.g. "+o", "-b")
     -- data.params:  Array of mode parameters
@@ -200,8 +217,8 @@ end)
 
 ### Messaging Helpers
 
-- `seance.reply(msg, text)`: Replies to the sender or channel of an incoming message event.
-- `seance.send(rawLine, networkUuid?)`: Sends a raw IRC line on the current or specified network.
+- `seance.reply(msg, text)`: Replies on the event's own connection (`msg.networkUuid`): in the channel for a channel message, to the other side for a private one (its target, when the line was our own).
+- `seance.send(rawLine, networkUuid?)`: Sends a raw IRC line on the network with that uuid (an event's `networkUuid`), or on the current network. A uuid that matches no connection sends nothing; it never falls back to another network.
 - `seance.print(text)`: Displays a local client message in the active conversation window.
 
 ### Persistent Key-Value Storage
@@ -240,7 +257,8 @@ seance.storage.set("last_seen", seance.current_channel)
    - Create, edit (full-height editor with line numbers), duplicate, delete,
      toggle active, export/import as `.lua` files, starter templates
      (Auto-Responder files under _Automation_, /slap under _Commands_),
-     "Check syntax", and live error reporting. Edits save automatically.
+     "Check syntax" (compiles the script without running it), and live
+     error reporting. Edits save automatically.
 
 2. **`/lua <code>` Command**:
 
