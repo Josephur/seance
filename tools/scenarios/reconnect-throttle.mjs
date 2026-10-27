@@ -27,6 +27,9 @@ const RUN = Date.now().toString(36).slice(-5);
 const KEY = "thelounge.state.dials";
 
 export const url = `http://localhost:${PORT}/?host=localhost&port=8443&tls=true&nick=thr${RUN}&join=%23seance`;
+// The socket is dropped under the client on purpose (and /disconnect quits):
+// the ircd's last lines arrive after the browser has begun the close.
+export const allowWsFrameErrors = /(Data frame|Close) received after close/;
 
 const COUNT_DIALS = `(() => {
 	const Real = window.WebSocket;
