@@ -42,11 +42,21 @@ password, bouncer token or query log), only the `seance.*` table. How
   instruction limit.)
 - **Source text only**: `load` always uses mode `"t"` (Lua's undumper trusts
   bytecode); `string.dump`, `dofile` and `loadfile` are removed.
-- **One environment per script**: a script's globals are its own (it reads
-  the shared standard library through `__index`), and its `seance` table is
-  bound to its id, so `seance.storage` and error reports always belong to
-  the script whose handler or command is running. `/lua` snippets share one
-  environment, and the `global` storage bucket.
+- **One environment per script**: a script's globals are its own, and its
+  `seance` table is bound to its id, so `seance.storage` and error reports
+  always belong to the script whose handler or command is running. `/lua`
+  snippets share one environment, and the `global` storage bucket.
+- **The standard library is read-only, per script**: each script sees
+  `string`, `table`, `math` and the rest through views of its own
+  (`__newindex` raises; `rawset` on a view changes only that script's view),
+  its `_G` is its own environment, its `load` defaults to that environment,
+  and the string metatable is locked (`getmetatable("")` is `false`). So no
+  script can replace `pcall` or `string.format` under another, or capture
+  another's `seance` functions that way.
+- **Every handler gets its own copy of the event**: one handler rewriting
+  `msg.target` or `msg.networkUuid` cannot steer the next one's reply.
+  `seance.reply` reads only the fields it needs from the table it is given,
+  and `/lua` names a returned table (`[lua table]`) rather than walking it.
 - **`seance` is read-only** (`__newindex` raises, `__metatable` is locked),
   and the handler and command tables live in locals of the bootstrap chunk,
   out of every script's reach.
@@ -66,9 +76,23 @@ password, bouncer token or query log), only the `seance.*` table. How
   inherit and charge to the same budget. Once the budget is spent every
   instruction raises, so `while true do pcall(f) end` cannot catch the error
   and go round again. The error is
-  `Instruction limit exceeded (possible infinite loop)`.
+  `Instruction limit exceeded (possible infinite loop)`. Each handler and
+  command runs through the host's `run`, which gives it a fresh budget and
+  gives the dispatch loop a fresh one when it returns, so a handler that
+  spends everything is reported and the handlers after it still run. One
+  event may run 1,000,000 instructions across all its handlers
+  (`MAX_EVENT_INSTRUCTIONS`); past that the rest are skipped with one error.
+- **Handlers and commands**: at most 50 handlers per event name and 100
+  command names across all scripts (`MAX_HANDLERS`, `MAX_COMMANDS`). An
+  event runs the handlers registered before it started: one a handler adds
+  waits for the next event.
+- **Pattern matching** (`string.find`/`match`/`gmatch`/`gsub`) is not yet
+  bounded: Fengari's matcher counts only its recursion depth, so a
+  backtracking pattern over a long string can hold the tab in one call.
+  Open: Josephur/seance#23.
 - **Memory** is not bounded by Fengari. `string.rep` refuses results over
-  1 MiB; repeated concatenation can still build large strings within the
+  1 MiB (its count is checked after the same number conversion `string.rep`
+  does, so `"500000000"` counts too); repeated concatenation can still build large strings within the
   instruction budget, and only hurts the tab running the script.
 - **Storage**: sizes are characters, which is what localStorage counts
   (about 5M per origin, shared with the networks, the query logs and every
