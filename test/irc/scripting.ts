@@ -22,7 +22,13 @@ import {
 	normalizeFolder,
 	scriptFolders,
 } from "../../client/js/irc/scripting/storage";
-import {LuaSandbox, MAX_REP_LENGTH, type SandboxHost} from "../../client/js/irc/scripting/engine";
+import {
+	LuaSandbox,
+	MAX_COMMANDS,
+	MAX_HANDLERS,
+	MAX_REP_LENGTH,
+	type SandboxHost,
+} from "../../client/js/irc/scripting/engine";
 import type {Script, ScriptMessageEvent} from "../../client/js/irc/scripting/types";
 import {
 	scriptManager,
@@ -313,6 +319,9 @@ describe("Lua scripting subsystem", function () {
 		it("caps what string.rep may build", function () {
 			const res = sandbox.eval(`return pcall(string.rep, "x", ${MAX_REP_LENGTH + 1})`);
 			expect(res.result).to.include("false").and.include("too large");
+			// A numeric string is a count too.
+			const str = sandbox.eval(`return pcall(string.rep, "x", "${MAX_REP_LENGTH + 1}")`);
+			expect(str.result).to.include("false").and.include("too large");
 			expect(sandbox.eval(`return #("ab"):rep(3, ",")`).result).to.equal("8");
 		});
 
@@ -349,6 +358,95 @@ describe("Lua scripting subsystem", function () {
 				return "ok"
 			`);
 			expect(res.success, res.error).to.be.true;
+		});
+
+		it("keeps one handler's spent budget from stopping the others", function () {
+			this.timeout(5000);
+			const owners: (string | undefined)[] = [];
+			sandbox.close();
+
+			return LuaSandbox.create({
+				...mockHost,
+				onError: (_e: string, id?: string) => void owners.push(id),
+			}).then((sb) => {
+				sandbox = sb;
+				sb.eval(`seance.on("message", function() while true do end end)`, "A");
+				sb.eval(
+					`seance.on("message", function() seance.storage.set("ran", "yes") end)`,
+					"B"
+				);
+				sb.eval(`seance.register_command("spin", function() while true do end end)`, "C");
+				sb.dispatch("message", {});
+				expect(loadScriptData("B")).to.deep.equal({ran: "yes"});
+				expect(sb.runCommand("spin", [], "")).to.be.true;
+				expect(owners).to.deep.equal(["A", "C"]);
+			});
+		});
+
+		it("caps what one event may run, and runs only the handlers it started with", function () {
+			this.timeout(5000);
+			sandbox.eval(
+				`for i = 1, ${MAX_HANDLERS} do seance.on("message", function() while true do end end) end`,
+				"loop"
+			);
+			const started = Date.now();
+			sandbox.dispatch("message", {});
+			expect(Date.now() - started).to.be.lessThan(2000);
+			expect(errors[errors.length - 1]).to.include("ran out of instructions");
+
+			const res = sandbox.eval(
+				`local function f() seance.on("grow", f) end; seance.on("grow", f)`,
+				"grow"
+			);
+			expect(res.success, res.error).to.be.true;
+			sandbox.dispatch("grow", {}); // returns: the handler added mid-dispatch waits
+			sandbox.dispatch("grow", {});
+		});
+
+		it("caps handlers per event and command names", function () {
+			const on = sandbox.eval(`for i = 1, ${MAX_HANDLERS + 1} do seance.on("x", print) end`);
+			expect(on.error).to.include("too many x handlers");
+			const cmds = sandbox.eval(
+				`for i = 1, ${MAX_COMMANDS + 1} do seance.register_command("c" .. i, print) end`
+			);
+			expect(cmds.error).to.include("too many commands");
+			// Re-registering a name it already has is not one more.
+			expect(sandbox.eval(`seance.register_command("c1", print)`).success).to.be.true;
+		});
+
+		it("gives each script read-only views of the standard library", function () {
+			const res = sandbox.eval(
+				`
+				assert(not pcall(function() string.rep = nil end))
+				assert(getmetatable("") == false)
+				local p = pcall
+				_G.pcall = function(...) return p(...) end
+				rawset(string, "upper", function() return "evil" end)
+				return load("return _G == _ENV")()
+			`,
+				"A"
+			);
+			expect(res.result, res.error).to.equal("true");
+			const other = sandbox.eval(`return string.upper("a"), pcall == _G.pcall`, "B");
+			expect(other.result).to.equal("A  true");
+			expect(sandbox.eval(`return table.concat({"a", "b"}, ",")`, "B").result).to.equal(
+				"a,b"
+			);
+		});
+
+		it("hands every handler its own copy of the event", function () {
+			sandbox.eval(`seance.on("message", function(m) m.target = "#elsewhere" end)`, "A");
+			sandbox.eval(`seance.on("message", function(m) seance.reply(m, "hi") end)`, "B");
+			sandbox.dispatch("message", {target: "#c", networkUuid: "u", from: "bob"});
+			expect(repliedLines[0].msg.target).to.equal("#c");
+		});
+
+		it("names a returned table instead of walking it, and walks none in a reply", function () {
+			const res = sandbox.eval(
+				`local t = {target = "#x"}; for i = 1, 20 do t[i] = t end; seance.reply(t, "x"); return t, nil`
+			);
+			expect(res.result).to.equal("[lua table]  nil");
+			expect(repliedLines[0].msg.target).to.equal("#x");
 		});
 
 		it("gives each script its own globals", function () {
@@ -684,6 +782,29 @@ describe("Lua scripting subsystem", function () {
 			h.transport.line(":alice!alice@host PRIVMSG #seance :pong");
 			clock.tick(30_000);
 			expect(h.sent()).to.deep.equal([]);
+		});
+
+		it("never sends a failing script command to the server raw", async function () {
+			const h = connected();
+			clock.restore();
+			await scriptManager.evalSnippet(
+				`seance.register_command("spin", function() while true do end end)`
+			);
+			clock = sinon.useFakeTimers({now: Date.parse("2026-10-27T12:00:00.000Z")});
+			h.client.input(h.client.lobby.id, "/spin secret");
+			expect(h.sent()).to.deep.equal([]);
+			const said = h.messages().map((m) => m.text ?? "");
+			expect(said.some((t) => t.includes("Error in /spin command"))).to.be.true;
+		});
+
+		it("knows its own /me line when it echoes", function () {
+			const h = connected();
+			scriptManager.send("PRIVMSG #seance :\x01ACTION waves\x01", h.client.uuid);
+			clock.tick(30_000);
+			expect(h.sent()).to.deep.equal(["PRIVMSG #seance :\x01ACTION waves\x01"]);
+			h.transport.line(":alice!alice@host PRIVMSG #seance :\x01ACTION waves\x01");
+			clock.tick(30_000);
+			expect(h.sent()).to.deep.equal([]); // the bot answers everything else
 		});
 
 		it("answers our own line in a query at its target, not ourselves", function () {

@@ -232,11 +232,9 @@ function inputLine(
 	}
 
 	if (scriptManager.hasCommand(cmd)) {
-		const handled = scriptManager.runCommand(cmd, args, rest, {chan, client});
-
-		if (handled) {
-			return;
-		}
+		// Handled even when it fails (the error is reported): never sent raw.
+		scriptManager.runCommand(cmd, args, rest, {chan, client});
+		return;
 	}
 
 	if (!client.isConnected) {

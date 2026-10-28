@@ -73,8 +73,20 @@ function spokenLine(line: string): {target: string; text: string} | null {
 		return null;
 	}
 
-	const action = /^\x01ACTION (.*)\x01?$/.exec(match[2]);
-	return {target: match[1], text: action ? action[1] : match[2]};
+	let text = match[2];
+
+	// As handlers/privmsg.ts parseCtcp reads it: the closing \x01 is optional.
+	if (text.startsWith("\x01")) {
+		const body = text.slice(1, text.endsWith("\x01") && text.length > 1 ? -1 : undefined);
+		const space = body.indexOf(" ");
+		const command = (space === -1 ? body : body.slice(0, space)).toUpperCase();
+
+		if (command === "ACTION") {
+			text = space === -1 ? "" : body.slice(space + 1);
+		}
+	}
+
+	return {target: match[1], text};
 }
 
 function echoKey(networkUuid: string, target: string, text: string): string {
@@ -464,9 +476,7 @@ class ScriptManager implements SandboxHost {
 	}
 
 	public reply(msg: ScriptMessageEvent, text: string): void {
-		const client = this.clientOf(
-			typeof msg.networkUuid === "string" ? msg.networkUuid : undefined
-		);
+		const client = this.clientOf(msg.networkUuid || undefined);
 
 		if (!client || !client.isConnected || !text) {
 			return;
