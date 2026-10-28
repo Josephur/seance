@@ -100,6 +100,16 @@ export default async function run(page) {
 	page.check("syntax check passes", true);
 	await page.screenshot("script-editor-checked");
 
+	// A backtracking pattern stops at the matcher's step budget
+	// (scripts/fengari-match-budget.js) instead of holding the page: the
+	// saved script's load fails with the limit's error, and the page answers.
+	await page.fill(".script-code-area", `string.find(string.rep("a", 100000), ".-.-.-.-b")`);
+	await page.waitFor(
+		`(JSON.parse(localStorage.getItem("thelounge.scripts") || "[]")[0]?.lastError ?? "").includes("step limit")`,
+		{label: "pattern stopped at its step budget", timeout: 15000}
+	);
+	page.check("a backtracking pattern stops at the step budget", true);
+
 	// Turning the switch off removes the icon again.
 	await page.click("#footer button.settings");
 	await page.waitFor(`!!document.querySelector('input[name="enableScripting"]')`, {
@@ -112,5 +122,9 @@ export default async function run(page) {
 	page.check("scripting icon removed when disabled", true);
 	await page.screenshot("general-scripting-off-again");
 
-	page.check("no console errors", page.consoleErrors.length === 0);
+	// The step-limit test's own load failure is logged on purpose; nothing else may be.
+	const unexpected = page.consoleErrors.filter(
+		(e) => !String(e.text ?? e).includes("pattern too complex (step limit)")
+	);
+	page.check("no console errors", unexpected.length === 0);
 }

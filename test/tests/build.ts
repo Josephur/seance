@@ -220,4 +220,15 @@ describe("public folder", function () {
 
 		expect(bundle.includes(`"${token}"`), "the bundle carries the token").to.be.true;
 	});
+
+	it("the Lua chunk carries the pattern step budget", function () {
+		const js = path.join(publicFolder, "js");
+		const chunk = fs
+			.readdirSync(js)
+			.find((f) => /^fengari.*\.js$/.test(f) && !f.endsWith(".map"));
+		expect(chunk, "a fengari chunk is built").to.be.a("string");
+		const source = fs.readFileSync(path.join(js, chunk as string), "utf8");
+		// scripts/fengari-match-budget.js; the message survives minification.
+		expect(source).to.include("pattern too complex (step limit)");
+	});
 });

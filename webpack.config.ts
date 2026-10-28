@@ -244,6 +244,11 @@ const config: webpack.Configuration = {
 	module: {
 		rules: [
 			{
+				// A step budget on Lua's pattern matcher (Josephur/seance#23).
+				test: /fengari[\\/]src[\\/]lstrlib\.js$/,
+				use: {loader: path.resolve(__dirname, "scripts/fengari-match-budget.js")},
+			},
+			{
 				test: /\.vue$/,
 				use: {
 					loader: "vue-loader",

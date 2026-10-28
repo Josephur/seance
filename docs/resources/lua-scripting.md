@@ -86,10 +86,19 @@ password, bouncer token or query log), only the `seance.*` table. How
   command names across all scripts (`MAX_HANDLERS`, `MAX_COMMANDS`). An
   event runs the handlers registered before it started: one a handler adds
   waits for the next event.
-- **Pattern matching** (`string.find`/`match`/`gmatch`/`gsub`) is not yet
-  bounded: Fengari's matcher counts only its recursion depth, so a
-  backtracking pattern over a long string can hold the tab in one call.
-  Open: Josephur/seance#23.
+- **Pattern matching** (`string.find`/`match`/`gmatch`/`gsub`): one call
+  may take 200,000 steps (calls to Fengari's `match`; one `gmatch` step
+  counts on its own), then fails with
+  `pattern too complex (step limit)`. Fengari's matcher counted only its
+  recursion depth and runs as one native call the instruction hook cannot
+  interrupt, so the budget is patched into `fengari/src/lstrlib.js` at build
+  time by a webpack loader, `scripts/fengari-match-budget.js`; each patch
+  must find its anchor exactly once, so a Fengari upgrade that moves the code
+  fails the build instead of shipping an unbounded matcher. Mocha loads
+  Fengari unpatched: `test/scripts/fengari-match-budget.ts` compiles the
+  patched source beside it and runs the pathological pattern,
+  `test/tests/build.ts` checks the built chunk carries the patch, and
+  `tools/scenarios/scripting-editor.mjs` runs one in the browser.
 - **Memory** is not bounded by Fengari. `string.rep` refuses results over
   1 MiB (its count is checked after the same number conversion `string.rep`
   does, so `"500000000"` counts too); repeated concatenation can still build large strings within the
