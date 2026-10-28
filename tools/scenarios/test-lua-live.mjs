@@ -1,20 +1,24 @@
 #!/usr/bin/env node
 /* eslint-disable no-console */
-// Automated 2-client live testing of Lua scripting subsystem against the
+// Live two-bot test of Lua scripting: every event a script can subscribe to,
+// seen by a real script in a real browser over a real ircd. Runs against the
 // dev ircd (tools/nefarious-dev/run.sh); `SEANCE_IRC_URL` points it at
-// another server (default wss://localhost:8443/).
+// another server (default wss://localhost:8443/) and `SEANCE_IRC_CHANNEL`
+// names the channel (default #seance-testing). The channel must be empty:
+// Bot B joins first, takes ops, and kicks, voices and sets the topic.
 //
-// Boots 2 headless, background Chromium instances (zero screen windows):
-//   Bot A: Initiator and slash command tester
-//   Bot B: Auto-responder testing channel events and private messages
+//   SEANCE_IRC_URL=wss://fractalrealities.afternet.org:9998/ \
+//     node tools/scenarios/test-lua-live.mjs
 //
-// Tests:
-//   1. Both bots connect to the ircd and join #seance
-//   2. Rate-limited channel event test in #seance: Bot A pings, Bot B Lua responds, Bot A Lua acks
-//   3. Rate-limited private message event test: Bot A PMs Bot B, Bot B Lua responds, Bot A Lua acks
-//   4. Custom slash command test (/testcmd in #seance)
-//   5. Strict loop prevention (self-messages dropped, non-matching ignored)
-//   6. Clean exit (/quit) and resource teardown
+// Two headless Chromium instances:
+//   Bot B: channel operator; responds to pings and records join, part,
+//          quit, nick and kick
+//   Bot A: initiator; records send, kick (of itself), topic and mode, and
+//          runs the custom /testcmd
+//
+// Events covered: message (channel and private, with seance.reply), send,
+// join, part, quit, kick, nick, topic, mode; plus a custom command and
+// seance.storage surviving a reload.
 
 import {createServer} from "node:http";
 import {readFile} from "node:fs/promises";
@@ -27,6 +31,7 @@ const ircd = new URL(process.env.SEANCE_IRC_URL ?? "wss://localhost:8443/");
 const IRC_HOST = ircd.hostname + ircd.pathname.replace(/\/$/, "");
 const IRC_PORT = Number(ircd.port || (ircd.protocol === "wss:" ? 443 : 80));
 const IRC_TLS = ircd.protocol === "wss:";
+const CHANNEL = process.env.SEANCE_IRC_CHANNEL ?? "#seance-testing";
 const PUBLIC_DIR = resolve(__dirname, "../../public");
 
 const MIME = {
@@ -88,406 +93,342 @@ async function startStaticServer() {
 	};
 }
 
-const joined = `!!document.querySelector('.channel-list-item[data-name="#seance"]:not(.parted-channel)')`;
+const inChannel = `!!document.querySelector('.channel-list-item[data-name="${CHANNEL}"]:not(.parted-channel)')`;
+const RATE_MS = 2500;
+
+/** What a bot's script stored under `key`, as an expression for waitFor. */
+function stored(scriptId, key, value) {
+	return `JSON.parse(localStorage.getItem("thelounge.script_storage.${scriptId}") || "{}")[${JSON.stringify(
+		key
+	)}] === ${JSON.stringify(value)}`;
+}
 
 async function main() {
-	console.log("=== Starting Automated Lua Scripting Live Test ===");
-	const {server, port, url} = await startStaticServer();
-	console.log(`[HTTP] Local Seance web server started on ${url}`);
+	console.log("=== Lua scripting live test ===");
+	const {server, url} = await startStaticServer();
+	console.log(`[HTTP] Seance served at ${url}; ircd ${ircd.href}; channel ${CHANNEL}`);
 
 	const runId = Math.floor(1000 + Math.random() * 9000);
 	const nickA = `sbot_a_${runId}`;
 	const nickB = `sbot_b_${runId}`;
-	const tokenChan = `c${runId}`;
-	const tokenPm = `p${runId}`;
-	const tokenCmd = `k${runId}`;
-
-	console.log(`[SETUP] Bot A nick: ${nickA}, Bot B nick: ${nickB}`);
-
+	const tok = {chan: `c${runId}`, pm: `p${runId}`, cmd: `k${runId}`};
+	const topic = `Lua topic test ${runId}`;
+	let curA = nickA;
 	let botA, botB;
 
+	const say = async (bot, text) => {
+		await bot.fill("#input", text);
+		await bot.click("#submit");
+	};
+	const pass = (n, what) => console.log(`>>> TEST ${n} PASSED: ${what}`);
+
+	const scriptB = {
+		id: "bot_b",
+		name: "bot_b",
+		folder: "Automation",
+		description: "Live test: operator and responder",
+		enabled: true,
+		code: `
+			local CH = "${CHANNEL}"
+			local function rec(k, v) seance.storage.set(k, v) end
+			local joins = 0
+
+			seance.on("join", function(d)
+				if not d.self and d.channel == CH then
+					joins = joins + 1
+					rec("join", d.nick .. "#" .. joins)
+				end
+			end)
+			seance.on("part", function(d)
+				if not d.self and d.channel == CH then rec("part", d.nick .. "|" .. (d.message or "")) end
+			end)
+			seance.on("quit", function(d)
+				if string.find(d.nick, "${nickA}", 1, true) then rec("quit", d.nick) end
+			end)
+			seance.on("nick", function(d)
+				if not d.self then rec("nick", d.oldNick .. "->" .. d.newNick) end
+			end)
+			seance.on("kick", function(d)
+				if d.channel == CH then rec("kick", d.nick .. ">" .. d.kicked) end
+			end)
+			seance.on("message", function(msg)
+				if msg.self then return end
+				local text = msg.text or ""
+				if msg.target == CH then
+					local t = string.match(text, "^!ping_chan_(%w+)")
+					if t then rec("chan", t); seance.reply(msg, "!pong_chan_" .. t) end
+					t = string.match(text, "^!cmd_ping_(%w+)")
+					if t then rec("cmd", t) end
+				elseif not string.find(msg.target, "^[#&]") then
+					local t = string.match(text, "^!ping_pm_(%w+)")
+					if t then rec("pm", t); seance.reply(msg, "!pong_pm_" .. t) end
+				end
+			end)
+		`,
+	};
+
+	const scriptA = {
+		id: "bot_a",
+		name: "bot_a",
+		folder: "Automation",
+		description: "Live test: initiator and target",
+		enabled: true,
+		code: `
+			local CH = "${CHANNEL}"
+			local function rec(k, v) seance.storage.set(k, v) end
+
+			seance.on("send", function(d) rec("send", d.line or "") end)
+			seance.on("kick", function(d)
+				if d.channel == CH and d.self then rec("kicked", d.nick .. "|" .. (d.reason or "")) end
+			end)
+			seance.on("topic", function(d)
+				if d.channel == CH then rec("topic", d.nick .. "|" .. d.topic) end
+			end)
+			seance.on("mode", function(d)
+				if d.target == CH then
+					rec("mode", d.from .. "|" .. d.mode .. "|" .. table.concat(d.params or {}, ","))
+				end
+			end)
+			seance.on("message", function(msg)
+				if msg.self then return end
+				local text = msg.text or ""
+				local t = string.match(text, "^!pong_chan_(%w+)")
+				if t and msg.target == CH then rec("chan_ack", t) end
+				t = string.match(text, "^!pong_pm_(%w+)")
+				if t then rec("pm_ack", t) end
+			end)
+			seance.register_command("testcmd", function(args, rest)
+				seance.send("PRIVMSG " .. CH .. " :!cmd_ping_" .. rest)
+			end)
+		`,
+	};
+
+	const seed = (nick, script) => {
+		const net = {
+			uuid: `net-${nick}`,
+			name: "ScriptTest",
+			host: IRC_HOST,
+			port: IRC_PORT,
+			tls: IRC_TLS,
+			nick,
+			username: nick,
+			realname: "Seance Lua live test",
+			join: CHANNEL,
+			autoconnect: true,
+		};
+		return `
+			try {
+				localStorage.setItem("thelounge.state.installGuide", "dismissed");
+				localStorage.setItem("settings", JSON.stringify({enableScripting: true}));
+				localStorage.setItem("thelounge.networks", ${JSON.stringify(JSON.stringify([net]))});
+				localStorage.setItem("thelounge.scripts", ${JSON.stringify(JSON.stringify([script]))});
+				localStorage.setItem("thelounge.state.lastChannel", ${JSON.stringify(
+					JSON.stringify({network: net.uuid, target: CHANNEL})
+				)});
+			} catch (e) {}
+		`;
+	};
+
 	try {
-		// --- 1. Configure and launch Bot B (Responder) ---
-		console.log("[SETUP] Initializing Bot B (headless)...");
+		// --- Setup: Bot B first, so it creates the channel and holds ops ---
 		botB = await startDevice({name: "bot-b", width: 1280, height: 900, logFrames: true});
-
-		const scriptB = {
-			id: "bot_b_responder",
-			name: "bot_b_responder",
-			folder: "Automation",
-			description: "Automated Lua test responder",
-			enabled: true,
-			code: `
-				seance.storage.set("role", "responder")
-				seance.storage.set("chan_received", "")
-				seance.storage.set("pm_received", "")
-				seance.storage.set("cmd_received", "")
-				seance.storage.set("last_join_nick", "")
-				seance.storage.set("last_nick_change", "")
-
-				seance.on("join", function(data)
-					if not data.self and data.channel == "#seance" then
-						seance.storage.set("last_join_nick", data.nick)
-						seance.print("[BOT-B LUA] Saw user join #seance: " .. data.nick)
-					end
-				end)
-
-				seance.on("nick", function(data)
-					if not data.self then
-						seance.storage.set("last_nick_change", data.oldNick .. "->" .. data.newNick)
-						seance.print("[BOT-B LUA] Saw nick change: " .. data.oldNick .. " -> " .. data.newNick)
-					end
-				end)
-
-				seance.on("message", function(msg)
-					if msg.self then return end
-
-					-- 1. Channel Ping in #seance
-					if msg.target == "#seance" and string.find(msg.text or "", "!ping_chan_") then
-						local token = string.match(msg.text, "!ping_chan_(%w+)")
-						if token then
-							seance.storage.set("chan_received", token)
-							seance.print("[BOT-B LUA] Channel ping received: " .. token .. " from " .. msg.from)
-							seance.reply(msg, "!pong_chan_" .. token)
-						end
-					end
-
-					-- 2. Private Message Ping
-					if (msg.target == "${nickB}" or not string.find(msg.target, "^[#&]")) and string.find(msg.text or "", "!ping_pm_") then
-						local token = string.match(msg.text, "!ping_pm_(%w+)")
-						if token then
-							seance.storage.set("pm_received", token)
-							seance.print("[BOT-B LUA] PM ping received: " .. token .. " from " .. msg.from)
-							seance.reply(msg, "!pong_pm_" .. token)
-						end
-					end
-
-					-- 3. Slash command ping in #seance
-					if msg.target == "#seance" and string.find(msg.text or "", "!cmd_ping_") then
-						local token = string.match(msg.text, "!cmd_ping_(%w+)")
-						if token then
-							seance.storage.set("cmd_received", token)
-							seance.print("[BOT-B LUA] Custom command ping received: " .. token)
-						end
-					end
-				end)
-			`,
-		};
-
-		const netB = {
-			uuid: `net-${nickB}`,
-			name: "ScriptTest",
-			host: IRC_HOST,
-			port: IRC_PORT,
-			tls: IRC_TLS,
-			nick: nickB,
-			username: nickB,
-			realname: "Seance Test Bot B",
-			join: "#seance",
-			autoconnect: true,
-		};
-
-		await botB.addInitScript(`
-			try {
-				localStorage.setItem("thelounge.state.installGuide", "dismissed");
-				localStorage.setItem("settings", JSON.stringify({ enableScripting: true }));
-				localStorage.setItem("thelounge.networks", JSON.stringify([${JSON.stringify(netB)}]));
-				localStorage.setItem("thelounge.scripts", JSON.stringify([${JSON.stringify(scriptB)}]));
-				localStorage.setItem("thelounge.state.lastChannel", JSON.stringify({ network: "${
-					netB.uuid
-				}", target: "#seance" }));
-			} catch(e) {}
-		`);
-
+		await botB.addInitScript(seed(nickB, scriptB));
 		await botB.goto(url);
-		console.log(`[CONNECT] Bot B connecting to ${ircd.href}...`);
-		await botB.waitFor(joined, {timeout: 30000, label: "Bot B joined #seance"});
-		console.log(`[OK] Bot B joined #seance successfully.`);
+		await botB.waitFor(inChannel, {timeout: 60000, label: `Bot B joined ${CHANNEL}`});
+		const op = `(document.querySelector('.userlist .user[data-name="${nickB}"]')?.textContent ?? "").trim().startsWith("@")`;
 
-		// --- 2. Configure and launch Bot A (Initiator) ---
-		console.log("[SETUP] Initializing Bot A (headless)...");
-		botA = await startDevice({name: "bot-a", width: 1280, height: 900, logFrames: true});
-
-		const scriptA = {
-			id: "bot_a_initiator",
-			name: "bot_a_initiator",
-			folder: "Automation",
-			description: "Automated Lua test initiator",
-			enabled: true,
-			code: `
-				seance.storage.set("role", "initiator")
-				seance.storage.set("chan_ack", "")
-				seance.storage.set("pm_ack", "")
-				seance.storage.set("last_send_line", "")
-
-				seance.on("send", function(data)
-					seance.storage.set("last_send_line", data.line)
-				end)
-
-				seance.on("message", function(msg)
-					if msg.self then return end
-
-					-- Channel pong in #seance
-					if msg.target == "#seance" and string.find(msg.text or "", "!pong_chan_") then
-						local token = string.match(msg.text, "!pong_chan_(%w+)")
-						if token then
-							seance.storage.set("chan_ack", token)
-							seance.print("[BOT-A LUA] Channel pong ack received: " .. token)
-						end
-					end
-
-					-- Private message pong
-					if string.find(msg.text or "", "!pong_pm_") then
-						local token = string.match(msg.text, "!pong_pm_(%w+)")
-						if token then
-							seance.storage.set("pm_ack", token)
-							seance.print("[BOT-A LUA] PM pong ack received: " .. token)
-						end
-					end
-				end)
-
-				seance.register_command("testcmd", function(args, rest)
-					seance.send("PRIVMSG #seance :!cmd_ping_" .. rest)
-				end)
-			`,
-		};
-
-		const netA = {
-			uuid: `net-${nickA}`,
-			name: "ScriptTest",
-			host: IRC_HOST,
-			port: IRC_PORT,
-			tls: IRC_TLS,
-			nick: nickA,
-			username: nickA,
-			realname: "Seance Test Bot A",
-			join: "#seance",
-			autoconnect: true,
-		};
-
-		await botA.addInitScript(`
-			try {
-				localStorage.setItem("thelounge.state.installGuide", "dismissed");
-				localStorage.setItem("settings", JSON.stringify({ enableScripting: true }));
-				localStorage.setItem("thelounge.networks", JSON.stringify([${JSON.stringify(netA)}]));
-				localStorage.setItem("thelounge.scripts", JSON.stringify([${JSON.stringify(scriptA)}]));
-				localStorage.setItem("thelounge.state.lastChannel", JSON.stringify({ network: "${
-					netA.uuid
-				}", target: "#seance" }));
-			} catch(e) {}
-		`);
-
-		await botA.goto(url);
-		console.log(`[CONNECT] Bot A connecting to ${ircd.href}...`);
-		await botA.waitFor(joined, {timeout: 30000, label: "Bot A joined #seance"});
-		console.log(`[OK] Bot A joined #seance successfully.`);
-
-		// Rate limiting: sleep 2.5s before executing tests to respect IRC flood timers
-		console.log("[RATE LIMIT] Waiting 2.5s before test execution...");
-		await sleep(2500);
-
-		// --- TEST 1: Channel Message Event in #seance ---
-		console.log("\n--- TEST 1: Channel Event Handling (#seance) ---");
-		console.log(`[STEP 1] Bot A sending '!ping_chan_${tokenChan}' to #seance...`);
-		await botA.click('.channel-list-item[data-name="#seance"]');
-		await botA.fill("#input", `!ping_chan_${tokenChan}`);
-		await botA.click("#submit");
-
-		console.log(
-			"[WAIT] Waiting for Bot B to receive channel message and reply via seance.reply()..."
-		);
-		await botB.waitFor(
-			`JSON.parse(localStorage.getItem("thelounge.script_storage.bot_b_responder") || "{}").chan_received === "${tokenChan}"`,
-			{timeout: 15000, label: "Bot B recorded chan_received"}
-		);
-		console.log(
-			`[OK] Bot B Lua script successfully received channel message token '${tokenChan}'`
-		);
-
-		console.log("[WAIT] Waiting for Bot A to receive Bot B's pong reply in #seance...");
-		await botA.waitFor(
-			`JSON.parse(localStorage.getItem("thelounge.script_storage.bot_a_initiator") || "{}").chan_ack === "${tokenChan}"`,
-			{timeout: 15000, label: "Bot A recorded chan_ack"}
-		);
-		console.log(`[OK] Bot A Lua script successfully received channel pong reply from Bot B.`);
-		console.log(
-			">>> TEST 1 PASSED: Channel events and seance.reply(msg) in channel work properly."
-		);
-
-		// Rate limiting: sleep 2.5s
-		console.log("[RATE LIMIT] Waiting 2.5s before next test...");
-		await sleep(2500);
-
-		// --- TEST 2: Private Message Event ---
-		console.log("\n--- TEST 2: Private Message Event Handling ---");
-		console.log(`[STEP 2] Bot A sending PM to Bot B (${nickB}): '!ping_pm_${tokenPm}'...`);
-		await botA.fill("#input", `/msg ${nickB} !ping_pm_${tokenPm}`);
-		await botA.click("#submit");
-
-		console.log("[WAIT] Waiting for Bot B to receive PM and reply via seance.reply()...");
-		await botB.waitFor(
-			`JSON.parse(localStorage.getItem("thelounge.script_storage.bot_b_responder") || "{}").pm_received === "${tokenPm}"`,
-			{timeout: 15000, label: "Bot B recorded pm_received"}
-		);
-		console.log(`[OK] Bot B Lua script received PM token '${tokenPm}'`);
-
-		console.log("[WAIT] Waiting for Bot A to receive Bot B's PM pong reply...");
-		await botA.waitFor(
-			`JSON.parse(localStorage.getItem("thelounge.script_storage.bot_a_initiator") || "{}").pm_ack === "${tokenPm}"`,
-			{timeout: 15000, label: "Bot A recorded pm_ack"}
-		);
-		console.log(`[OK] Bot A Lua script received PM pong reply from Bot B.`);
-		console.log(
-			">>> TEST 2 PASSED: Private message events and seance.reply(msg) in PM work properly."
-		);
-
-		// Rate limiting: sleep 2.5s
-		console.log("[RATE LIMIT] Waiting 2.5s before next test...");
-		await sleep(2500);
-
-		// --- TEST 3: Custom Slash Command in Lua ---
-		console.log("\n--- TEST 3: Custom Lua Slash Command (/testcmd) ---");
-		console.log(`[STEP 3] Bot A executing slash command '/testcmd ${tokenCmd}' in #seance...`);
-		await botA.click('.channel-list-item[data-name="#seance"]');
-		await botA.fill("#input", `/testcmd ${tokenCmd}`);
-		await botA.click("#submit");
-
-		console.log(
-			"[WAIT] Waiting for Bot B to receive line sent by custom command in #seance..."
-		);
-		await botB.waitFor(
-			`JSON.parse(localStorage.getItem("thelounge.script_storage.bot_b_responder") || "{}").cmd_received === "${tokenCmd}"`,
-			{timeout: 15000, label: "Bot B recorded cmd_received"}
-		);
-		console.log(`[OK] Bot B received line from Bot A's custom Lua command '${tokenCmd}'.`);
-		console.log(">>> TEST 3 PASSED: Custom slash commands registered via Lua work properly.");
-
-		// Rate limiting: sleep 2.5s
-		console.log("[RATE LIMIT] Waiting 2.5s before next test...");
-		await sleep(2500);
-
-		// --- TEST 4: Lifecycle Events (join, send, nick) ---
-		console.log("\n--- TEST 4: IRC Lifecycle Events (join, send, nick) ---");
-		console.log("[CHECK] Verifying Bot B received Bot A's 'join' event...");
-		await botB.waitFor(
-			`JSON.parse(localStorage.getItem("thelounge.script_storage.bot_b_responder") || "{}").last_join_nick === "${nickA}"`,
-			{timeout: 10000, label: "Bot B recorded join event"}
-		);
-		console.log(`[OK] Bot B Lua script received 'join' event for ${nickA}`);
-
-		console.log("[CHECK] Verifying Bot A received 'send' event for outbound messages...");
-		await botA.waitFor(
-			`!!JSON.parse(localStorage.getItem("thelounge.script_storage.bot_a_initiator") || "{}").last_send_line`,
-			{timeout: 10000, label: "Bot A recorded send event"}
-		);
-		console.log(`[OK] Bot A Lua script received 'send' event for outbound message.`);
-
-		const newNickA = `${nickA}x`;
-		console.log(`[STEP 4] Bot A changing nick to ${newNickA}...`);
-		await botA.fill("#input", `/nick ${newNickA}`);
-		await botA.click("#submit");
-
-		console.log("[WAIT] Waiting for Bot B to receive 'nick' change event...");
-		await botB.waitFor(
-			`JSON.parse(localStorage.getItem("thelounge.script_storage.bot_b_responder") || "{}").last_nick_change === "${nickA}->${newNickA}"`,
-			{timeout: 15000, label: "Bot B recorded nick change"}
-		);
-		console.log(
-			`[OK] Bot B Lua script successfully received 'nick' change event: ${nickA} -> ${newNickA}`
-		);
-		console.log(">>> TEST 4 PASSED: Lifecycle events (join, send, nick) work properly.");
-
-		// Rate limiting: sleep 2.5s
-		console.log("[RATE LIMIT] Waiting 2.5s before next test...");
-		await sleep(2500);
-
-		// --- TEST 5: Storage Persistence Across Browser Reload & Script Isolation ---
-		console.log(
-			"\n--- TEST 5: Storage Persistence Across Browser Reload & Script Isolation ---"
-		);
-		const persistToken = `persist_${runId}`;
-		console.log(
-			`[STEP 5] Setting storage key 'persist_check' = '${persistToken}' in Bot A via /lua...`
-		);
-		await botA.fill("#input", `/lua seance.storage.set("persist_check", "${persistToken}")`);
-		await botA.click("#submit");
-
-		await botA.waitFor(
-			`JSON.parse(localStorage.getItem("thelounge.script_storage.global") || "{}").persist_check === "${persistToken}"`,
-			{timeout: 5000, label: "Bot A set persist_check"}
-		);
-		console.log(`[OK] Storage key written into Bot A global storage.`);
-
-		console.log(
-			"[CHECK] Verifying script storage isolation (Bot B does not have Bot A's key)..."
-		);
-		const botBHasKey = await botB.evaluate(
-			`JSON.parse(localStorage.getItem("thelounge.script_storage.bot_b_responder") || "{}").persist_check !== undefined`
-		);
-		if (botBHasKey) {
-			throw new Error("Storage isolation failure: Bot B has access to Bot A's storage key");
-		}
-		console.log(`[OK] Storage namespaces are isolated between scripts.`);
-
-		console.log("[RELOAD] Reloading Bot A's page to verify cross-session survival...");
-		await botA.goto(url);
-		// Generous: a reload is a third connection from this address within
-		// seconds, and the client waits out the server's connection throttle
-		// (40 s gaps on nefarious2) rather than dial into it.
-		await botA.waitFor(joined, {timeout: 90000, label: "Bot A reconnected after reload"});
-		console.log(`[OK] Bot A reconnected after reload.`);
-
-		console.log("[CHECK] Checking storage key survival after reload...");
-		const reloadedVal = await botA.evaluate(
-			`JSON.parse(localStorage.getItem("thelounge.script_storage.global") || "{}").persist_check`
-		);
-		if (reloadedVal !== persistToken) {
+		try {
+			await botB.waitFor(op, {timeout: 10000, label: "Bot B has ops"});
+		} catch {
 			throw new Error(
-				`Storage did not persist across reload: expected ${persistToken}, got ${reloadedVal}`
+				`Bot B is not an operator in ${CHANNEL}: the channel must be empty (or set SEANCE_IRC_CHANNEL)`
 			);
 		}
-		console.log(`[OK] Storage value '${reloadedVal}' successfully survived client restart.`);
-		console.log(
-			">>> TEST 5 PASSED: Storage persists across reloads and maintains per-script isolation."
+
+		console.log(`[OK] Bot B joined ${CHANNEL} with ops.`);
+
+		botA = await startDevice({name: "bot-a", width: 1280, height: 900, logFrames: true});
+		await botA.addInitScript(seed(nickA, scriptA));
+		await botA.goto(url);
+		await botA.waitFor(inChannel, {timeout: 60000, label: `Bot A joined ${CHANNEL}`});
+		await botA.click(`.channel-list-item[data-name="${CHANNEL}"]`);
+		await botB.click(`.channel-list-item[data-name="${CHANNEL}"]`);
+
+		// --- 1. join ---
+		await botB.waitFor(stored("bot_b", "join", `${nickA}#1`), {
+			timeout: 15000,
+			label: "B saw A join",
+		});
+		pass(1, "join");
+		await sleep(RATE_MS);
+
+		// --- 2. message in the channel, seance.reply, and send ---
+		await say(botA, `!ping_chan_${tok.chan}`);
+		await botB.waitFor(stored("bot_b", "chan", tok.chan), {
+			timeout: 15000,
+			label: "B got the ping",
+		});
+		await botA.waitFor(stored("bot_a", "chan_ack", tok.chan), {
+			timeout: 15000,
+			label: "A got the pong",
+		});
+		await botA.waitFor(stored("bot_a", "send", `!ping_chan_${tok.chan}`), {
+			timeout: 5000,
+			label: "A saw its send",
+		});
+		pass(2, "channel message, seance.reply in a channel, send");
+		await sleep(RATE_MS);
+
+		// --- 3. private message and seance.reply ---
+		await say(botA, `/msg ${nickB} !ping_pm_${tok.pm}`);
+		await botB.waitFor(stored("bot_b", "pm", tok.pm), {timeout: 15000, label: "B got the PM"});
+		await botA.waitFor(stored("bot_a", "pm_ack", tok.pm), {
+			timeout: 15000,
+			label: "A got the PM pong",
+		});
+		pass(3, "private message, seance.reply in a query");
+		await sleep(RATE_MS);
+
+		// --- 4. a custom command ---
+		await botA.click(`.channel-list-item[data-name="${CHANNEL}"]`);
+		await say(botA, `/testcmd ${tok.cmd}`);
+		await botB.waitFor(stored("bot_b", "cmd", tok.cmd), {
+			timeout: 15000,
+			label: "B got the command's line",
+		});
+		pass(4, "custom command (seance.register_command, seance.send)");
+		await sleep(RATE_MS);
+
+		// --- 5. topic ---
+		await say(botB, `/topic ${topic}`);
+		await botA.waitFor(stored("bot_a", "topic", `${nickB}|${topic}`), {
+			timeout: 15000,
+			label: "A saw the topic",
+		});
+		pass(5, "topic");
+		await sleep(RATE_MS);
+
+		// --- 6. mode ---
+		await say(botB, `/mode ${CHANNEL} +v ${curA}`);
+		await botA.waitFor(stored("bot_a", "mode", `${nickB}|+v|${curA}`), {
+			timeout: 15000,
+			label: "A saw +v",
+		});
+		await sleep(RATE_MS);
+		await say(botB, `/mode ${CHANNEL} -v ${curA}`);
+		await botA.waitFor(stored("bot_a", "mode", `${nickB}|-v|${curA}`), {
+			timeout: 15000,
+			label: "A saw -v",
+		});
+		pass(6, "mode (+v and -v)");
+		await sleep(RATE_MS);
+
+		// --- 7. kick, then A rejoins ---
+		await say(botB, `/kick ${curA} Lua kick test`);
+		await botA.waitFor(stored("bot_a", "kicked", `${nickB}|Lua kick test`), {
+			timeout: 15000,
+			label: "A saw its kick",
+		});
+		await botB.waitFor(stored("bot_b", "kick", `${nickB}>${curA}`), {
+			timeout: 15000,
+			label: "B saw the kick",
+		});
+		await sleep(RATE_MS);
+		await say(botA, "/join"); // the kicked channel is still the open one
+		await botB.waitFor(stored("bot_b", "join", `${curA}#2`), {
+			timeout: 15000,
+			label: "B saw A rejoin",
+		});
+		await botA.waitFor(inChannel, {timeout: 15000, label: "A back in the channel"});
+		pass(7, "kick (seen by the kicked and by the kicker)");
+		await sleep(RATE_MS);
+
+		// --- 8. part, then A rejoins ---
+		await botA.click(`.channel-list-item[data-name="${CHANNEL}"]`);
+		await say(botA, `/part ${CHANNEL} Lua part test`);
+		await botB.waitFor(stored("bot_b", "part", `${curA}|Lua part test`), {
+			timeout: 15000,
+			label: "B saw the part",
+		});
+		await sleep(RATE_MS);
+		await say(botA, `/join ${CHANNEL}`);
+		await botB.waitFor(stored("bot_b", "join", `${curA}#3`), {
+			timeout: 15000,
+			label: "B saw A rejoin",
+		});
+		await botA.waitFor(inChannel, {timeout: 15000, label: "A back in the channel"});
+		pass(8, "part");
+		await sleep(RATE_MS);
+
+		// --- 9. nick ---
+		const newNick = `${nickA}x`;
+		await botA.click(`.channel-list-item[data-name="${CHANNEL}"]`);
+		await say(botA, `/nick ${newNick}`);
+		await botB.waitFor(stored("bot_b", "nick", `${curA}->${newNick}`), {
+			timeout: 15000,
+			label: "B saw the nick change",
+		});
+		curA = newNick;
+		pass(9, "nick");
+		await sleep(RATE_MS);
+
+		// --- 10. quit (the reload) and storage across it ---
+		const persist = `persist_${runId}`;
+		await say(botA, `/lua seance.storage.set("persist", "${persist}")`);
+		await botA.waitFor(stored("global", "persist", persist), {
+			timeout: 5000,
+			label: "A stored the value",
+		});
+		console.log("[RELOAD] Reloading Bot A (its QUIT is the quit event)...");
+		await botA.goto(url);
+		await botB.waitFor(stored("bot_b", "quit", curA), {timeout: 15000, label: "B saw A quit"});
+		// Generous: the reload is another connection from this address within
+		// seconds, and the client waits out the server's connection throttle
+		// (40 s gaps on nefarious2) rather than dial into it.
+		await botA.waitFor(inChannel, {timeout: 90000, label: "A reconnected after the reload"});
+		const kept = await botA.evaluate(
+			`JSON.parse(localStorage.getItem("thelounge.script_storage.global") || "{}").persist`
 		);
 
-		// Rate limiting: sleep 2.5s
-		console.log("[RATE LIMIT] Waiting 2.5s before cleanup...");
-		await sleep(2500);
-
-		// --- Clean Shutdown ---
-		console.log("\n[CLEANUP] Disconnecting bots gracefully with /quit...");
-		try {
-			await botA.fill("#input", "/quit :Automated Lua test completed");
-			await botA.click("#submit");
-			await botB.fill("#input", "/quit :Automated Lua test completed");
-			await botB.click("#submit");
-		} catch (err) {
-			console.warn("[CLEANUP] Warning during quit:", err.message);
+		if (kept !== persist) {
+			throw new Error(
+				`seance.storage did not survive the reload: expected ${persist}, got ${kept}`
+			);
 		}
 
+		pass(10, "quit, and seance.storage across a reload");
+
+		await sleep(RATE_MS);
+		await say(botA, "/quit :Lua live test done").catch(() => {});
+		await say(botB, "/quit :Lua live test done").catch(() => {});
 		await sleep(1000);
-		console.log("=== ALL LUA SCRIPTING TESTS PASSED SUCCESSFULLY! ===");
+		console.log("=== ALL LUA SCRIPTING LIVE TESTS PASSED ===");
 		process.exitCode = 0;
 	} catch (err) {
 		console.error("\n❌ TEST FAILED:", err);
-		if (botA) {
-			const stA = await botA.evaluate(`({...localStorage})`).catch(() => ({}));
-			console.error("Bot A localStorage:", JSON.stringify(stA, null, 2));
+
+		for (const [name, bot] of [
+			["Bot A", botA],
+			["Bot B", botB],
+		]) {
+			if (!bot) {
+				continue;
+			}
+
+			const storage = await bot
+				.evaluate(
+					`Object.fromEntries(Object.entries(localStorage).filter(([k]) => k.startsWith("thelounge.script")))`
+				)
+				.catch(() => ({}));
+			console.error(`${name} script storage:`, JSON.stringify(storage, null, 2));
+
+			if (bot.consoleErrors?.length) {
+				console.error(`${name} console errors:`, bot.consoleErrors);
+			}
 		}
-		if (botB) {
-			const stB = await botB.evaluate(`({...localStorage})`).catch(() => ({}));
-			console.error("Bot B localStorage:", JSON.stringify(stB, null, 2));
-		}
-		if (botA?.consoleErrors?.length) {
-			console.error("Bot A console errors:", botA.consoleErrors);
-		}
-		if (botB?.consoleErrors?.length) {
-			console.error("Bot B console errors:", botB.consoleErrors);
-		}
+
 		process.exitCode = 1;
 	} finally {
-		console.log("[CLEANUP] Closing headless browser devices and stopping local server...");
 		if (botA) await botA.close().catch(() => {});
 		if (botB) await botB.close().catch(() => {});
 		server.close();
