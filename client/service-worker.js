@@ -304,9 +304,21 @@ self.addEventListener("message", function (event) {
 		event.waitUntil(
 			enqueuePush(async () => {
 				await closeForTarget(target, typeof ts === "string" ? ts : undefined);
+
+				if (strictUserVisible()) {
+					await tidy();
+				}
+
 				await updateBadge();
 			})
 		);
+		return;
+	}
+
+	// The page, a while after a push for a message it took: what WebKit
+	// refused to close then can go now.
+	if (event.data && event.data.type === "tidy") {
+		event.waitUntil(enqueuePush(tidy).catch(() => undefined));
 		return;
 	}
 
@@ -340,6 +352,8 @@ function showPageNotification(event, payload) {
 					icon: "img/icon-192.png",
 					body: payload.body,
 					timestamp: payload.timestamp,
+					// The page's sound setting; the OS plays the sound otherwise.
+					silent: payload.silent === true,
 					data: {
 						kind: "page",
 						network: payload.network,
@@ -442,6 +456,85 @@ function tagFor(network, name) {
  * unread, closed by the worker once WebKit lets it. */
 function isStub(n) {
 	return Boolean(n.data && (n.data.kind === "read" || n.data.kind === "quiet"));
+}
+
+// WebKit never replaces a notification by its tag: webpushd files each one
+// under its own UUID (WebPushDaemon.mm `showNotification`,
+// `requestWithIdentifier: notificationID`) and reads the tag only to filter
+// `getNotifications()`. So under WebKit a show under a tag that is up adds a
+// second notification beside the first, and a close within 30 s of a show
+// is refused (above) — a read stub stood beside the message it was meant to
+// replace, and the message, read, stayed. `tidy` closes by hand what a tag
+// would have replaced and what a refused close left: every notification but
+// the newest under a tag, and a stub past its lifetime. It runs after every
+// push and every read (a close refused now succeeds on a later wake) and
+// when the page asks (`{type: "tidy"}`); the page also sends its reads
+// again once the 30 s have passed (webpush.ts `again`).
+
+/** When a notification was shown (showSafely stamps it); 0 for one an older
+ * worker showed, which is older than any this one did. */
+function shownAt(n) {
+	return (n.data && Number(n.data.shownAt)) || 0;
+}
+
+/** The newest of notifications sharing a tag: under WebKit the older ones
+ * are still listed (and on screen) until `tidy` closes them. */
+function newest(list) {
+	let best;
+
+	for (const n of list) {
+		if (!best || shownAt(n) >= shownAt(best)) {
+			best = n;
+		}
+	}
+
+	return best;
+}
+
+/** The notifications a tag-replacing browser would show: the newest per tag. */
+function current(all) {
+	const byTag = new Map();
+
+	for (const n of all) {
+		const key = n.tag || n;
+
+		if (!byTag.has(key) || shownAt(n) >= shownAt(byTag.get(key))) {
+			byTag.set(key, n);
+		}
+	}
+
+	return all.filter((n) => byTag.get(n.tag || n) === n);
+}
+
+/** Under WebKit, close what a tag would have replaced and a stub whose
+ * lifetime is over (see above). A close WebKit refuses (the notification is
+ * under 30 s old) is simply tried again on the next run. */
+async function tidy() {
+	if (!strictUserVisible()) {
+		return;
+	}
+
+	const now = Date.now();
+	const all = (await self.registration.getNotifications()).filter(
+		(n) => n.tag && n.tag.startsWith("push-")
+	);
+	const live = current(all);
+
+	for (const n of all) {
+		if (!live.includes(n) || (isStub(n) && now - shownAt(n) >= WEBKIT_SILENT_PUSH_TIMEOUT_MS)) {
+			n.close();
+		}
+	}
+
+	await updateBadge();
+}
+
+/** `tidy` once WebKit lets a close through, if the worker is still alive by
+ * then (outside `waitUntil`, like the stub's own close). */
+function tidyLater() {
+	setTimeout(() => {
+		void enqueuePush(tidy).catch(() => undefined);
+	}, READ_STUB_LIFETIME_MS);
 }
 
 /** This worker's network: its scope's, or (the root worker) the first one
@@ -1101,7 +1194,9 @@ async function getStash() {
  * (`badge`) and the badge shows the sum; the page resets the document when
  * the app opens. */
 async function updateBadge() {
-	const all = await self.registration.getNotifications();
+	// Under WebKit an older copy under the same tag is still listed until
+	// `tidy` closes it: only the newest counts.
+	const all = current(await self.registration.getNotifications());
 	// A read stub or a quiet show (showStub) says nothing is unread.
 	const mine = all.reduce((sum, n) => sum + (isStub(n) ? 0 : (n.data && n.data.count) || 1), 0);
 	let total = mine;
@@ -1189,6 +1284,7 @@ function handlePush(raw) {
 			return await handlePushNow(raw, state);
 		} finally {
 			activePush = null;
+			await tidy().catch(() => undefined);
 		}
 	}).finally(() => {
 		state.settled = true;
@@ -1486,8 +1582,8 @@ async function showReadStub(target, ts) {
 	const kept = shown.some((n) => n.data.time && Date.parse(n.data.time) > cutoff);
 	const tag = kept
 		? tagFor(network, "read/" + foldName(target || ""))
-		: shown[0]
-		? shown[0].tag
+		: shown.length
+		? newest(shown).tag
 		: tagFor(network, target || "read");
 
 	await showStub(tag, "read", target, network);
@@ -1510,6 +1606,7 @@ async function showStub(tag, kind, target, network, fallback = false) {
 	setTimeout(() => {
 		void closeStub(tag);
 	}, READ_STUB_LIFETIME_MS);
+	tidyLater();
 }
 
 async function closeStub(tag) {
@@ -1545,8 +1642,9 @@ function reshowQuietly(n) {
  * itself, and is asking for it to be shown). `mustShow` (a push under
  * WebKit, above) shows the notification even when the message adds nothing
  * to it: same tag, same count, so a redelivery or a message the page took
- * first is one notification, re-shown, and never a silent push. */
-async function showMessage(P, parsed, checkSeen, mustShow = false) {
+ * first is one notification, re-shown, and never a silent push. `silent`
+ * (the page's own alert, with its sound setting off) shows it without one. */
+async function showMessage(P, parsed, checkSeen, mustShow = false, silent = false) {
 	const msgid = typeof parsed.tags.msgid === "string" ? parsed.tags.msgid : undefined;
 
 	const line = P.lineIndexOf(parsed.tags);
@@ -1631,7 +1729,10 @@ async function showMessage(P, parsed, checkSeen, mustShow = false) {
 	const legacyTag = "push-" + (replyTo || "activity");
 	const legacy =
 		legacyTag === tag ? [] : await self.registration.getNotifications({tag: legacyTag});
-	const prev = (existing[0] && existing[0].data) || (legacy[0] && legacy[0].data);
+	// Under WebKit the older copies under a tag are still listed: merge into
+	// the newest.
+	const prevShown = newest(existing) || newest(legacy);
+	const prev = prevShown && prevShown.data;
 	const added = P.addMessage(
 		(prev && prev.messages) || [],
 		{
@@ -1679,6 +1780,7 @@ async function showMessage(P, parsed, checkSeen, mustShow = false) {
 	await showSafely(title, {
 		tag,
 		renotify: added.isNew,
+		silent,
 		icon: "img/icon-192.png",
 		body,
 		timestamp: time ? Date.parse(time) : undefined,
@@ -1693,6 +1795,11 @@ async function showMessage(P, parsed, checkSeen, mustShow = false) {
 		},
 		actions,
 	});
+
+	// Under WebKit the copy merged from is still up beside this one.
+	if (prevShown && strictUserVisible()) {
+		tidyLater();
+	}
 
 	if (seenId) {
 		await idbAppend("seen", seenKey, SEEN_CAP);
@@ -1733,10 +1840,10 @@ async function closeFallbacks(tag, target) {
  * the conversation's notification again, silently and unchanged, or — with
  * nothing up for it — a silent stub with no message text. */
 async function showQuiet(tag, target, network) {
-	const live = await self.registration.getNotifications({tag});
+	const up = newest(await self.registration.getNotifications({tag}));
 
-	if (live[0] && !isStub(live[0])) {
-		await reshowQuietly(live[0]);
+	if (up && !isStub(up)) {
+		await reshowQuietly(up);
 	} else {
 		await showStub(tag, "quiet", target, network);
 	}
@@ -1765,7 +1872,9 @@ async function handlePageMessageNow(payload) {
 			target: payload.target,
 			text: typeof m.text === "string" ? m.text : "",
 		},
-		false
+		false,
+		false,
+		payload.silent === true
 	);
 }
 
@@ -1781,6 +1890,9 @@ async function showSafely(title, options) {
 
 	let failure = null;
 
+	// Which copy under a tag is the newest (WebKit keeps them all; `tidy`).
+	options = {...options, data: {...(options.data || {}), shownAt: Date.now()}};
+
 	try {
 		await self.registration.showNotification(title, options);
 		notificationsShown++;
@@ -1794,6 +1906,7 @@ async function showSafely(title, options) {
 			tag: options.tag,
 			body: options.body,
 			silent: options.silent === true,
+			data: {shownAt: options.data.shownAt},
 		});
 		notificationsShown++;
 		return;

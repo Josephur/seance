@@ -1031,7 +1031,23 @@ What ships (`client/service-worker.js`, `client/js/webpush.ts`,
   (they sit on a lock screen) and a tap opens the conversation; the worker
   closes one itself 31 s later — outside `waitUntil`, since the event must
   not outlive WebKit's handler lifetime — and a worker killed before then
-  leaves it to the next message or the page's app-opened sweep. A push that has
+  leaves it to the next message or the page's app-opened sweep. **That "place"
+  is the tag, and WebKit never replaces by tag** (webpushd files each
+  notification under its own UUID and reads the tag only to filter
+  `getNotifications()`), so on an iPhone the stub went _beside_ the message,
+  and a message read within 30 s of arriving stayed (its close refused). The
+  worker therefore stamps every show (`data.shownAt`), merges from and
+  re-shows the newest copy under a tag, counts only that one on the badge,
+  and `tidy` closes every older copy under a tag and every stub past 30 s —
+  after every push and page read, 31 s after a merge (if the worker lives
+  that long), and when the page sends `{type: "tidy"}`
+  60 s after a quiet push for a message it took. A read relayed by push needs
+  nothing more: its stub is the newest under the message's tag. A read on the
+  page is sent again 32 s later, up to the newest message it read then (a
+  server time, so a message since stays), and the app opening closes again
+  32 s later what was shown before it; a page backgrounded inside those 30 s
+  leaves the notification up until it is next opened. The harness's
+  `webkitNotifications` option models this. A push that has
   shown nothing `STRICT_SHOW_DEADLINE_MS` (20 s) after it arrived — a
   stalled IndexedDB, a push stuck behind one — shows a fallback, silently,
   under a tag of its own (`push-<uuid>/fallback/<conversation>`, read from

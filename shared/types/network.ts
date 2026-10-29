@@ -34,6 +34,12 @@ export type SharedNetworkStatus = {
 	 * connected, and when nothing is being tried. The UI counts it down.
 	 */
 	retryAt?: number;
+	/**
+	 * Client-side only (socket-events/network.ts): when the network went
+	 * down (epoch ms), absent while connected. The composer's connection
+	 * strip waits on it, so a quick reconnect says nothing.
+	 */
+	downSince?: number;
 	/** That wait is the server's connection throttle (client/js/irc/dialLedger.ts). */
 	retryThrottled?: boolean;
 };

@@ -173,6 +173,10 @@ import {TypingReporter} from "../js/helpers/typingReporter";
 import TypingIndicator from "./TypingIndicator.vue";
 import QuotePreview from "./QuotePreview.vue";
 
+// How long a conversation's network has to be down before the strip above
+// the composer says so.
+const CONNECTION_BAR_GRACE_MS = 10_000;
+
 const formattingHotkeys = {
 	"mod+k": "\x03",
 	"mod+b": "\x02",
@@ -314,9 +318,30 @@ export default defineComponent({
 			() => props.channel.type === ChanType.CHANNEL || props.channel.type === ChanType.QUERY
 		);
 
-		const showConnectionBar = computed(
-			() => isConversation.value && !props.network.status.connected
-		);
+		const isDown = computed(() => isConversation.value && !props.network.status.connected);
+
+		// The strip waits until the network has been down for
+		// CONNECTION_BAR_GRACE_MS: a resume or a dropped socket usually
+		// reconnects within seconds, and a strip for that is noise. With
+		// nothing retrying (a /disconnect, a failed SASL login) there is no
+		// quick reconnect to wait for, and a message the composer kept
+		// because the network is down shows it at once too.
+		const now = ref(Date.now());
+		const sendRefused = ref(false);
+
+		const showConnectionBar = computed(() => {
+			if (!isDown.value) {
+				return false;
+			}
+
+			const {downSince: since, connecting, retryAt} = props.network.status;
+
+			return (
+				sendRefused.value ||
+				(!connecting && retryAt === undefined) ||
+				(since !== undefined && now.value - since >= CONNECTION_BAR_GRACE_MS)
+			);
+		});
 
 		const canSend = computed(
 			() =>
@@ -326,9 +351,8 @@ export default defineComponent({
 		);
 
 		// The wait before the transport's next retry (`status.retryAt`) counts
-		// down here — a tick every half second while the strip shows — and
+		// down here — a tick every half second while the network is down — and
 		// "Connect now" skips it (`/connect` restarts the schedule).
-		const now = ref(Date.now());
 		let ticker: ReturnType<typeof setInterval> | null = null;
 
 		const retryInSeconds = computed(() => {
@@ -369,14 +393,18 @@ export default defineComponent({
 		);
 
 		watch(
-			showConnectionBar,
-			(shown) => {
-				if (shown && ticker === null) {
+			isDown,
+			(down) => {
+				if (!down) {
+					sendRefused.value = false;
+				}
+
+				if (down && ticker === null) {
 					now.value = Date.now();
 					ticker = setInterval(() => {
 						now.value = Date.now();
 					}, 500);
-				} else if (!shown && ticker !== null) {
+				} else if (!down && ticker !== null) {
 					clearInterval(ticker);
 					ticker = null;
 				}
@@ -388,6 +416,15 @@ export default defineComponent({
 			() => props.network.status.retryAt,
 			() => {
 				now.value = Date.now();
+			}
+		);
+
+		// A refused send speaks for the conversation it was typed in, not for
+		// the next one opened in this composer.
+		watch(
+			() => props.channel.id,
+			() => {
+				sendRefused.value = false;
 			}
 		);
 
@@ -456,6 +493,10 @@ export default defineComponent({
 				if (text.length === 0 && fromEnterKey) {
 					clearInput();
 					setInputSize();
+				}
+
+				if (text.length > 0) {
+					sendRefused.value = true;
 				}
 
 				return false;

@@ -14,7 +14,8 @@ import type {TransportEvent, TransportState} from "./transport";
 export interface Transport {
 	readonly state: TransportState;
 	on(listener: (ev: TransportEvent) => void): () => void;
-	connect(): void;
+	/** `force`: the user asked, so dial even into the server's throttle. */
+	connect(opts?: {force?: boolean}): void;
 	send(line: string): void;
 	close(code?: number, reason?: string): void;
 	/** Check that an open socket is alive (PING; silence closes it as lost). Optional. */
@@ -70,6 +71,9 @@ export type Handler = (client: IrcClient, msg: IrcMessage) => void;
 export interface InputOptions {
 	reply?: string;
 	edit?: string;
+	/** Run by the client, not typed or clicked (a network's saved commands
+	 * after every registration): never counts as the user asking. */
+	auto?: boolean;
 }
 
 /** The channel (or lobby/query) an input line was typed into. */

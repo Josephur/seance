@@ -108,6 +108,49 @@ const isSymbol = (c: string | undefined) =>
 	c !== undefined && !isWordChar(c) && !isSpace(c) && !(c in EMPHASIS) && c !== "\\";
 const isLineStart = (text: string, i: number) => i === 0 || text[i - 1] === "\n";
 
+// The character before `i` as a whole code point, combining marks skipped, so
+// "𠀀" and a decomposed "é" read as the letters they are
+function charBefore(text: string, i: number): string | undefined {
+	let j = i;
+
+	while (j > 0) {
+		const unit = text.charCodeAt(j - 1);
+		const start = unit >= 0xdc00 && unit <= 0xdfff && j > 1 ? j - 2 : j - 1;
+		const c = String.fromCodePoint(text.codePointAt(start) ?? unit);
+
+		if (!/\p{M}/u.test(c)) {
+			return c;
+		}
+
+		j = start;
+	}
+
+	return undefined;
+}
+
+function charAt(text: string, i: number): string | undefined {
+	const code = text.codePointAt(i);
+	return code === undefined ? undefined : String.fromCodePoint(code);
+}
+
+// Scripts written without spaces between words, where a backtick glued to a
+// letter is how inline code is typed: "请运行`npm install`命令"
+const unspacedRx =
+	/[\p{scx=Han}\p{scx=Hiragana}\p{scx=Katakana}\p{scx=Hangul}\p{scx=Thai}\p{scx=Lao}\p{scx=Khmer}\p{scx=Myanmar}\p{scx=Tibetan}]/u;
+
+// Whether the backtick run at `i` ends a word, which keeps it from opening
+// code: IRC nicks like "d0nk`" would otherwise pair up across a line. An
+// emphasis marker removed just before it is no word ("_see_`ls`"), nor is a
+// letter of a script without spaces.
+function endsWord(text: string, i: number, removals: Range[]): boolean {
+	if (removals.length > 0 && removals[removals.length - 1].end === i) {
+		return false;
+	}
+
+	const c = charBefore(text, i);
+	return isWordChar(c) && !unspacedRx.test(c ?? "");
+}
+
 const sameStyle = (a: ParsedStyle, b: ParsedStyle) => STYLE_KEYS.every((key) => a[key] === b[key]);
 
 const covers = (range: Range, start: number, end: number) =>
@@ -363,8 +406,9 @@ function scan(text: string): Scan {
 			}
 
 			// Inline code: a run of one or two backticks, closed by a run of
-			// exactly the same length, so ``a `b` c`` holds backticks
-			if (n <= 2) {
+			// exactly the same length, so ``a `b` c`` holds backticks. A run
+			// that ends a word opens nothing, as "_" in snake_case doesn't
+			if (n <= 2 && !endsWord(text, i, removals)) {
 				const close = findRun(text, i + n, n, false);
 
 				if (close > i + n) {
@@ -551,8 +595,8 @@ function emphasis(
 		n += 1;
 	}
 
-	const prev = text[i - 1];
-	const next = text[i + n];
+	const prev = charBefore(text, i);
+	const next = charAt(text, i + n);
 	let canOpen = !isSpace(next);
 	let canClose = !isSpace(prev);
 

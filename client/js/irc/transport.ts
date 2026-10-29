@@ -120,23 +120,26 @@ export class WsTransport {
 	 * this dial fails, the next wait is the first delay, not the one the
 	 * automatic retries had worked up to.
 	 */
-	connect(): void {
+	connect(opts: {force?: boolean} = {}): void {
 		if (this._state === "connecting" || this._state === "open") {
 			return;
 		}
 
 		this.attempt = 0;
-		this.dial();
+		this.dial(opts.force === true);
 	}
 
 	/** Open the socket now, on whatever attempt count the schedule is at. */
-	private dial(): void {
+	private dial(force = false): void {
 		this.clearTimer();
 		this.closedByUs = false;
-		const throttle = this.opts.gate?.waitMs(Date.now()) ?? 0;
+		const throttle = force ? 0 : this.opts.gate?.waitMs(Date.now()) ?? 0;
 
 		// The server would refuse this dial, and the refusal would renew its
-		// window: wait it out instead, whoever asked (a click included).
+		// window: wait it out instead — unless the user asked for this dial
+		// (`force`, a "Connect now"): a button that does nothing is worse
+		// than a refusal, and a refused dial is recorded, so the retry
+		// after it waits the gap out.
 		if (throttle > 0) {
 			this.scheduleRetry(throttle, true);
 			return;

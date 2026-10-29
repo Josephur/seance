@@ -22,6 +22,7 @@ interface Rec {
 	tag: string;
 	title: string;
 	body: string;
+	silent?: boolean;
 	data: {
 		kind?: string;
 		count?: number;
@@ -324,6 +325,8 @@ interface SWHarness {
 	sentBySocket(): string[][];
 	/** When each socket opened and sent its QUIT, on one clock. */
 	socketTimeline(): {bornAt: number; quitAt: number | null}[];
+	/** Move the worker's and the notifications' clock forward. */
+	advance(ms: number): void;
 }
 
 interface HarnessOptions {
@@ -350,6 +353,10 @@ interface HarnessOptions {
 	/** Refuse `close()` on a notification shown under 30 s ago, as WebKit does
 	 * (bug 309940). */
 	refuseYoungClose?: boolean;
+	/** WebKit's notifications as they are: a show never replaces one under
+	 * the same tag (webpushd files each under its own UUID), and a close
+	 * within 30 s of the show is refused. */
+	webkitNotifications?: boolean;
 	/** Hold every `indexedDB.open` until this settles: storage that is slow,
 	 * not stalled (or, if it rejects, that fails once it answers). */
 	idbGate?: Promise<void>;
@@ -364,6 +371,24 @@ function makeSW(options: HarnessOptions = {}): SWHarness {
 	const opened: string[] = [];
 	const kv = new Map<string, unknown>([["stash", options.stash ?? STASH]]);
 	const socketsBefore = wsInstances.length;
+	let offset = 0;
+	const now = (): number => Date.now() + offset;
+
+	class ShiftedDate extends Date {
+		constructor(...args: any[]) {
+			if (args.length) {
+				super(...(args as [number]));
+			} else {
+				super(now());
+			}
+		}
+
+		static now(): number {
+			return now();
+		}
+	}
+
+	const webkit = options.webkitNotifications === true;
 
 	class HarnessWS extends FakeWS {
 		constructor(url: string, protocol?: string) {
@@ -373,6 +398,7 @@ function makeSW(options: HarnessOptions = {}): SWHarness {
 
 	const sandbox: any = {
 		console,
+		Date: ShiftedDate,
 		setTimeout: options.fastTimers
 			? (fn: () => void, ms = 0) => setTimeout(fn, ms / 100)
 			: setTimeout,
@@ -407,7 +433,7 @@ function makeSW(options: HarnessOptions = {}): SWHarness {
 				// silently rather than showing a second one; mirror that here
 				// so the worker's tag-based merge (no explicit close-then-show)
 				// behaves the same under test as in a browser.
-				if (opts.tag) {
+				if (opts.tag && !webkit) {
 					for (const n of records) {
 						if (!n.closed && n.tag === opts.tag) {
 							n.closed = true;
@@ -419,14 +445,15 @@ function makeSW(options: HarnessOptions = {}): SWHarness {
 					tag: opts.tag || "",
 					title,
 					body: opts.body,
+					silent: opts.silent,
 					data: opts.data,
 					actions: opts.actions,
 					silent: opts.silent,
 					renotify: opts.renotify,
-					shownAt: Date.now(),
+					shownAt: now(),
 					closed: false,
 					close() {
-						if (options.refuseYoungClose && Date.now() - rec.shownAt! < 30000) {
+						if ((options.refuseYoungClose || webkit) && now() - rec.shownAt! < 30000) {
 							return;
 						}
 
@@ -561,6 +588,9 @@ function makeSW(options: HarnessOptions = {}): SWHarness {
 		sentBySocket: (): string[][] => wsInstances.slice(socketsBefore).map((w) => w.sent),
 		socketTimeline: () =>
 			wsInstances.slice(socketsBefore).map((w) => ({bornAt: w.bornAt, quitAt: w.quitAt})),
+		advance(ms: number): void {
+			offset += ms;
+		},
 	};
 }
 
@@ -1424,6 +1454,117 @@ describe("service worker push notifications under WebKit (every push shows)", fu
 		expect(sw.shown[1].title).to.not.include("alice");
 	});
 
+	describe("as WebKit shows them (no tag replacement, no close under 30 s)", function () {
+		const live = (sw: SWHarness): Rec[] => sw.records.filter((n) => !n.closed);
+		const soon = (): string => new Date(Date.now() + 5000).toISOString();
+		/** The message fixtures' time, which the page's second read names. */
+		const READ_UP_TO = "2026-09-02T19:59:00.000Z";
+
+		it("a conversation read on this phone within 30 s leaves nothing once the page reads it again", async function () {
+			const sw = makeSW({userAgent: IOS_UA, webkitNotifications: true});
+
+			await firePush(sw, msgPayload("keeki", "#linux", "push works too"));
+			// The page read it (its close refused: the message is seconds
+			// old), then the server's relay came back to this device.
+			await fireMessage(sw, {type: "read", target: "#linux"});
+			await firePush(sw, `{"t":"read","target":"#linux","ts":"${soon()}"}`);
+
+			expect(
+				live(sw).map((n) => n.data.kind),
+				"both up while WebKit refuses the closes (the screenshot)"
+			).to.have.members(["push", "read"]);
+
+			sw.advance(32000);
+			await fireMessage(sw, {type: "read", target: "#linux", ts: READ_UP_TO});
+
+			expect(live(sw), "the message and the stub are gone").to.deep.equal([]);
+		});
+
+		it("the page's second read leaves a message that came after the first", async function () {
+			const sw = makeSW({userAgent: IOS_UA, webkitNotifications: true});
+
+			await firePush(sw, msgPayload("alice", "pushtest", "read one"));
+			await fireMessage(sw, {type: "read", target: "alice"});
+			sw.advance(20000);
+			await firePush(
+				sw,
+				`{"t":"msg","from":"alice","target":"pushtest","msgid":"m2","time":"${soon()}","text":"unread"}`
+			);
+			sw.advance(32000);
+			await fireMessage(sw, {type: "read", target: "alice", ts: READ_UP_TO});
+
+			expect(live(sw)).to.have.lengthOf(1);
+			expect(live(sw)[0].body).to.include("unread");
+		});
+
+		it("a read on another device closes an old message at once and its stub on a later tidy", async function () {
+			const sw = makeSW({userAgent: IOS_UA, webkitNotifications: true});
+
+			await firePush(sw, msgPayload("keeki", "#linux", "hello"));
+			sw.advance(60000);
+			await firePush(sw, `{"t":"read","target":"#linux","ts":"${soon()}"}`);
+
+			expect(live(sw).map((n) => n.data.kind)).to.deep.equal(["read"]);
+
+			sw.advance(32000);
+			await fireMessage(sw, {type: "tidy"});
+			expect(live(sw)).to.deep.equal([]);
+		});
+
+		it("a read relayed within 30 s takes the message's place on the next tidy", async function () {
+			const sw = makeSW({userAgent: IOS_UA, webkitNotifications: true});
+
+			await firePush(sw, msgPayload("keeki", "#linux", "hello"));
+			await firePush(sw, `{"t":"read","target":"#linux","ts":"${soon()}"}`);
+			sw.advance(32000);
+			await firePush(sw, msgPayload("bob", "pushtest", "later"));
+
+			expect(live(sw).map((n) => n.data.from)).to.deep.equal(["bob"]);
+		});
+
+		it("a second message merges into the newest copy and the older one goes", async function () {
+			const sw = makeSW({userAgent: IOS_UA, webkitNotifications: true});
+
+			await firePush(sw, msgPayload("alice", "pushtest", "one", "m1"));
+			sw.advance(40000);
+			await firePush(sw, msgPayload("alice", "pushtest", "two", "m2"));
+			sw.advance(40000);
+			await firePush(sw, msgPayload("alice", "pushtest", "three", "m3"));
+
+			const up = live(sw);
+			expect(up).to.have.lengthOf(1);
+			expect(up[0].data.count).to.equal(3);
+			expect(up[0].data.messages!.map((m) => m.text)).to.deep.equal(["one", "two", "three"]);
+		});
+
+		it("a merge within 30 s counts once on the badge and closes the older copy later", async function () {
+			const badges: number[] = [];
+			const sw = makeSW({userAgent: IOS_UA, webkitNotifications: true, fastTimers: true});
+
+			sw.sandbox.navigator.setAppBadge = (n: number) => badges.push(n);
+			await firePush(sw, msgPayload("alice", "pushtest", "one", "m1"));
+			await firePush(sw, msgPayload("alice", "pushtest", "two", "m2"));
+
+			expect(live(sw), "the first copy is too young to close").to.have.lengthOf(2);
+			expect(badges[badges.length - 1]).to.equal(2);
+
+			sw.advance(32000);
+			// The worker's retry, 31 s on its (here hundredfold) timers.
+			await new Promise((resolve) => setTimeout(resolve, 400));
+
+			expect(live(sw).map((n) => n.data.count)).to.deep.equal([2]);
+		});
+
+		it("a Chromium worker ignores tidy", async function () {
+			const sw = makeSW({userAgent: CHROME_UA});
+
+			await firePush(sw, msgPayload("alice", "pushtest", "hi"));
+			await fireMessage(sw, {type: "tidy"});
+
+			expect(live(sw)).to.have.lengthOf(1);
+		});
+	});
+
 	it("a lenient worker shows nothing for a stalled handler (Chrome has its own budget)", async function () {
 		const sw = makeSW({fastTimers: true, hangIndexedDB: true});
 
@@ -2154,6 +2295,24 @@ describe("service worker page notifications on a push worker", function () {
 		expect(rec.data.time).to.equal(T);
 		expect(rec.data.messages![0].msgid).to.equal("pm-1");
 		expect(rec.actions!.map((a) => a.action)).to.deep.equal(["markread", "reply"]);
+	});
+
+	it("shows the page's message silently when the page asks, actions kept", async function () {
+		const sw = makeSW({scope: NET_SCOPE});
+
+		await fireMessage(sw, {...pageNote("#seance", "alice", "hush", "pm-s"), silent: true});
+
+		expect(sw.shown).to.have.lengthOf(1);
+		expect(sw.shown[0].silent).to.equal(true);
+		expect(sw.shown[0].actions!.map((a) => a.action)).to.deep.equal(["markread", "reply"]);
+	});
+
+	it("leaves the page's message audible by default", async function () {
+		const sw = makeSW({scope: NET_SCOPE});
+
+		await fireMessage(sw, pageNote("#seance", "alice", "hey", "pm-a"));
+
+		expect(sw.shown[0].silent).to.equal(false);
 	});
 
 	it("a query's notification answers the sender", async function () {
