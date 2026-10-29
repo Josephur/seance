@@ -2146,6 +2146,17 @@ self.addEventListener("pushsubscriptionchange", function (event) {
 });
 
 async function handleResubscribe(oldSub, newSub) {
+	// The root registration holds no subscription in the per-network design
+	// (push-per-network.md): one that turns up here is a leftover, and
+	// renewing it would give the device a second endpoint — every push
+	// delivered twice, the root's copy dropped as seen with nothing visible
+	// on this registration, a silent push each time (Chrome's "This site has
+	// been updated in the background"). Let it lapse; the page drops it.
+	if (!pushOnly) {
+		await logPush("pushsubscriptionchange on the root registration: not renewed");
+		return;
+	}
+
 	const stash = await getStash();
 	// This worker's network (by scope) and the key its subscription was made
 	// against; the root worker has only the stash-wide key.

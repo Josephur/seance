@@ -164,6 +164,17 @@ function short(value: string | null | undefined): string {
 	return value ? `${value.slice(0, 10)}…` : "none";
 }
 
+/** A key's bytes as the base64url the server announced it in. */
+function base64url(bytes: Uint8Array): string {
+	let binary = "";
+
+	for (const b of bytes) {
+		binary += String.fromCharCode(b);
+	}
+
+	return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
 /** An endpoint for the eyes: its host and the tail of its path. The whole
  * URL is a capability — anyone holding it can push to the device — and the
  * report is meant to be pasted where others read it. */
@@ -569,8 +580,13 @@ function describeError(error: unknown): string {
 	return String(error);
 }
 
-/** The pre-per-network subscription lived on the root registration; once
- * its endpoints are queued for unregistering it has no use. */
+/** The root registration holds no subscription in the per-network design:
+ * the pre-per-network one lived there, and an older root worker's
+ * `pushsubscriptionchange` could make one again. One found at boot is
+ * unsubscribed and its endpoint queued for `WEBPUSH UNREGISTER` on the
+ * network whose key it was made against — left alone, the server pushes
+ * every message to it as well, the root worker drops the copy as seen, and
+ * that is a silent push on Chrome, every time. */
 async function dropRootSubscription(): Promise<void> {
 	if (!workerPush()) {
 		return;
@@ -581,6 +597,19 @@ async function dropRootSubscription(): Promise<void> {
 		const existing = await registration.pushManager.getSubscription();
 
 		if (existing) {
+			const key = existing.options.applicationServerKey;
+			const vapid = key ? base64url(new Uint8Array(key)) : undefined;
+
+			note(
+				`boot: the root registration held a subscription (${endpointLabel(
+					existing.endpoint
+				)}) — dropped${vapid ? ", endpoint queued for UNREGISTER" : ""}`
+			);
+
+			if (vapid && queueUnregister({vapid, endpoint: existing.endpoint})) {
+				saveLegacy();
+			}
+
 			await existing.unsubscribe();
 		}
 	} catch (error) {
@@ -1618,6 +1647,7 @@ function networkPushInfo(uuid: string): {
 loadStored();
 synced = loadNativePush()
 	.then(syncStoredWithBrowser)
+	.then(dropRootSubscription)
 	.catch(() => undefined);
 refreshState();
 

@@ -2052,8 +2052,12 @@ describe("service worker notification click", function () {
 });
 
 describe("service worker subscription renewal", function () {
+	// Renewal is the push-only worker's job; the root registration holds no
+	// subscription in the per-network design.
+	const NET_SCOPE = `${SCOPE}push/net-1/`;
+
 	it("re-registers after 001, where nefarious2 accepts WEBPUSH REGISTER", async function () {
-		const sw = makeSW();
+		const sw = makeSW({scope: NET_SCOPE});
 		const promises: Promise<unknown>[] = [];
 		const ev = {
 			oldSubscription: null,
@@ -2077,7 +2081,7 @@ describe("service worker subscription renewal", function () {
 	});
 
 	it("unregisters the rotated-away endpoint so the device is not registered twice", async function () {
-		const sw = makeSW();
+		const sw = makeSW({scope: NET_SCOPE});
 		const promises: Promise<unknown>[] = [];
 		const ev = {
 			oldSubscription: {endpoint: "https://push.example/OLD"},
@@ -2099,6 +2103,27 @@ describe("service worker subscription renewal", function () {
 		expect(unregister, "old endpoint unregistered").to.be.greaterThan(-1);
 		expect(register, "new endpoint registered").to.be.greaterThan(-1);
 		expect(unregister, "unregister before register").to.be.lessThan(register);
+	});
+	it("the root registration renews nothing: a subscription there would double every push", async function () {
+		const sw = makeSW();
+		const promises: Promise<unknown>[] = [];
+		const ev = {
+			oldSubscription: {endpoint: "https://push.example/OLD"},
+			newSubscription: {endpoint: "https://push.example/NEW", keys: {p256dh: "P", auth: "A"}},
+			waitUntil: (p: Promise<unknown>) => promises.push(p),
+		};
+
+		for (const h of sw.handlers.pushsubscriptionchange) {
+			h(ev);
+		}
+
+		await Promise.all(promises).catch(() => {});
+		expect(sw.socketsOpened()).to.equal(0);
+		expect(
+			(sw.kv.get("pushlog") as string[]).some((l) =>
+				/ pushsubscriptionchange on the root registration: not renewed$/.test(l)
+			)
+		).to.equal(true);
 	});
 });
 
