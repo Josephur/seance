@@ -1562,9 +1562,49 @@ async function readRelay(target, ts, strict) {
 
 	if (strict) {
 		await showReadStub(target, ts);
+	} else {
+		await keepChromeCount(target);
 	}
 
 	await updateBadge();
+}
+
+/** How long the brief "Marked as read" stays on a tag-replacing browser:
+ * past the end of the push event, which is when Chrome counts. */
+const BRIEF_READ_STUB_MS = 4000;
+
+/** Chrome counts the notifications visible on this registration when the
+ * push event ends, and a read relay that closed the last one — or found
+ * nothing, the common case on the device that did the reading, or whose
+ * page closed its copy on the MARKREAD echo already — leaves none: a silent
+ * push, which spends the origin's budget and then shows Chrome's own "This
+ * site has been updated in the background". So when nothing is left up, a
+ * silent "Marked as read" takes the count to one for the event's end and is
+ * closed a few seconds later (Chrome never refuses a close); another
+ * conversation's notification still up is count enough. */
+async function keepChromeCount(target) {
+	const up = (await self.registration.getNotifications()).filter(
+		(n) => n.tag && n.tag.startsWith("push-")
+	);
+
+	if (up.length > 0) {
+		return;
+	}
+
+	const network = await networkOf();
+	const tag = tagFor(network, "read/" + foldName(target || ""));
+
+	await showSafely(appName, {
+		tag,
+		silent: true,
+		icon: "img/icon-192.png",
+		body: "Marked as read",
+		data: {kind: "read", target, network: network || undefined},
+	});
+
+	setTimeout(() => {
+		void closeStub(tag);
+	}, BRIEF_READ_STUB_MS);
 }
 
 async function showReadStub(target, ts) {

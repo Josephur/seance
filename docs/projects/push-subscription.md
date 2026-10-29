@@ -1181,3 +1181,32 @@ Tests: `test/tests/service-worker.ts` § push log (a message, a read relay
 and an unparsable push each logged with its outcome and `shown`, a dropped
 push `shown=0`, the activation line, a click). Nothing under mocha covers
 `diagnostics()` (`webpush.ts` is Vue + store).
+
+### The read relay on Chrome: a brief "Marked as read" (2026-10-29)
+
+Reported once iOS worked: Chrome and Android users get Chrome's "This
+site has been updated in the background" around push notifications. Not a
+new silent path — every iOS addition is behind `strictUserVisible()` — but
+the one that was always there, now more frequent: the **read relay**
+(`:server MARKREAD <target> timestamp=…`, which nefarious2 pushes to every
+subscription of the account once a pushed conversation is read anywhere,
+`webpush_claim_outstanding`). The worker's job for it is to close, and
+Chrome counts the notifications visible on the registration when the push
+event ends: a relay that closed the last one, or found none — the reading
+device itself when it is not in the foreground (Mark read from the shade,
+or backgrounded within the seconds the relay takes), and every other device
+whose page already closed its copy on the `markread` echo — is a silent
+push. Chrome spends the origin's engagement budget on it and then shows the
+generic. With iPhones back in the subscription set and reads coming from
+phones, the relays multiplied.
+
+Now, on a tag-replacing browser, a relay that leaves no push notification up
+on the registration shows a silent "Marked as read" (`keepChromeCount`,
+tag `push-<network>/read/<target>`) and the worker closes it
+`BRIEF_READ_STUB_MS` (4 s) later — Chrome never refuses a close, and it
+counts at the event's end, which the stub outlives. A notification for
+another conversation still up is count enough and no stub is shown. The
+relay itself stays: removing Mark read would not remove it (reading in the
+app moves the same marker), and the phone in a pocket relies on it. Tests:
+`test/tests/service-worker.ts` (the brief stub and its close, no stub beside
+another conversation's notification, a relay with nothing to close).
