@@ -1557,7 +1557,62 @@ async function handlePushNow(raw, state = {fellBack: false}) {
  * (READ_STUB_LIFETIME_MS); one killed before then leaves it to the next
  * message or the page's app-opened sweep. Not inside `waitUntil`: the event
  * must not outlive WebKit's handler lifetime. */
+/** The read marker this device knows per conversation (`reads` in
+ * IndexedDB: `<network>/<target>` → the newest read time, server clock, at
+ * most READS_CAP entries, newest kept): a Mark read tapped here, and every
+ * relay. A push whose message is at or before it is a message already read
+ * — FCM delivers a dozing phone's backlog late, after the tap that woke it —
+ * and shows no fresh card (showMessage). */
+const READS_CAP = 50;
+
+async function rememberRead(network, target, ts) {
+	if (!target || !ts || Number.isNaN(Date.parse(ts))) {
+		return;
+	}
+
+	try {
+		const reads = (await idbGet("reads")) || {};
+		const key = foldName((network || "") + "/" + target);
+
+		if (!reads[key] || Date.parse(reads[key]) < Date.parse(ts)) {
+			reads[key] = ts;
+		}
+
+		const keys = Object.keys(reads);
+
+		if (keys.length > READS_CAP) {
+			keys.sort((a, b) => Date.parse(reads[a]) - Date.parse(reads[b]));
+
+			for (const k of keys.slice(0, keys.length - READS_CAP)) {
+				delete reads[k];
+			}
+		}
+
+		await idbSet("reads", reads);
+	} catch (e) {
+		// no storage: a late push shows as it did
+	}
+}
+
+/** Whether a message at `time` is at or before the conversation's known read marker. */
+async function alreadyRead(network, target, time) {
+	if (!target || !time) {
+		return false;
+	}
+
+	try {
+		const reads = (await idbGet("reads")) || {};
+		const at = reads[foldName((network || "") + "/" + target)];
+
+		return typeof at === "string" && Date.parse(time) <= Date.parse(at);
+	} catch (e) {
+		return false;
+	}
+}
+
 async function readRelay(target, ts, strict) {
+	await rememberRead(await networkOf(), target, ts);
+
 	if (strict) {
 		await closeForTarget(target, ts);
 		await showReadStub(target, ts);
@@ -1636,6 +1691,8 @@ const MARKED_READ_LINGER_MS = 8000;
  * notification the page showed for a message the server never pushed).
  * Elsewhere it closes at once, as before. */
 async function markedReadHere(data) {
+	await rememberRead(data.network || (await networkOf()), data.target, data.time);
+
 	if (strictUserVisible() || !data.target) {
 		await doneWith(data);
 		return;
@@ -1784,6 +1841,21 @@ async function showMessage(P, parsed, checkSeen, mustShow = false, silent = fals
 	// stashed network.
 	const network = await networkOf();
 	const tag = tagFor(network, replyTo || "activity");
+	const time = typeof parsed.tags.time === "string" ? parsed.tags.time : undefined;
+
+	// A push for a message at or before the conversation's read marker —
+	// delivered late, after a Mark read or a read elsewhere — is read already:
+	// no fresh card. Under WebKit it still has to show (quietly); on Chrome
+	// what is up is count enough, else the brief silent "Marked as read".
+	if (checkSeen && (await alreadyRead(network, replyTo, time))) {
+		if (mustShow) {
+			await showQuiet(tag, replyTo, network);
+		} else {
+			await keepChromeCount(replyTo);
+		}
+
+		return;
+	}
 
 	// The page mirrors the reader's markdown setting and its muted
 	// conversations here (client/js/push-prefs.ts); absent means the app
@@ -1875,8 +1947,6 @@ async function showMessage(P, parsed, checkSeen, mustShow = false, silent = fals
 		{action: "markread", title: "Mark read"},
 		{action: "reply", type: "text", title: "Reply", placeholder: "Reply…"},
 	];
-
-	const time = typeof parsed.tags.time === "string" ? parsed.tags.time : undefined;
 
 	await showSafely(title, {
 		tag,

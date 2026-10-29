@@ -1292,7 +1292,13 @@ describe("service worker push notifications under WebKit (every push shows)", fu
 			sw,
 			`{"t":"read","target":"alice","ts":"${new Date(Date.now() + 5000).toISOString()}"}`
 		);
-		await firePush(sw, msgPayload("alice", "pushtest", "and again"));
+		// Later than the read marker (the relay's ts): a message the user has not read.
+		await firePush(
+			sw,
+			`{"t":"msg","from":"alice","target":"pushtest","msgid":"again1","time":"${new Date(
+				Date.now() + 10000
+			).toISOString()}","text":"and again"}`
+		);
 
 		const live = sw.records.filter((n) => !n.closed);
 		expect(live).to.have.lengthOf(1);
@@ -2124,6 +2130,56 @@ describe("service worker subscription renewal", function () {
 				/ pushsubscriptionchange on the root registration: not renewed$/.test(l)
 			)
 		).to.equal(true);
+	});
+});
+
+describe("service worker read markers against late pushes", function () {
+	// FCM delivers a dozing phone's backlog after the tap that woke it: a
+	// push for a message at or before the conversation's read marker (a
+	// Mark read here, a relay from anywhere) is read already and shows no
+	// fresh card.
+	const IOS_UA =
+		"Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148";
+
+	it("a push behind a relayed read marker shows no fresh card on Chrome; one past it does", async function () {
+		const sw = makeSW({fastTimers: true});
+
+		await firePush(sw, msgPayload("alice", "pushtest", "first"));
+		await firePush(sw, `{"t":"read","target":"alice","ts":"2026-09-02T20:00:00.000Z"}`);
+		await new Promise((r) => setTimeout(r, 30));
+		expect(sw.records.filter((n) => !n.closed)).to.have.lengthOf(0);
+
+		// Late: the payload's time (19:59) is before the marker (20:00).
+		await firePush(sw, msgPayload("alice", "pushtest", "late copy", "late1"));
+		const fresh = sw.records.filter((n) => !n.closed && n.data.kind === "push");
+		expect(fresh, "no fresh card for a message already read").to.have.lengthOf(0);
+
+		// Later than the marker: a card.
+		await firePush(
+			sw,
+			`{"t":"msg","from":"alice","target":"pushtest","msgid":"new1","time":"2026-09-02T20:00:01.000Z","text":"newer"}`
+		);
+		expect(sw.records.filter((n) => !n.closed && n.data.kind === "push")).to.have.lengthOf(1);
+	});
+
+	it("a Mark read tapped here is a read marker too", async function () {
+		this.timeout(10000);
+		const sw = makeSW();
+		const rec = await pushed(sw); // time 19:59
+
+		await fireClick(sw, rec, "markread");
+		await firePush(sw, msgPayload("alice", "pushtest", "late copy", "late2")); // 19:59 again
+		expect(sw.records.filter((n) => !n.closed && n.data.kind === "push")).to.have.lengthOf(0);
+	});
+
+	it("a late push still shows quietly under WebKit", async function () {
+		const sw = makeSW({userAgent: IOS_UA, fastTimers: true});
+
+		await firePush(sw, `{"t":"read","target":"alice","ts":"2026-09-02T20:00:00.000Z"}`);
+		const before = sw.shown.length;
+		await firePush(sw, msgPayload("alice", "pushtest", "late copy", "late3"));
+		expect(sw.shown.length, "WebKit saw a show").to.equal(before + 1);
+		expect(sw.shown[sw.shown.length - 1].silent).to.equal(true);
 	});
 });
 

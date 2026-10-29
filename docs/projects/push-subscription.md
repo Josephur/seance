@@ -1232,3 +1232,16 @@ before closing a notification for a read another session made
 a read the user makes in the visible app still closes at once. Tests:
 the deferred close, no stub with a visible window, Mark read in place and
 its relay, the linger.
+
+**A late push is not a fresh card (2026-10-29).** Reported: "Marked as read"
+came and went, and then there were more notifications waiting. FCM
+delivers a dozing phone's backlog after the tap that woke it, and the
+worker showed every pushed message it had not seen, read or not. Now the
+worker keeps the read marker it knows per conversation (`reads` in
+IndexedDB: `<network>/<target>` → the newest read time, from a Mark read
+tapped here and from every relay, 50 entries, `rememberRead`), and a push
+whose message time is at or before it is read already (`alreadyRead`): no
+fresh card — under WebKit a quiet show, on Chrome what is up is count
+enough, else the brief silent "Marked as read" (`keepChromeCount`). The
+page's own notifications are not checked (the page knows what it shows).
+Tests: § read markers against late pushes.
