@@ -1715,7 +1715,20 @@ function recordSeenOnShell(uuid: string, msgid: string | undefined): void {
 // server's read push only follows a message it pushed — a notification the
 // page put on the worker while the account was attended has nobody else to
 // close it, and would otherwise come back counted in the next push.
-function readOnWorker(uuid: string, channel: ClientChan): void {
+/** How long a hidden page on Chrome waits before closing a notification
+ * for a read another session made: the server's relay of that read reaches
+ * the worker within seconds and, finding the notification still up, closes
+ * it itself just after its event — a relay that finds nothing is a silent
+ * push there (service-worker.js `readRelay`). */
+const ECHO_READ_DELAY_MS = 8000;
+
+/** WebKit on this page: where the worker's own 30 s rules apply, and where
+ * there is no silent-push budget to protect by waiting. */
+function webkitPage(): boolean {
+	return /AppleWebKit\//.test(navigator.userAgent) && !/Chrome\//.test(navigator.userAgent);
+}
+
+function readOnWorker(uuid: string, channel: ClientChan, echo = false): void {
 	const target = channel.name;
 
 	// The shell, not the backend: its notifications are closed even after
@@ -1732,7 +1745,12 @@ function readOnWorker(uuid: string, channel: ClientChan): void {
 
 	const send = (ts?: string) =>
 		void pushWorkerFor(uuid).then((worker) => worker?.postMessage({type: "read", target, ts}));
-	send();
+
+	if (echo && !webkitPage() && document.visibilityState !== "visible") {
+		again(`echo ${uuid} ${target}`, ECHO_READ_DELAY_MS, () => send());
+	} else {
+		send();
+	}
 
 	// WebKit refuses a close within 30 s of a show: read it again once that
 	// has passed, up to the newest message read now (a server time, as the
@@ -1785,7 +1803,7 @@ socket.on("markread", (data) => {
 	const found = data.unread === 0 ? store.getters.findChannel(data.chan) : undefined;
 
 	if (found) {
-		readOnWorker(found.network.uuid, found.channel);
+		readOnWorker(found.network.uuid, found.channel, true);
 	}
 });
 

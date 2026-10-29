@@ -1210,3 +1210,24 @@ relay itself stays: removing Mark read would not remove it (reading in the
 app moves the same marker), and the phone in a pocket relies on it. Tests:
 `test/tests/service-worker.ts` (the brief stub and its close, no stub beside
 another conversation's notification, a relay with nothing to close).
+
+**Revised the same day — nothing new is shown.** The brief stub was a new
+notification, and on Android a new notification buzzes whatever `silent`
+says (the site's notification channel decides). So on Chrome a read relay
+now **defers its closes** instead (`closeForTarget(…, defer)`,
+`DEFERRED_CLOSE_MS` = 1.5 s, a timer outside `waitUntil`): what it found is
+still up when Chrome counts at the event's end, nothing new is shown, and
+it disappears a moment later. The stub is kept only for a relay that found
+nothing to close while no window of the app is visible (Chrome waives the
+rule for a visible window, so the device that is reading in the open app
+needs nothing). Two more sources of "found nothing" are closed off: **Mark
+read** tapped on a notification turns it, in place and without an alert
+(same tag, `renotify: false`), into a silent "Marked as read" that the
+server's relay of that read then finds and closes (`markedReadHere`; the
+worker closes it itself after `MARKED_READ_LINGER_MS` = 8 s if no relay
+comes), and a **hidden page** on Chrome waits `ECHO_READ_DELAY_MS` = 8 s
+before closing a notification for a read another session made
+(`webpush.ts` `readOnWorker(…, echo)`), so the relay gets there first;
+a read the user makes in the visible app still closes at once. Tests:
+the deferred close, no stub with a visible window, Mark read in place and
+its relay, the linger.

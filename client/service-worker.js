@@ -1558,12 +1558,22 @@ async function handlePushNow(raw, state = {fellBack: false}) {
  * message or the page's app-opened sweep. Not inside `waitUntil`: the event
  * must not outlive WebKit's handler lifetime. */
 async function readRelay(target, ts, strict) {
-	await closeForTarget(target, ts);
-
 	if (strict) {
+		await closeForTarget(target, ts);
 		await showReadStub(target, ts);
 	} else {
-		await keepChromeCount(target);
+		// Chrome counts the notifications visible on this registration when
+		// the push event ends, and a relay that closed the last one would
+		// leave none — a silent push, which spends the origin's budget and
+		// then shows Chrome's own "This site has been updated in the
+		// background". So the closes happen just after the event instead:
+		// what the relay found is still up when Chrome counts, nothing new
+		// is shown, and nothing buzzes.
+		const matched = await closeForTarget(target, ts, true);
+
+		if (matched === 0) {
+			await keepChromeCount(target);
+		}
 	}
 
 	await updateBadge();
@@ -1573,16 +1583,20 @@ async function readRelay(target, ts, strict) {
  * past the end of the push event, which is when Chrome counts. */
 const BRIEF_READ_STUB_MS = 4000;
 
-/** Chrome counts the notifications visible on this registration when the
- * push event ends, and a read relay that closed the last one — or found
- * nothing, the common case on the device that did the reading, or whose
- * page closed its copy on the MARKREAD echo already — leaves none: a silent
- * push, which spends the origin's budget and then shows Chrome's own "This
- * site has been updated in the background". So when nothing is left up, a
- * silent "Marked as read" takes the count to one for the event's end and is
- * closed a few seconds later (Chrome never refuses a close); another
- * conversation's notification still up is count enough. */
+/** A read relay that found nothing to close on Chrome — the device that did
+ * the reading, or whose page closed its copy already. Chrome waives the
+ * rule while a window of the site is visible (the usual case on the reading
+ * device: the app is open), and a notification for another conversation
+ * still up is count enough. Only with neither does a silent "Marked as
+ * read" take the count to one for the event's end, closed a few seconds
+ * later (Chrome never refuses a close). */
 async function keepChromeCount(target) {
+	const windows = await appWindows();
+
+	if (windows.some((c) => c.visibilityState === "visible")) {
+		return;
+	}
+
 	const up = (await self.registration.getNotifications()).filter(
 		(n) => n.tag && n.tag.startsWith("push-")
 	);
@@ -1605,6 +1619,52 @@ async function keepChromeCount(target) {
 	setTimeout(() => {
 		void closeStub(tag);
 	}, BRIEF_READ_STUB_MS);
+}
+
+/** How long a notification marked read from its own button lingers as
+ * "Marked as read" on Chrome before the worker closes it, unless the
+ * server's relay of that read closes it sooner (DEFERRED_CLOSE_MS after
+ * its event). */
+const MARKED_READ_LINGER_MS = 8000;
+
+/** Mark read tapped on a notification. On Chrome the notification is not
+ * closed but turned, in place and without an alert (same tag, no renotify),
+ * into a silent "Marked as read": the server relays the read back to this
+ * device within seconds, and a relay that finds nothing would be a silent
+ * push (keepChromeCount) — this way it finds this, and closes it. The
+ * worker closes it itself a little later in case no relay comes (a
+ * notification the page showed for a message the server never pushed).
+ * Elsewhere it closes at once, as before. */
+async function markedReadHere(data) {
+	if (strictUserVisible() || !data.target) {
+		await doneWith(data);
+		return;
+	}
+
+	const mine = (await self.registration.getNotifications()).filter(
+		(n) => n.tag && n.tag.startsWith("push-") && n.data && sameName(n.data.target, data.target)
+	);
+
+	for (const n of mine) {
+		if (isStub(n)) {
+			continue;
+		}
+
+		await showSafely(n.title, {
+			tag: n.tag,
+			silent: true,
+			renotify: false,
+			icon: "img/icon-192.png",
+			body: "Marked as read",
+			data: {...n.data, kind: "read", count: 0, messages: undefined},
+		});
+
+		setTimeout(() => {
+			void closeStub(n.tag);
+		}, MARKED_READ_LINGER_MS);
+	}
+
+	await updateBadge();
 }
 
 async function showReadStub(target, ts) {
@@ -1984,10 +2044,18 @@ function sameName(a, b) {
 	return typeof a === "string" && typeof b === "string" && foldName(a) === foldName(b);
 }
 
-/** Close push notifications for `target` whose message predates `ts`. */
-async function closeForTarget(target, ts) {
+/** How long after a read relay's push event its closes happen on Chrome:
+ * past the moment Chrome counts (the event's end), well inside the time it
+ * keeps the worker alive. */
+const DEFERRED_CLOSE_MS = 1500;
+
+/** Close push notifications for `target` whose message predates `ts`;
+ * returns how many matched. With `defer`, the closes happen
+ * DEFERRED_CLOSE_MS later, outside the event (see readRelay). */
+async function closeForTarget(target, ts, defer = false) {
 	const cutoff = ts ? Date.parse(ts) : Infinity;
 	const all = await self.registration.getNotifications();
+	const matched = [];
 
 	for (const n of all) {
 		if (!n.tag || !n.tag.startsWith("push-")) {
@@ -2001,9 +2069,25 @@ async function closeForTarget(target, ts) {
 			(sameTarget || (mine && !target)) &&
 			(!cutoff || !n.data.time || Date.parse(n.data.time) <= cutoff)
 		) {
+			matched.push(n);
+		}
+	}
+
+	if (defer && matched.length > 0) {
+		setTimeout(() => {
+			for (const n of matched) {
+				n.close();
+			}
+
+			void updateBadge();
+		}, DEFERRED_CLOSE_MS);
+	} else {
+		for (const n of matched) {
 			n.close();
 		}
 	}
+
+	return matched.length;
 }
 
 /** Fallback line parser (no tag unescaping) for when js/push.js did not load. */
@@ -2279,6 +2363,10 @@ async function handleReply(data, text) {
  * whatever happened, since there is nothing to type and nothing to lose.
  * The server's relay of the marker closes it on the other devices. */
 async function handleMarkRead(data) {
+	// First, so the tap answers at once: the notification turns into "Marked
+	// as read" (Chrome) or closes (elsewhere), then the marker goes out.
+	await markedReadHere(data);
+
 	if (data.target) {
 		const stash = await getStash();
 		const net = stashNetwork(stash, data.network);
@@ -2297,8 +2385,6 @@ async function handleMarkRead(data) {
 			await enqueueOutbox(mark);
 		}
 	}
-
-	await doneWith(data);
 }
 
 /** The notification's conversation has been dealt with here. */
@@ -2325,7 +2411,9 @@ self.addEventListener("notificationclick", function (event) {
 	// Mark read: the account's read marker at the notification's newest
 	// message, which the server relays to every device.
 	if (event.action === "markread") {
-		event.notification.close();
+		// Not closed here: on Chrome markedReadHere turns it into a silent
+		// "Marked as read" in place for the server's relay to find; elsewhere
+		// doneWith closes it.
 		event.waitUntil(handleMarkRead(data));
 		return;
 	}
