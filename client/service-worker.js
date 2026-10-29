@@ -1661,6 +1661,7 @@ async function markedReadHere(data) {
 
 		setTimeout(() => {
 			void closeStub(n.tag);
+			void logPush("closed the Marked as read for " + data.target + " after the linger");
 		}, MARKED_READ_LINGER_MS);
 	}
 
@@ -2047,7 +2048,7 @@ function sameName(a, b) {
 /** How long after a read relay's push event its closes happen on Chrome:
  * past the moment Chrome counts (the event's end), well inside the time it
  * keeps the worker alive. */
-const DEFERRED_CLOSE_MS = 1500;
+const DEFERRED_CLOSE_MS = 500;
 
 /** Close push notifications for `target` whose message predates `ts`;
  * returns how many matched. With `defer`, the closes happen
@@ -2079,6 +2080,11 @@ async function closeForTarget(target, ts, defer = false) {
 				n.close();
 			}
 
+			// A worker stopped before this leaves them to the app's sweep: the
+			// log says whether the close ran.
+			void logPush(
+				"closed " + matched.length + " after the read relay for " + (target || "all")
+			);
 			void updateBadge();
 		}, DEFERRED_CLOSE_MS);
 	} else {

@@ -1216,7 +1216,7 @@ notification in the shade for every conversation read elsewhere, silent
 or not (whether `silent` holds against Android's per-site channel was
 first doubted, then not). Showing nothing is better: on Chrome a read relay
 now **defers its closes** instead (`closeForTarget(…, defer)`,
-`DEFERRED_CLOSE_MS` = 1.5 s, a timer outside `waitUntil`): what it found is
+`DEFERRED_CLOSE_MS` = 0.5 s, a timer outside `waitUntil` — Chrome has counted long before, and the shorter the wait the less a worker Android stops early can leave behind; the log records each close that ran, and the app's own sweep on opening removes what one did not): what it found is
 still up when Chrome counts at the event's end, nothing new is shown, and
 it disappears a moment later. The stub is kept only for a relay that found
 nothing to close while no window of the app is visible (Chrome waives the
