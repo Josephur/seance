@@ -1212,8 +1212,9 @@ app moves the same marker), and the phone in a pocket relies on it. Tests:
 another conversation's notification, a relay with nothing to close).
 
 **Revised the same day — nothing new is shown.** The brief stub was a new
-notification, and on Android a new notification buzzes whatever `silent`
-says (the site's notification channel decides). So on Chrome a read relay
+notification in the shade for every conversation read elsewhere, silent
+or not (whether `silent` holds against Android's per-site channel was
+first doubted, then not). Showing nothing is better: on Chrome a read relay
 now **defers its closes** instead (`closeForTarget(…, defer)`,
 `DEFERRED_CLOSE_MS` = 1.5 s, a timer outside `waitUntil`): what it found is
 still up when Chrome counts at the event's end, nothing new is shown, and
