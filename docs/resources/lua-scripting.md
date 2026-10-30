@@ -300,10 +300,20 @@ seance.storage.set("last_seen", seance.current_channel)
      ✕, a body that scrolls, a footer with Done — with the list still
      under it. Done, ✕, Escape and the backdrop close it back to the list,
      which reads the library again. It holds name, folder, description,
-     Run this script, the code with line numbers filling the height the
-     fields leave (Tab indents, Shift+Tab leaves the field), and Check
+     Run this script, the code filling the height the fields leave, and Check
      syntax (compiles without running), Duplicate (the copy arrives off),
-     Export .lua and Delete. A name the library would drop on its next load — invalid, or
+     Export .lua and Delete.
+   - **The code field** is CodeMirror 6 (`helpers/luaEditor.ts`): the Lua
+     mode from `@codemirror/legacy-modes`, line numbers, undo history,
+     bracket matching. Its tokens carry the same `tok-*` classes Prism gives
+     a code block in chat (keyword, string, comment, number, and the
+     standard library's globals as `tok-function`), so every theme's
+     `--tok-*` palette colours both alike. Tab indents (four spaces at the
+     caret, or the selected lines); Shift+Tab is left to the browser, so it
+     leaves the field. It is its own lazily loaded chunk, `js/code-editor.js`
+     (about 300 KB, 96 KB gzipped, licence banner in `webpack.config.ts`),
+     imported when an editor opens; until it arrives, or if it cannot, a
+     plain textarea stands in. A name the library would drop on its next load — invalid, or
      another script's — is shown as an error and not saved
      (`irc/scripting/library.ts` `scriptNameError`). Edits save as they
      are typed; the sandbox reloads when an edit is committed (the field

@@ -123,11 +123,12 @@
 							</div>
 
 							<div class="script-code-wrap">
-								<div ref="gutter" class="script-gutter" aria-hidden="true">
-									<span v-for="n in lineCount" :key="n">{{ n }}</span>
-								</div>
+								<!-- CodeMirror (helpers/luaEditor.ts) mounts here; the plain
+								     field stands in until its chunk has loaded, and for good
+								     if it cannot. -->
+								<div v-show="editorReady" ref="codeHost" class="script-cm" />
 								<textarea
-									ref="codeArea"
+									v-if="!editorReady"
 									v-model="script.code"
 									:maxlength="maxCodeLength"
 									class="script-code"
@@ -140,8 +141,6 @@
 									wrap="off"
 									@input="schedulePersist"
 									@change="commit"
-									@keydown.tab.exact="onTab"
-									@scroll="syncGutter"
 								/>
 							</div>
 							<p id="script-code-foot" class="script-foot">
@@ -372,37 +371,24 @@
 	box-shadow: 0 0 0 3px rgb(132 206 136 / 50%);
 }
 
-.script-editor .script-gutter,
-.script-editor .script-code {
-	font-family: Consolas, Menlo, Monaco, "Lucida Console", "DejaVu Sans Mono", "Courier New",
-		monospace;
-	font-size: 0.875rem;
-	line-height: 1.45;
-	padding: 0.5rem;
-}
-
-.script-editor .script-gutter {
-	flex: 0 0 auto;
-	min-width: 3ch;
-	overflow: hidden;
-	text-align: right;
-	color: var(--body-color-muted);
-	background: rgb(128 128 128 / 8%);
-	user-select: none;
-}
-
-.script-editor .script-gutter span {
-	display: block;
+.script-editor .script-cm {
+	flex: 1 1 auto;
+	min-width: 0;
 }
 
 .script-editor .script-code {
 	flex: 1 1 auto;
 	min-width: 0;
+	padding: 0.5rem;
 	border: 0;
 	outline: 0;
 	resize: none;
 	tab-size: 4;
 	white-space: pre;
+	font-family: Consolas, Menlo, Monaco, "Lucida Console", "DejaVu Sans Mono", "Courier New",
+		monospace;
+	font-size: 0.875rem;
+	line-height: 1.45;
 	background: transparent;
 	color: inherit;
 }
@@ -445,7 +431,7 @@
 </style>
 
 <script lang="ts">
-import {computed, defineComponent, onMounted, onUnmounted, ref} from "vue";
+import {computed, defineComponent, nextTick, onMounted, onUnmounted, ref} from "vue";
 import {useRoute} from "vue-router";
 import eventbus from "../../js/eventbus";
 import {navigate} from "../../js/router";
@@ -466,6 +452,10 @@ import {
 import {newScriptId, scriptNameError, uniqueScriptName} from "../../js/irc/scripting/library";
 import type {Script} from "../../js/irc/scripting/types";
 import {scriptManager} from "../../js/irc/scripting/manager";
+import type {LuaEditor} from "../../js/helpers/luaEditor";
+
+const loadLuaEditor = () =>
+	import(/* webpackChunkName: "code-editor" */ "../../js/helpers/luaEditor");
 
 /**
  * One script, in an overlay over the settings (the route is a child of
@@ -486,8 +476,10 @@ export default defineComponent({
 		const statusMsg = ref("");
 		const saveError = ref("");
 		const pane = ref<HTMLElement>();
-		const codeArea = ref<HTMLTextAreaElement>();
-		const gutter = ref<HTMLElement>();
+		const codeHost = ref<HTMLElement>();
+		const editorReady = ref(false);
+		let editor: LuaEditor | undefined;
+		let unmounted = false;
 		let saveTimer: ReturnType<typeof setTimeout> | undefined;
 		let flashTimer: ReturnType<typeof setTimeout> | undefined;
 		let dirty = false;
@@ -600,13 +592,58 @@ export default defineComponent({
 			}
 		};
 
+		// CodeMirror takes over from the plain field once its chunk is here,
+		// with whatever was typed there meanwhile.
+		const mountEditor = async () => {
+			let createLuaEditor: typeof import("../../js/helpers/luaEditor").createLuaEditor;
+
+			try {
+				({createLuaEditor} = await loadLuaEditor());
+			} catch (err) {
+				// eslint-disable-next-line no-console
+				console.warn("[scripting] the code editor did not load; a plain field it is", err);
+				return;
+			}
+
+			if (unmounted || !script.value) {
+				return;
+			}
+
+			// The host is shown first: CodeMirror measures what it mounts into.
+			editorReady.value = true;
+			await nextTick();
+
+			if (unmounted || !script.value || !codeHost.value) {
+				return;
+			}
+
+			editor = createLuaEditor({
+				parent: codeHost.value,
+				doc: script.value.code,
+				maxLength: MAX_CODE_LENGTH,
+				attributes: {"aria-label": "Lua code", "aria-describedby": "script-code-foot"},
+				onChange(doc) {
+					if (script.value) {
+						script.value.code = doc;
+						schedulePersist();
+					}
+				},
+				onBlur() {
+					void commit();
+				},
+			});
+		};
+
 		onMounted(() => {
 			eventbus.on("escapekey", onEscape);
 			// Into the dialog, not a field: a phone would raise its keyboard.
 			pane.value?.focus();
+			void mountEditor();
 		});
 
 		onUnmounted(() => {
+			unmounted = true;
+			editor?.destroy();
 			eventbus.off("escapekey", onEscape);
 			clearTimeout(flashTimer);
 
@@ -699,30 +736,6 @@ export default defineComponent({
 			setTimeout(() => URL.revokeObjectURL(url), 10_000);
 		};
 
-		// Tab indents; Shift+Tab still leaves the field, so the keyboard is
-		// never trapped in it.
-		const onTab = (event: KeyboardEvent) => {
-			const area = codeArea.value;
-
-			if (!area || !script.value) {
-				return;
-			}
-
-			event.preventDefault();
-			const {selectionStart, selectionEnd, value} = area;
-			script.value.code = value.slice(0, selectionStart) + "    " + value.slice(selectionEnd);
-			requestAnimationFrame(() => {
-				area.selectionStart = area.selectionEnd = selectionStart + 4;
-			});
-			schedulePersist();
-		};
-
-		const syncGutter = () => {
-			if (gutter.value && codeArea.value) {
-				gutter.value.scrollTop = codeArea.value.scrollTop;
-			}
-		};
-
 		return {
 			script,
 			nameDraft,
@@ -732,8 +745,8 @@ export default defineComponent({
 			folders,
 			lineCount,
 			pane,
-			codeArea,
-			gutter,
+			codeHost,
+			editorReady,
 			defaultFolder: DEFAULT_FOLDER,
 			maxNameLength: MAX_NAME_LENGTH,
 			maxFolderLength: MAX_FOLDER_LENGTH,
@@ -747,8 +760,6 @@ export default defineComponent({
 			duplicate,
 			remove,
 			exportScript,
-			onTab,
-			syncGutter,
 			close,
 		};
 	},

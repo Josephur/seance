@@ -2,7 +2,8 @@
 // switch and, while it is on, the library; a script opens in the editor at
 // /settings/scripts/<id>, an overlay one layer above the settings modal and
 // wider than it, closed by Done, ✕ or Escape back to the list (Escape
-// closes the editor alone, not the settings under it). There is no
+// closes the editor alone, not the settings under it); its code is a
+// CodeMirror editor highlighting Lua in the theme's code colours. There is no
 // scripting icon in the sidebar footer, and the Fengari chunk is fetched
 // only once an enabled script exists.
 //
@@ -16,17 +17,36 @@ export const url = BASE;
 const FENGARI_RESOURCES = `performance.getEntriesByType("resource").filter((e) => e.name.includes("fengari")).length`;
 const STORED = `JSON.parse(localStorage.getItem("thelounge.scripts") || "[]")`;
 
+const KEYS = {
+	Tab: {key: "Tab", keyCode: 9},
+	Escape: {key: "Escape", keyCode: 27},
+	End: {key: "End", keyCode: 35},
+	KeyA: {key: "a", keyCode: 65},
+};
+const CTRL = 2;
+const SHIFT = 8;
+
 async function key(page, code, modifiers = 0) {
+	const {key: name, keyCode} = KEYS[code];
+
 	for (const type of ["keyDown", "keyUp"]) {
 		await page.send("Input.dispatchKeyEvent", {
 			type,
-			key: code,
+			key: name,
 			code,
-			windowsVirtualKeyCode: {Tab: 9, Escape: 27}[code] ?? 0,
+			windowsVirtualKeyCode: keyCode,
 			modifiers,
 		});
 	}
 
+	await page.sleep(50);
+}
+
+/** Replace the editor's code the way typing would: select all, insert. */
+async function setCode(page, text) {
+	await page.click(".script-editor .cm-content");
+	await key(page, "KeyA", CTRL);
+	await page.send("Input.insertText", {text});
 	await page.sleep(50);
 }
 
@@ -86,7 +106,7 @@ export default async function run(page) {
 
 	// An example opens straight in the editor and loads the parser.
 	await page.click(".scripts-examples .btn", 0);
-	await page.waitFor(`!!document.querySelector("#script-editor-overlay .script-code")`, {
+	await page.waitFor(`!!document.querySelector("#script-editor-overlay .cm-content")`, {
 		label: "editor open",
 	});
 	const id = await page.evaluate(`${STORED}[0]?.id`);
@@ -121,6 +141,41 @@ export default async function run(page) {
 	await page.waitFor(`${FENGARI_RESOURCES} > 0`, {label: "fengari loaded for enabled script"});
 	page.check("fengari loaded once an enabled script exists", true);
 	page.check("code area is tall", (await page.rect(".script-code-wrap")).height > 250);
+	page.check(
+		"CodeMirror replaced the plain field",
+		(await page.count(".script-code")) === 0 && (await page.count(".cm-lineNumbers")) === 1
+	);
+	page.check(
+		"the CodeMirror chunk loads on demand",
+		(await page.evaluate(
+			`performance.getEntriesByType("resource").some((e) => e.name.includes("js/code-editor.js"))`
+		)) === true
+	);
+	const tokens = await page.evaluate(`(() => {
+		const text = (cls) => [...document.querySelectorAll(".cm-content ." + cls)].map((e) => e.textContent);
+		const colour = (sel) => { const el = document.querySelector(sel); return el && getComputedStyle(el).color; };
+		return {
+			keyword: text("tok-keyword"),
+			string: text("tok-string"),
+			comment: text("tok-comment"),
+			keywordColour: colour(".cm-content .tok-keyword"),
+			stringColour: colour(".cm-content .tok-string"),
+			plainColour: colour(".cm-content"),
+		};
+	})()`);
+	page.check(
+		"Lua keywords, strings and comments are highlighted",
+		tokens.keyword.includes("function") &&
+			tokens.keyword.includes("end") &&
+			tokens.string.includes('"!ping"') &&
+			tokens.comment.some((c) => c.includes("Auto-responder"))
+	);
+	page.check(
+		"tokens take the theme's colours, not the text's",
+		tokens.keywordColour !== tokens.plainColour &&
+			tokens.stringColour !== tokens.plainColour &&
+			tokens.keywordColour !== tokens.stringColour
+	);
 	await page.screenshot("script-edit-auto-ping");
 
 	await page.click(".script-tools .btn", 0);
@@ -143,21 +198,17 @@ export default async function run(page) {
 	page.check("a valid rename is saved", (await page.count(".script-error-line")) === 0);
 
 	// Tab indents; Shift+Tab leaves the field (no keyboard trap).
-	await page.evaluate(`(() => {
-		const area = document.querySelector(".script-code");
-		area.focus();
-		area.selectionStart = area.selectionEnd = area.value.length;
-	})()`);
+	await page.click(".script-editor .cm-content");
+	await key(page, "End", CTRL);
 	await key(page, "Tab");
-	page.check(
-		"Tab inserts four spaces",
-		(await page.evaluate(`document.querySelector(".script-code").value.endsWith("    ")`)) ===
-			true
-	);
-	await key(page, "Tab", 8);
+	await page.waitFor(`${STORED}[0].code.endsWith("end)\\n    ")`, {
+		label: "Tab inserted four spaces",
+	});
+	page.check("Tab inserts four spaces at the caret", true);
+	await key(page, "Tab", SHIFT);
 	page.check(
 		"Shift+Tab moves focus out of the code",
-		(await page.evaluate(`document.activeElement?.classList.contains("script-code")`)) === false
+		(await page.evaluate(`!document.activeElement?.closest(".cm-editor")`)) === true
 	);
 
 	// Escape (outside a field) closes the editor and leaves the settings up.
@@ -191,11 +242,15 @@ export default async function run(page) {
 	// (scripts/fengari-match-budget.js) instead of holding the page: the
 	// load fails with the limit's error, shown in the editor's banner.
 	await page.click(".scripts-summary");
-	await page.waitFor(`!!document.querySelector(".script-code")`, {label: "editor again"});
+	await page.waitFor(`!!document.querySelector(".script-editor .cm-content")`, {
+		label: "editor again",
+	});
 	await page.screenshot("script-edit-pinger");
 	await page.click(".script-run input");
 	await page.waitFor(`${STORED}[0].enabled === true`, {label: "run switch saved"});
-	await page.fill(".script-code", `string.find(string.rep("a", 100000), ".-.-.-.-b")`);
+	await setCode(page, `string.find(string.rep("a", 100000), ".-.-.-.-b")`);
+	// Leaving the code commits the edit, which reloads the scripts.
+	await page.click(".script-desc-field .input");
 	await page.waitFor(`(${STORED}[0].lastError ?? "").includes("step limit")`, {
 		label: "pattern stopped at its step budget",
 		timeout: 15000,
@@ -237,7 +292,9 @@ export default async function run(page) {
 
 	// Done closes the editor too, saving what was typed just before.
 	await page.click(".scripts-summary");
-	await page.waitFor(`!!document.querySelector(".script-code")`, {label: "editor for Done"});
+	await page.waitFor(`!!document.querySelector(".script-editor .cm-content")`, {
+		label: "editor for Done",
+	});
 	await page.fill(".script-desc-field .input", "Answers !ping");
 	await page.click(".script-editor .settings-modal-done");
 	await page.waitFor(`!document.querySelector("#script-editor-overlay")`, {
