@@ -105,6 +105,7 @@ self.addEventListener("activate", function (event) {
 	event.waitUntil(
 		logPush("activate build=" + cacheName + (pushOnly ? " network=" + scopeNetwork : " root"))
 	);
+	sweepOn(event);
 
 	if (pushOnly) {
 		// The cache belongs to the root worker; a push-only one of another
@@ -297,6 +298,9 @@ self.addEventListener("message", function (event) {
 		event.waitUntil(awayOnClose(networks));
 		return;
 	}
+
+	// A page that is here (not one leaving): a chance to run a close that is due.
+	sweepOn(event);
 
 	if (event.data && event.data.type === "read" && typeof event.data.target === "string") {
 		const {target, ts} = event.data;
@@ -1221,6 +1225,7 @@ async function updateBadge() {
 self.addEventListener("push", function (event) {
 	const raw = event.data ? event.data.text() : "";
 
+	sweepOn(event);
 	event.waitUntil(handlePush(raw));
 });
 
@@ -1635,7 +1640,8 @@ async function readRelay(target, ts, strict) {
 }
 
 /** How long the brief "Marked as read" stays on a tag-replacing browser:
- * past the end of the push event, which is when Chrome counts. */
+ * past the end of the push event, which is when Chrome counts (a
+ * scheduled close, scheduleClose). */
 const BRIEF_READ_STUB_MS = 4000;
 
 /** A read relay that found nothing to close on Chrome — the device that did
@@ -1671,9 +1677,7 @@ async function keepChromeCount(target) {
 		data: {kind: "read", target, network: network || undefined},
 	});
 
-	setTimeout(() => {
-		void closeStub(tag);
-	}, BRIEF_READ_STUB_MS);
+	await scheduleClose(network, target, new Date().toISOString(), BRIEF_READ_STUB_MS);
 }
 
 /** How long a notification marked read from its own button lingers as
@@ -1688,8 +1692,9 @@ const MARKED_READ_LINGER_MS = 8000;
  * device within seconds, and a relay that finds nothing would be a silent
  * push (keepChromeCount) — this way it finds this, and closes it. The
  * worker closes it itself a little later in case no relay comes (a
- * notification the page showed for a message the server never pushed).
- * Elsewhere it closes at once, as before. */
+ * notification the page showed for a message the server never pushed),
+ * by a scheduled close (scheduleClose). Elsewhere it closes at once, as
+ * before. */
 async function markedReadHere(data) {
 	await rememberRead(data.network || (await networkOf()), data.target, data.time);
 
@@ -1715,11 +1720,15 @@ async function markedReadHere(data) {
 			body: "Marked as read",
 			data: {...n.data, kind: "read", count: 0, messages: undefined},
 		});
+	}
 
-		setTimeout(() => {
-			void closeStub(n.tag);
-			void logPush("closed the Marked as read for " + data.target + " after the linger");
-		}, MARKED_READ_LINGER_MS);
+	if (mine.length > 0) {
+		await scheduleClose(
+			data.network || (await networkOf()),
+			data.target,
+			new Date().toISOString(),
+			MARKED_READ_LINGER_MS
+		);
 	}
 
 	await updateBadge();
@@ -2116,13 +2125,13 @@ function sameName(a, b) {
 }
 
 /** How long after a read relay's push event its closes happen on Chrome:
- * past the moment Chrome counts (the event's end), well inside the time it
- * keeps the worker alive. */
+ * past the moment Chrome counts (the event's end). */
 const DEFERRED_CLOSE_MS = 500;
 
 /** Close push notifications for `target` whose message predates `ts`;
- * returns how many matched. With `defer`, the closes happen
- * DEFERRED_CLOSE_MS later, outside the event (see readRelay). */
+ * returns how many matched. With `defer`, the closes are scheduled for
+ * DEFERRED_CLOSE_MS later, outside the event (see readRelay and
+ * scheduleClose). */
 async function closeForTarget(target, ts, defer = false) {
 	const cutoff = ts ? Date.parse(ts) : Infinity;
 	const all = await self.registration.getNotifications();
@@ -2145,18 +2154,7 @@ async function closeForTarget(target, ts, defer = false) {
 	}
 
 	if (defer && matched.length > 0) {
-		setTimeout(() => {
-			for (const n of matched) {
-				n.close();
-			}
-
-			// A worker stopped before this leaves them to the app's sweep: the
-			// log says whether the close ran.
-			void logPush(
-				"closed " + matched.length + " after the read relay for " + (target || "all")
-			);
-			void updateBadge();
-		}, DEFERRED_CLOSE_MS);
+		await scheduleClose(await networkOf(), target, ts, DEFERRED_CLOSE_MS);
 	} else {
 		for (const n of matched) {
 			n.close();
@@ -2164,6 +2162,153 @@ async function closeForTarget(target, ts, defer = false) {
 	}
 
 	return matched.length;
+}
+
+// --- closes that outlive the event ------------------------------------------
+// A close a read leaves for after its event — the relay's deferred close,
+// the Marked as read linger, the brief stub — used to be a timer alone,
+// and a timer runs past the event only while the worker lives. On Android,
+// Chrome reports the push job finished the moment the message is dispatched
+// (GCMNativeBackgroundTask.java: "we hope that the system keeps us alive
+// long enough to actually finish processing"), so a phone with its screen
+// off ends the process with the event and the timer never fires: "Marked as
+// read" stayed, and a conversation read elsewhere kept its card. So each
+// such close is kept in IndexedDB (`closes`: the target, the cutoff `ts` and
+// the earliest moment `at`), the timer is still set, a one-shot Background
+// Sync is registered — Chrome fires it at once under its own keep-alive, or
+// when the device next can, and the sync handler sleeps inside its own
+// waitUntil until the entry is due — and every event the worker gets sweeps
+// what is due first. Whichever runs first closes; the others find nothing.
+
+const CLOSES_KEY = "closes";
+const CLOSES_SYNC_TAG = "seance-closes";
+/** The sync handler's sleep between sweeps while an entry is not yet due. */
+const CLOSES_POLL_MS = 1000;
+
+/** Close `target`'s notifications at or before `ts` once `delayMs` has
+ * passed, by whichever of the timer, the sync event and the next event
+ * comes first. One entry per target: the later cutoff and the earlier
+ * moment win. */
+async function scheduleClose(network, target, ts, delayMs) {
+	const at = Date.now() + delayMs;
+	const key = foldName((network || "") + "/" + (target || ""));
+
+	try {
+		const closes = (await idbGet(CLOSES_KEY)) || {};
+		const had = closes[key];
+
+		closes[key] = {
+			network: network || undefined,
+			target: target || undefined,
+			ts:
+				had && had.ts && (!ts || Date.parse(had.ts) > Date.parse(ts))
+					? had.ts
+					: ts || undefined,
+			at: had && had.at < at ? had.at : at,
+		};
+		await idbSet(CLOSES_KEY, closes);
+	} catch (e) {
+		// no storage: the timer is what there is
+	}
+
+	// The timer is this entry's own due signal; the sync and the event
+	// sweeps go by the clock.
+	setTimeout(() => {
+		void enqueuePush(() => sweepCloses(key)).catch(() => undefined);
+	}, delayMs);
+
+	try {
+		await self.registration.sync.register(CLOSES_SYNC_TAG);
+	} catch (e) {
+		// no Background Sync here (WebKit, Firefox, permission off): the
+		// timer and the next event are what there is
+	}
+}
+
+/** Run the scheduled closes that are due (and `dueKey`'s, whose timer
+ * fired); returns the milliseconds until the next one, or null when none
+ * is left. */
+async function sweepCloses(dueKey = null) {
+	let closes;
+
+	try {
+		closes = (await idbGet(CLOSES_KEY)) || {};
+	} catch (e) {
+		return null;
+	}
+
+	const now = Date.now();
+	let next = null;
+	let changed = false;
+
+	for (const key of Object.keys(closes)) {
+		const entry = closes[key];
+
+		if (!entry || typeof entry.at !== "number") {
+			delete closes[key];
+			changed = true;
+			continue;
+		}
+
+		if (entry.at > now && key !== dueKey) {
+			next = next === null ? entry.at - now : Math.min(next, entry.at - now);
+			continue;
+		}
+
+		const matched = await closeForTarget(entry.target, entry.ts);
+
+		if (matched > 0) {
+			void logPush(
+				"closed " + matched + " after the read relay for " + (entry.target || "all")
+			);
+		}
+
+		delete closes[key];
+		changed = true;
+	}
+
+	if (changed) {
+		try {
+			await idbSet(CLOSES_KEY, closes);
+		} catch (e) {
+			// read again next time
+		}
+
+		await updateBadge();
+	}
+
+	return next;
+}
+
+/** The sync event: sweep once the pushes in flight have ended (Chrome has
+ * counted them), sleep while an entry is not yet due, and end with none
+ * left. */
+async function runCloses() {
+	for (;;) {
+		await pushChain;
+
+		const left = await enqueuePush(sweepCloses);
+
+		if (left === null) {
+			return;
+		}
+
+		await new Promise((resolve) => setTimeout(resolve, Math.min(left, CLOSES_POLL_MS)));
+	}
+}
+
+self.addEventListener("sync", function (event) {
+	if (event.tag !== CLOSES_SYNC_TAG) {
+		return;
+	}
+
+	event.waitUntil(runCloses().catch(() => undefined));
+});
+
+/** Any event is a chance to run a close that is due (the timer may have
+ * died with the worker). */
+function sweepOn(event) {
+	event.waitUntil(enqueuePush(sweepCloses).catch(() => undefined));
 }
 
 /** Fallback line parser (no tag unescaping) for when js/push.js did not load. */
@@ -2482,6 +2627,8 @@ async function doneWith(data) {
 
 self.addEventListener("notificationclick", function (event) {
 	const data = event.notification.data || {};
+
+	sweepOn(event);
 
 	void logPush(
 		"click action=" + (event.action || "open") + " tag=" + (event.notification.tag || "")

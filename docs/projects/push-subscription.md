@@ -1245,3 +1245,23 @@ fresh card — under WebKit a quiet show, on Chrome what is up is count
 enough, else the brief silent "Marked as read" (`keepChromeCount`). The
 page's own notifications are not checked (the page knows what it shows).
 Tests: § read markers against late pushes.
+
+**The closes after the event survive the event (2026-10-30).** Reported from
+Android: "Marked as read" stayed, and a conversation read elsewhere kept its
+card. Every close a read left for after its event — the relay's deferred
+close, the 8 s linger, the 4 s stub — ran from a `setTimeout` outside
+`waitUntil`, and on Android Chrome reports the push job finished the moment
+the message is dispatched (`GCMNativeBackgroundTask.java`: "we hope that the
+system keeps us alive long enough to actually finish processing"), so a
+phone with its screen off ends the process with the event and the timer
+never fires. Now each such close is kept in IndexedDB (`closes`: per
+target, the cutoff `ts` and the earliest moment `at`; `scheduleClose`), the
+timer is still set (its own entry's due signal), a one-shot Background Sync
+(`seance-closes`) is registered — Chrome fires it at once under its own
+keep-alive, or when the device next can, and the handler sleeps inside its
+own `waitUntil` until the entry is due, a second at a time — and every
+event the worker gets (a push, a click, a page's message, the activation)
+sweeps what is due first (`sweepCloses`). Whichever runs first closes; the
+others find nothing. Where there is no Background Sync (WebKit, Firefox, the
+permission off) the timer and the next event are what there is. Tests:
+§ closes that outlive the event (harness `deadTimers`, `fireSync`).

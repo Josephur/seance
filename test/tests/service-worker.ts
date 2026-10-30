@@ -327,6 +327,8 @@ interface SWHarness {
 	socketTimeline(): {bornAt: number; quitAt: number | null}[];
 	/** Move the worker's and the notifications' clock forward. */
 	advance(ms: number): void;
+	/** The Background Sync tags the worker registered, in order. */
+	synced: string[];
 }
 
 interface HarnessOptions {
@@ -348,6 +350,9 @@ interface HarnessOptions {
 	scope?: string;
 	/** Run the worker's timers a hundred times faster (its delays are seconds long). */
 	fastTimers?: boolean;
+	/** A worker whose timers never fire: the process Android ends with the
+	 * event (GCMNativeBackgroundTask.java). */
+	deadTimers?: boolean;
 	/** Replace the stash the page wrote. */
 	stash?: Stash;
 	/** Refuse `close()` on a notification shown under 30 s ago, as WebKit does
@@ -396,10 +401,14 @@ function makeSW(options: HarnessOptions = {}): SWHarness {
 		}
 	}
 
+	const synced: string[] = [];
+
 	const sandbox: any = {
 		console,
 		Date: ShiftedDate,
-		setTimeout: options.fastTimers
+		setTimeout: options.deadTimers
+			? () => 0
+			: options.fastTimers
 			? (fn: () => void, ms = 0) => setTimeout(fn, ms / 100)
 			: setTimeout,
 		clearTimeout,
@@ -421,6 +430,12 @@ function makeSW(options: HarnessOptions = {}): SWHarness {
 		},
 		registration: {
 			scope: options.scope ?? SCOPE,
+			sync: {
+				register(tag: string): Promise<void> {
+					synced.push(tag);
+					return Promise.resolve();
+				},
+			},
 			getNotifications(filter?: {tag: string}): Promise<Rec[]> {
 				return Promise.resolve(
 					records.filter(
@@ -591,7 +606,20 @@ function makeSW(options: HarnessOptions = {}): SWHarness {
 		advance(ms: number): void {
 			offset += ms;
 		},
+		synced,
 	};
+}
+
+/** Fire a Background Sync event with the given tag. */
+async function fireSync(sw: SWHarness, tag: string): Promise<void> {
+	const promises: Promise<unknown>[] = [];
+	const ev = {tag, waitUntil: (p: Promise<unknown>) => promises.push(p)};
+
+	for (const h of sw.handlers.sync ?? []) {
+		h(ev);
+	}
+
+	await Promise.all(promises).catch(() => {});
 }
 
 /** Fire one push payload through the worker's push handler. */
@@ -2130,6 +2158,102 @@ describe("service worker subscription renewal", function () {
 				/ pushsubscriptionchange on the root registration: not renewed$/.test(l)
 			)
 		).to.equal(true);
+	});
+});
+
+describe("service worker closes that outlive the event", function () {
+	// Android ends the process with the push event, so no timer the worker
+	// set runs: the closes a read leaves for later are kept, and run from
+	// the Background Sync event or from the next event the worker gets.
+
+	it("a read relay's close runs from the sync event when the worker's timer never fires", async function () {
+		const sw = makeSW({deadTimers: true});
+
+		await firePush(sw, msgPayload("alice", "pushtest", "hello there"));
+		await firePush(
+			sw,
+			`{"t":"read","target":"alice","ts":"${new Date(Date.now() + 5000).toISOString()}"}`
+		);
+
+		expect(sw.records[0].closed, "still up when the event ends").to.equal(false);
+		expect(sw.synced).to.include("seance-closes");
+
+		sw.advance(600); // DEFERRED_CLOSE_MS is over
+		await fireSync(sw, "seance-closes");
+
+		expect(sw.records[0].closed, "closed by the sync event").to.equal(true);
+		expect(sw.shown, "nothing new shown").to.have.lengthOf(1);
+		expect(sw.kv.get("closes"), "the entry is gone").to.deep.equal({});
+		expect(
+			((sw.kv.get("pushlog") as string[]) ?? []).some((l) =>
+				l.includes("closed 1 after the read relay for alice")
+			)
+		).to.equal(true);
+	});
+
+	it("a Marked as read whose linger timer never fires is closed by the sync event", async function () {
+		const sw = makeSW({deadTimers: true});
+		const rec = await pushed(sw);
+
+		await fireClick(sw, rec, "markread");
+
+		const live = sw.records.filter((n) => !n.closed);
+		expect(live).to.have.lengthOf(1);
+		expect(live[0].body).to.equal("Marked as read");
+
+		sw.advance(9000); // MARKED_READ_LINGER_MS is over
+		await fireSync(sw, "seance-closes");
+
+		expect(sw.records.filter((n) => !n.closed)).to.have.lengthOf(0);
+	});
+
+	it("the brief stub of a relay with nothing to close is closed by the sync event", async function () {
+		const sw = makeSW({deadTimers: true});
+
+		await firePush(sw, `{"t":"read","target":"alice","ts":"${new Date().toISOString()}"}`);
+
+		expect(sw.shown).to.have.lengthOf(1);
+		expect(sw.shown[0].data.kind).to.equal("read");
+
+		sw.advance(5000); // BRIEF_READ_STUB_MS is over
+		await fireSync(sw, "seance-closes");
+
+		expect(sw.records.filter((n) => !n.closed)).to.have.lengthOf(0);
+	});
+
+	it("the next push the worker gets runs a close that is due", async function () {
+		const sw = makeSW({deadTimers: true});
+
+		await firePush(sw, msgPayload("alice", "pushtest", "hello there"));
+		await firePush(
+			sw,
+			`{"t":"read","target":"alice","ts":"${new Date(Date.now() + 5000).toISOString()}"}`
+		);
+		expect(sw.records[0].closed).to.equal(false);
+
+		sw.advance(600);
+		await firePush(sw, msgPayload("bob", "pushtest", "another conversation"));
+
+		expect(sw.records[0].closed, "alice's card closed by the sweep").to.equal(true);
+		const live = sw.records.filter((n) => !n.closed);
+		expect(live).to.have.lengthOf(1);
+		expect(live[0].data.target).to.equal("bob");
+	});
+
+	it("a close not yet due is left for later by the sweep", async function () {
+		const sw = makeSW({deadTimers: true});
+
+		await firePush(sw, msgPayload("alice", "pushtest", "hello there"));
+		await firePush(
+			sw,
+			`{"t":"read","target":"alice","ts":"${new Date(Date.now() + 5000).toISOString()}"}`
+		);
+
+		// Another push before DEFERRED_CLOSE_MS: the entry stays.
+		await firePush(sw, msgPayload("bob", "pushtest", "another conversation"));
+
+		expect(sw.records[0].closed).to.equal(false);
+		expect(Object.keys(sw.kv.get("closes") as object)).to.have.lengthOf(1);
 	});
 });
 
