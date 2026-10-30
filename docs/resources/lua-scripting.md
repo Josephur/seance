@@ -8,7 +8,7 @@ Seance includes an embedded, sandboxed Lua scripting runtime powered by [Fengari
 
 ### Off Unless Enabled (the master switch)
 
-Scripting is gated by **Settings → General → Enable Scripting** (setting
+Scripting is gated by **Settings → Scripts → Enable scripting** (setting
 `enableScripting`, default off). The flag lives in
 `client/js/irc/scripting/enabled.ts`; `settings.ts` writes it and the script
 manager subscribes to it.
@@ -19,7 +19,7 @@ While it is off:
   **never downloaded** — the manager never creates its sandbox (not at boot,
   not for `/lua`, not for a syntax check), so there is 0 byte impact.
 - No script handler fires, no script command is known, `/lua` answers that
-  scripting is disabled, and the sidebar shows no scripting icon.
+  scripting is disabled, and the Scripts tab shows only the switch.
 - Scripts and their data are kept; turning the switch back on reloads the
   enabled scripts.
 
@@ -277,21 +277,33 @@ seance.storage.set("last_seen", seance.current_channel)
 
 ## User Interface & Commands
 
-1. **The script editor** (full-screen window at `/scripts`):
+1. **Settings → Scripts** (`Settings/Scripts.vue` at `/settings/scripts`,
+   one tab of the settings modal like the others; nothing in the sidebar):
 
-   - Opened from the scripting icon at the bottom of the sidebar, next to
-     Settings and Help — it only appears while Enable Scripting is on.
-   - **Library organization**: every script is filed under a _folder_ (free
-     text, `Unsorted` when unset; scripts written before folders land there)
-     with an optional one-line description. The library pane groups scripts
-     by folder, offers folder chips with counts, a status filter
-     (All / Active / Disabled / With errors) and a search over name, folder,
-     description and code. Scripts sort by folder, then name.
-   - Create, edit (full-height editor with line numbers), duplicate, delete,
-     toggle active, export/import as `.lua` files, starter templates
-     (Auto-Responder files under _Automation_, /slap under _Commands_),
-     "Check syntax" (compiles the script without running it), and live
-     error reporting. Edits save automatically.
+   - The tab always holds the Enable scripting switch; the library shows
+     only while it is on.
+   - **The library**: every script is filed under a _folder_ (free text,
+     `Unsorted` when unset; scripts written before folders land there) with
+     an optional one-line description, listed by folder, then name, each
+     row with its state (Running / Off / Error) and an on/off switch. Past
+     six scripts a search over name, folder, description and code appears.
+     New script, Import .lua… and two examples (Auto-responder under
+     _Automation_, /slap under _Commands_) each open the new script in the
+     editor. An imported file arrives switched off, as a restored backup's
+     scripts do.
+   - **The editor** (`Settings/ScriptEdit.vue` at `/settings/scripts/<id>`,
+     a page of the tab as a network's edit form is of Networks, in a wider
+     column than the other tabs; only while scripting is on): name, Run
+     this script, folder, description, the code with line numbers (Tab
+     indents, Shift+Tab leaves the field), and Check syntax (compiles
+     without running), Duplicate (the copy arrives off), Export .lua and
+     Delete. A name the library would drop on its next load — invalid, or
+     another script's — is shown as an error and not saved
+     (`irc/scripting/library.ts` `scriptNameError`). Edits save as they
+     are typed; the sandbox reloads when an edit is committed (the field
+     loses the caret, the switch flips, the page is left), so a script's
+     top-level code does not run again at every pause in the typing. The
+     error banner follows what the manager last recorded.
 
 2. **`/lua <code>` Command**:
 

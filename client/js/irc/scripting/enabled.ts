@@ -1,8 +1,8 @@
 /**
- * The master switch for Lua scripting (Settings → General → Enable Scripting).
+ * The master switch for Lua scripting (Settings → Scripts → Enable scripting).
  *
  * Deliberately tiny and dependency-free: `settings.ts` writes it, the script
- * manager subscribes to it, and the router/sidebar read it. While it is off,
+ * manager subscribes to it, and the router and Scripts tab read it. While it is off,
  * the manager never creates a sandbox, so the Fengari chunk (the Lua parser /
  * interpreter) is never fetched — not at boot, not for `/lua`, not for a
  * syntax check.

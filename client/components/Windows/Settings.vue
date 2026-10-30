@@ -21,8 +21,16 @@
 			</div>
 			<Navigation />
 			<div class="settings-modal-body">
-				<div class="container" @change="onChange">
-					<router-view></router-view>
+				<div
+					class="container"
+					:class="{'container-wide': route.name === 'ScriptEdit'}"
+					@change="onChange"
+				>
+					<!-- Keyed by the script, so Duplicate's jump to the copy
+					     mounts a fresh editor. -->
+					<router-view v-slot:default="{Component}">
+						<component :is="Component" :key="route.params.id" />
+					</router-view>
 				</div>
 			</div>
 			<div class="settings-modal-footer">
@@ -119,6 +127,11 @@
 	padding-top: 1rem;
 }
 
+/* The script editor's code wants more than the 30rem settings column. */
+.settings-modal-body .container-wide {
+	width: min(48rem, 100%);
+}
+
 .settings-modal-footer {
 	display: flex;
 	align-items: center;
@@ -201,6 +214,7 @@ export default defineComponent({
 		};
 
 		return {
+			route,
 			onChange,
 			close,
 		};

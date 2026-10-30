@@ -39,6 +39,12 @@ import {
 import {IRCU_FAKE_LAG} from "../../client/js/irc/fakelag";
 import {register, setup} from "./support";
 import {isScriptingEnabled, setScriptingEnabled} from "../../client/js/irc/scripting/enabled";
+import {
+	importedScriptName,
+	scriptNameError,
+	scriptTemplate,
+	uniqueScriptName,
+} from "../../client/js/irc/scripting/library";
 
 describe("Lua scripting subsystem", function () {
 	describe("storage (irc/scripting/storage.ts)", function () {
@@ -229,6 +235,50 @@ describe("Lua scripting subsystem", function () {
 			);
 			// Rewriting a bucket counts it once, not twice.
 			saveScriptData("s0", {k: chunk});
+		});
+	});
+
+	describe("the Scripts tab's helpers (irc/scripting/library.ts)", function () {
+		const named = (...names: string[]): Script[] =>
+			names.map((name, i) => ({id: `s${i}`, name, code: "", enabled: true, folder: "X"}));
+
+		it("numbers a name that is taken, case-insensitively, within the length limit", function () {
+			expect(uniqueScriptName(named(), "auto_ping")).to.equal("auto_ping");
+			expect(uniqueScriptName(named("Auto_Ping"), "auto_ping")).to.equal("auto_ping_2");
+			expect(uniqueScriptName(named("auto_ping", "auto_ping_2"), "auto_ping")).to.equal(
+				"auto_ping_3"
+			);
+
+			const long = "a".repeat(32);
+			const next = uniqueScriptName(named(long), long);
+			expect(next).to.equal(`${"a".repeat(30)}_2`);
+			expect(isValidScriptName(next)).to.be.true;
+		});
+
+		it("makes a valid script name out of an imported file's name", function () {
+			expect(importedScriptName("My Bot.lua")).to.equal("my_bot");
+			expect(importedScriptName("__x.LUA")).to.equal("x");
+			expect(importedScriptName("ü.lua")).to.equal("imported_script");
+			expect(isValidScriptName(importedScriptName(`${"b".repeat(50)}.lua`))).to.be.true;
+		});
+
+		it("refuses a name the library would drop when it next loads", function () {
+			const scripts = named("pinger", "other");
+
+			expect(scriptNameError(scripts, "pinger", "s0")).to.equal(null);
+			expect(scriptNameError(scripts, "pinger2", "s0")).to.equal(null);
+			expect(scriptNameError(scripts, "", "s0")).to.match(/needs a name/);
+			expect(scriptNameError(scripts, "two words", "s0")).to.match(/Letters, digits/);
+			expect(scriptNameError(scripts, "a".repeat(33), "s0")).to.match(/at most 32/);
+			expect(scriptNameError(scripts, "OTHER", "s0")).to.match(/already called/);
+		});
+
+		it("files the examples under their folders and keeps their names unique", function () {
+			const responder = scriptTemplate("responder", []);
+			expect(responder.folder).to.equal("Automation");
+			expect(responder.name).to.equal("auto_ping");
+			expect(scriptTemplate("responder", [responder]).name).to.equal("auto_ping_2");
+			expect(scriptTemplate("slap", []).folder).to.equal("Commands");
 		});
 	});
 

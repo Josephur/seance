@@ -38,8 +38,7 @@ function storeLastError(script: Script, error: string | undefined): void {
 	}
 }
 
-export const SCRIPTING_DISABLED_ERROR =
-	"Scripting is disabled. Enable it in Settings → General → Enable Scripting.";
+export const SCRIPTING_DISABLED_ERROR = "Scripting is disabled. Turn it on in Settings → Scripts.";
 
 export interface ActiveContextProvider {
 	getContext(): {channel: string; network: string; nick: string};
@@ -590,7 +589,7 @@ class ScriptManager implements SandboxHost {
 
 export const scriptManager = new ScriptManager();
 
-// The General → Enable Scripting switch (settings.ts writes the flag):
+// The Settings → Scripts switch (settings.ts writes the flag):
 // turning it on loads Fengari and the enabled scripts; turning it off
 // closes the Lua state at once, so no handler or command can fire again.
 onScriptingEnabledChange((enabled) => {
