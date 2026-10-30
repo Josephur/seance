@@ -922,15 +922,17 @@ describe("service worker push notifications", function () {
 		);
 		await firePush(sw, ":irc.example MARKREAD alice timestamp=2099-01-01T00:00:00.000Z");
 
-		// On Chrome the close comes just after the event (what Chrome counts
-		// is still up then); nothing new is shown.
-		expect(sw.shown).to.have.lengthOf(1);
-		expect(sw.records[0].closed, "still up at the event's end").to.equal(false);
+		// On Chrome the last notification turns into Marked as read in place
+		// (what Chrome counts is still one) and closes just after the event.
+		let live = sw.records.filter((n) => !n.closed);
+		expect(live, "in place at the event's end").to.have.lengthOf(1);
+		expect(live[0].body).to.equal("Marked as read");
 		await new Promise((r) => setTimeout(r, 40));
-		expect(sw.records[0].closed, "closed just after").to.equal(true);
+		live = sw.records.filter((n) => !n.closed);
+		expect(live, "closed just after").to.have.lengthOf(0);
 	});
 
-	it("a read relay on Chrome closes the notification just after the event and shows nothing", async function () {
+	it("a read relay on Chrome turns the last notification into Marked as read in place and closes it just after the event", async function () {
 		const sw = makeSW({fastTimers: true});
 
 		await firePush(sw, msgPayload("alice", "pushtest", "hello there"));
@@ -939,13 +941,32 @@ describe("service worker push notifications", function () {
 			`{"t":"read","target":"alice","ts":"${new Date(Date.now() + 5000).toISOString()}"}`
 		);
 
-		expect(sw.shown, "nothing new shown").to.have.lengthOf(1);
-		expect(sw.records[0].closed).to.equal(false);
+		// In place, silently: the count is one when Chrome looks, no alert.
+		const live = sw.records.filter((n) => !n.closed);
+		expect(live).to.have.lengthOf(1);
+		expect(live[0].tag).to.equal("push-net-1/alice");
+		expect(live[0].body).to.equal("Marked as read");
+		expect(live[0].silent).to.equal(true);
+		expect(live[0].renotify).to.equal(false);
 
-		// 1.5 s, a hundred times faster.
+		// DEFERRED_CLOSE_MS, a hundred times faster.
 		await new Promise((r) => setTimeout(r, 60));
-		expect(sw.records[0].closed).to.equal(true);
 		expect(sw.records.filter((n) => !n.closed)).to.have.lengthOf(0);
+	});
+
+	it("Mark read with another conversation's notification up closes at once", async function () {
+		const sw = makeSW();
+
+		await firePush(sw, msgPayload("alice", "pushtest", "one"));
+		await firePush(sw, msgPayload("bob", "pushtest", "two"));
+		const alice = sw.records.find((n) => n.data.target === "alice") as Rec;
+
+		await fireClick(sw, alice, "markread");
+
+		expect(sw.records.filter((n) => !n.closed).map((n) => n.data.target)).to.deep.equal([
+			"bob",
+		]);
+		expect(sw.shown, "nothing re-shown").to.have.lengthOf(2);
 	});
 
 	it("a read relay with nothing to close shows no stub while a window of the app is visible", async function () {
@@ -1006,8 +1027,8 @@ describe("service worker push notifications", function () {
 			`{"t":"read","target":"alice","ts":"${new Date(Date.now() + 5000).toISOString()}"}`
 		);
 
+		// Closed inside the event: bob's keeps the count at one.
 		expect(sw.shown).to.have.lengthOf(2);
-		await new Promise((r) => setTimeout(r, 60)); // the deferred close
 		expect(sw.records.filter((n) => !n.closed).map((n) => n.data.target)).to.deep.equal([
 			"bob",
 		]);
@@ -2206,18 +2227,20 @@ describe("service worker closes that outlive the event", function () {
 			`{"t":"read","target":"alice","ts":"${new Date(Date.now() + 5000).toISOString()}"}`
 		);
 
-		expect(sw.records[0].closed, "still up when the event ends").to.equal(false);
+		let live = sw.records.filter((n) => !n.closed);
+		expect(live, "Marked as read in place when the event ends").to.have.lengthOf(1);
+		expect(live[0].body).to.equal("Marked as read");
 		expect(sw.synced).to.include("seance-closes");
 
 		sw.advance(600); // DEFERRED_CLOSE_MS is over
 		await fireSync(sw, "seance-closes");
 
-		expect(sw.records[0].closed, "closed by the sync event").to.equal(true);
-		expect(sw.shown, "nothing new shown").to.have.lengthOf(1);
+		live = sw.records.filter((n) => !n.closed);
+		expect(live, "closed by the sync event").to.have.lengthOf(0);
 		expect(sw.kv.get("closes"), "the entry is gone").to.deep.equal({});
 		expect(
 			((sw.kv.get("pushlog") as string[]) ?? []).some((l) =>
-				l.includes("closed 1 after the read relay for alice")
+				l.includes("the last turned into Marked as read")
 			)
 		).to.equal(true);
 	});
@@ -2260,14 +2283,13 @@ describe("service worker closes that outlive the event", function () {
 			sw,
 			`{"t":"read","target":"alice","ts":"${new Date(Date.now() + 5000).toISOString()}"}`
 		);
-		expect(sw.records[0].closed).to.equal(false);
+		expect(sw.records.filter((n) => !n.closed)[0].body).to.equal("Marked as read");
 
 		sw.advance(600);
 		await firePush(sw, msgPayload("bob", "pushtest", "another conversation"));
 
-		expect(sw.records[0].closed, "alice's card closed by the sweep").to.equal(true);
 		const live = sw.records.filter((n) => !n.closed);
-		expect(live).to.have.lengthOf(1);
+		expect(live, "alice's Marked as read closed by the sweep").to.have.lengthOf(1);
 		expect(live[0].data.target).to.equal("bob");
 	});
 
@@ -2283,7 +2305,10 @@ describe("service worker closes that outlive the event", function () {
 		// Another push before DEFERRED_CLOSE_MS: the entry stays.
 		await firePush(sw, msgPayload("bob", "pushtest", "another conversation"));
 
-		expect(sw.records[0].closed).to.equal(false);
+		expect(sw.records.filter((n) => !n.closed).map((n) => n.data.target)).to.deep.equal([
+			"alice",
+			"bob",
+		]);
 		expect(Object.keys(sw.kv.get("closes") as object)).to.have.lengthOf(1);
 	});
 });

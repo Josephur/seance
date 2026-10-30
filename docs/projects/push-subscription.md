@@ -1283,3 +1283,25 @@ as read linger and the relay's brief stub use it too). The worker's log says
 `dropped as seen <tag>` before the push's own line, so the diagnostics
 report shows the case. Which page-side reason it was on that desktop is
 read from the report, not guessed.
+
+**Background Sync needs a window, so a relay closes what it can inside its
+event (2026-10-30).** Reported from Android: "Marked as read" cards no
+longer went away by themselves. Chrome refuses a Background Sync
+registration from a worker with no window of the app open
+(`BackgroundSyncManager::RegisterDidCheckIfMainFrame` → `NOT_ALLOWED`),
+which is exactly the phone in a pocket, and the Android process ends with
+the event, so there the scheduled closes have only the next event. So
+`readRelay` on Chrome now goes through `closeOrConvert`: every notification
+the relay matched closes inside the event while another one stays up on the
+registration (the count is still one when Chrome looks: no silent push, no
+budget), and only when the matched ones are all there is does the newest of
+them turn, in place and silently, into "Marked as read" with a scheduled
+stub close (`scheduleStubClose`, `DEFERRED_CLOSE_MS`) — by the timer where
+the worker lives on, else by the next push or the app opening. Mark read
+tapped on a notification follows the same rule (`markedReadHere`): closed
+at once beside another card, "Marked as read" in place when it is the last.
+A burst of reads on another device therefore leaves at most one "Marked as
+read" in a closed app's shade. The sync registration is fire-and-forget and
+its refusal is logged once (`background sync refused: NotAllowedError`).
+The card's `data.time` is its newest line's, so a close that runs late
+(the sweep) never takes a card holding a line past the read marker.
