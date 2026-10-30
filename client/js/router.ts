@@ -87,19 +87,22 @@ const router = createRouter({
 					name: "Scripts",
 					path: "scripts",
 					component: ScriptSettings,
-				},
-				{
-					name: "ScriptEdit",
-					path: "scripts/:id",
-					component: ScriptEdit,
-					beforeEnter(to, from, next) {
-						if (!store.state.settings.enableScripting) {
-							next({name: "Scripts"});
-							return;
-						}
+					children: [
+						{
+							// An overlay over the settings, the list still under it.
+							name: "ScriptEdit",
+							path: ":id",
+							component: ScriptEdit,
+							beforeEnter(to, from, next) {
+								if (!store.state.settings.enableScripting) {
+									next({name: "Scripts"});
+									return;
+								}
 
-						next();
-					},
+								next();
+							},
+						},
+					],
 				},
 			],
 		},

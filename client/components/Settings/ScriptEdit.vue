@@ -1,173 +1,283 @@
 <template>
-	<div class="settings-script-edit" role="group" aria-label="Edit script">
-		<div class="script-top">
-			<router-link class="script-back" to="/settings/scripts">← Scripts</router-link>
-			<span class="script-status" role="status">{{ statusMsg }}</span>
-			<div v-if="script" class="script-tools">
-				<button class="btn btn-sm" type="button" @click="checkSyntax">Check syntax</button>
-				<button class="btn btn-sm" type="button" @click="duplicate">Duplicate</button>
-				<button class="btn btn-sm" type="button" @click="exportScript">Export .lua</button>
-				<button class="btn btn-sm script-delete" type="button" @click="remove">
-					Delete
-				</button>
+	<Teleport to="#viewport">
+		<div id="script-editor-overlay" data-escape-close="script-editor" @click.self="close">
+			<div
+				ref="pane"
+				class="settings-modal script-editor"
+				role="dialog"
+				aria-modal="true"
+				:aria-label="script ? `Edit script ${script.name}` : 'Edit script'"
+				tabindex="-1"
+			>
+				<div class="settings-modal-header">
+					<h1>
+						<span class="script-editor-kind">Edit script</span>
+						<span v-if="script" class="script-editor-name">{{ script.name }}</span>
+					</h1>
+					<button
+						class="settings-modal-close"
+						type="button"
+						aria-label="Close the editor"
+						@click="close"
+					>
+						✕
+					</button>
+				</div>
+
+				<div class="settings-modal-body">
+					<div class="script-editor-content">
+						<p v-if="!script" class="script-missing">
+							This script is gone — deleted here or in another tab.
+						</p>
+
+						<template v-else>
+							<div class="script-fields">
+								<label class="script-field script-name-field">
+									<span>Name</span>
+									<input
+										v-model.trim="nameDraft"
+										class="input script-name"
+										:class="{invalid: nameError !== null}"
+										type="text"
+										placeholder="script_name"
+										:maxlength="maxNameLength"
+										spellcheck="false"
+										autocapitalize="off"
+										autocomplete="off"
+										:aria-invalid="nameError !== null"
+										@input="onNameInput"
+										@change="commit"
+									/>
+								</label>
+								<label class="script-field script-folder-field">
+									<span>Folder</span>
+									<input
+										v-model="script.folder"
+										class="input"
+										type="text"
+										list="script-folder-list"
+										:maxlength="maxFolderLength"
+										:placeholder="defaultFolder"
+										spellcheck="false"
+										@input="schedulePersist"
+										@change="commit"
+									/>
+									<datalist id="script-folder-list">
+										<option
+											v-for="folder in folders"
+											:key="folder"
+											:value="folder"
+										/>
+									</datalist>
+								</label>
+								<label class="script-field script-desc-field">
+									<span>Description</span>
+									<input
+										v-model="script.description"
+										class="input"
+										type="text"
+										:maxlength="maxDescriptionLength"
+										placeholder="What does this script do?"
+										@input="schedulePersist"
+										@change="commit"
+									/>
+								</label>
+								<label class="opt script-run">
+									<input
+										v-model="script.enabled"
+										v-switch
+										type="checkbox"
+										@change="onRunChange"
+									/>
+									Run this script
+								</label>
+							</div>
+							<p v-if="nameError" class="script-error-line" role="alert">
+								{{ nameError }}
+							</p>
+
+							<div class="script-tools">
+								<button class="btn btn-sm" type="button" @click="checkSyntax">
+									Check syntax
+								</button>
+								<button class="btn btn-sm" type="button" @click="duplicate">
+									Duplicate
+								</button>
+								<button class="btn btn-sm" type="button" @click="exportScript">
+									Export .lua
+								</button>
+								<button
+									class="btn btn-sm script-delete"
+									type="button"
+									@click="remove"
+								>
+									Delete
+								</button>
+							</div>
+
+							<div v-if="saveError" class="script-banner" role="alert">
+								<strong>Not saved:</strong> {{ saveError }}
+							</div>
+							<div v-if="script.lastError" class="script-banner" role="alert">
+								<strong>Error:</strong> {{ script.lastError }}
+							</div>
+
+							<div class="script-code-wrap">
+								<div ref="gutter" class="script-gutter" aria-hidden="true">
+									<span v-for="n in lineCount" :key="n">{{ n }}</span>
+								</div>
+								<textarea
+									ref="codeArea"
+									v-model="script.code"
+									:maxlength="maxCodeLength"
+									class="script-code"
+									aria-label="Lua code"
+									aria-describedby="script-code-foot"
+									placeholder="-- Write your Lua code here"
+									spellcheck="false"
+									autocapitalize="off"
+									autocomplete="off"
+									wrap="off"
+									@input="schedulePersist"
+									@change="commit"
+									@keydown.tab.exact="onTab"
+									@scroll="syncGutter"
+								/>
+							</div>
+							<p id="script-code-foot" class="script-foot">
+								{{ lineCount }} lines · {{ script.code.length }} characters
+							</p>
+
+							<details class="script-api">
+								<summary>Lua API reference</summary>
+								<dl>
+									<dt>
+										<code>seance.on("message", function(msg) ... end)</code>
+									</dt>
+									<dd>
+										Incoming messages. <code>msg</code> has <code>.from</code>,
+										<code>.target</code>, <code>.text</code>,
+										<code>.type</code> and <code>.self</code>.
+									</dd>
+									<dt>
+										<code
+											>seance.register_command("name", function(args, rest)
+											... end)</code
+										>
+									</dt>
+									<dd>Registers a custom slash command <code>/name</code>.</dd>
+									<dt>
+										<code>seance.reply(msg, "text")</code> ·
+										<code>seance.send("RAW LINE")</code>
+									</dt>
+									<dd>
+										Reply to a message, or send a raw IRC line on the current
+										network.
+									</dd>
+									<dt><code>seance.print("text")</code></dt>
+									<dd>Show a local line in the active conversation.</dd>
+									<dt>
+										<code
+											>seance.storage.get("k") / seance.storage.set("k",
+											"v")</code
+										>
+									</dt>
+									<dd>Persistent per-script data across restarts.</dd>
+									<dt>
+										<code
+											>seance.current_channel / seance.current_network /
+											seance.nick</code
+										>
+									</dt>
+									<dd>Context of the currently active chat tab.</dd>
+								</dl>
+							</details>
+						</template>
+					</div>
+				</div>
+
+				<div class="settings-modal-footer">
+					<span class="settings-modal-note script-status" role="status">{{
+						statusMsg || "Changes are saved as you type."
+					}}</span>
+					<button class="btn settings-modal-done" type="button" @click="close">
+						Done
+					</button>
+				</div>
 			</div>
 		</div>
-
-		<p v-if="!script" class="script-missing">
-			This script is gone — deleted here or in another tab.
-		</p>
-
-		<template v-else>
-			<div class="script-head">
-				<label class="script-field script-name-field">
-					<span>Name</span>
-					<input
-						v-model.trim="nameDraft"
-						class="input script-name"
-						:class="{invalid: nameError !== null}"
-						type="text"
-						placeholder="script_name"
-						:maxlength="maxNameLength"
-						spellcheck="false"
-						autocapitalize="off"
-						autocomplete="off"
-						:aria-invalid="nameError !== null"
-						@input="onNameInput"
-						@change="commit"
-					/>
-				</label>
-				<label class="opt script-run">
-					<input
-						v-model="script.enabled"
-						v-switch
-						type="checkbox"
-						@change="onRunChange"
-					/>
-					Run this script
-				</label>
-			</div>
-			<p v-if="nameError" class="script-error-line" role="alert">{{ nameError }}</p>
-
-			<div class="script-meta">
-				<label class="script-field">
-					<span>Folder</span>
-					<input
-						v-model="script.folder"
-						class="input"
-						type="text"
-						list="script-folder-list"
-						:maxlength="maxFolderLength"
-						:placeholder="defaultFolder"
-						spellcheck="false"
-						@input="schedulePersist"
-						@change="commit"
-					/>
-					<datalist id="script-folder-list">
-						<option v-for="folder in folders" :key="folder" :value="folder" />
-					</datalist>
-				</label>
-				<label class="script-field script-desc-field">
-					<span>Description</span>
-					<input
-						v-model="script.description"
-						class="input"
-						type="text"
-						:maxlength="maxDescriptionLength"
-						placeholder="What does this script do?"
-						@input="schedulePersist"
-						@change="commit"
-					/>
-				</label>
-			</div>
-
-			<div v-if="saveError" class="script-banner" role="alert">
-				<strong>Not saved:</strong> {{ saveError }}
-			</div>
-			<div v-if="script.lastError" class="script-banner" role="alert">
-				<strong>Error:</strong> {{ script.lastError }}
-			</div>
-
-			<div class="script-code-wrap">
-				<div ref="gutter" class="script-gutter" aria-hidden="true">
-					<span v-for="n in lineCount" :key="n">{{ n }}</span>
-				</div>
-				<textarea
-					ref="codeArea"
-					v-model="script.code"
-					:maxlength="maxCodeLength"
-					class="script-code"
-					aria-label="Lua code"
-					aria-describedby="script-code-foot"
-					placeholder="-- Write your Lua code here"
-					spellcheck="false"
-					autocapitalize="off"
-					autocomplete="off"
-					wrap="off"
-					@input="schedulePersist"
-					@change="commit"
-					@keydown.tab.exact="onTab"
-					@scroll="syncGutter"
-				/>
-			</div>
-			<p id="script-code-foot" class="script-foot">
-				{{ lineCount }} lines · {{ script.code.length }} characters
-			</p>
-
-			<details class="script-api">
-				<summary>Lua API reference</summary>
-				<dl>
-					<dt><code>seance.on("message", function(msg) ... end)</code></dt>
-					<dd>
-						Incoming messages. <code>msg</code> has <code>.from</code>,
-						<code>.target</code>, <code>.text</code>, <code>.type</code> and
-						<code>.self</code>.
-					</dd>
-					<dt>
-						<code>seance.register_command("name", function(args, rest) ... end)</code>
-					</dt>
-					<dd>Registers a custom slash command <code>/name</code>.</dd>
-					<dt>
-						<code>seance.reply(msg, "text")</code> ·
-						<code>seance.send("RAW LINE")</code>
-					</dt>
-					<dd>Reply to a message, or send a raw IRC line on the current network.</dd>
-					<dt><code>seance.print("text")</code></dt>
-					<dd>Show a local line in the active conversation.</dd>
-					<dt><code>seance.storage.get("k") / seance.storage.set("k", "v")</code></dt>
-					<dd>Persistent per-script data across restarts.</dd>
-					<dt>
-						<code>seance.current_channel / seance.current_network / seance.nick</code>
-					</dt>
-					<dd>Context of the currently active chat tab.</dd>
-				</dl>
-			</details>
-		</template>
-	</div>
+	</Teleport>
 </template>
 
 <style>
-/* Settings.vue widens the column for this page: code wants the room. */
-.settings-script-edit .script-top {
+/* The script editor: one more layer over the settings modal, in its frame
+ * (a header, a body that scrolls by itself, a footer with Done) but as wide
+ * as the window allows, since code wants the room. Absolute in #viewport
+ * like #settings, one step above it (20) and below the confirm dialog and
+ * the menus (999 and up), so Delete's question shows over it. */
+#script-editor-overlay {
+	position: absolute;
+	top: 0;
+	right: 0;
+	bottom: 0;
+	left: 0;
+	z-index: 30;
 	display: flex;
-	flex-wrap: wrap;
 	align-items: center;
-	gap: 0.5rem;
-	margin: 20px 0 0.75rem;
+	justify-content: center;
+	padding: 1.5rem;
+	background: var(--overlay-bg-color);
+	overflow: hidden;
+	overflow: clip;
 }
 
-.settings-script-edit .script-missing {
+.script-editor.settings-modal {
+	width: min(80rem, 100%);
+	height: 100%;
+}
+
+.script-editor:focus {
+	outline: 0;
+}
+
+.script-editor .settings-modal-header h1 {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.script-editor-kind {
+	color: var(--body-color-muted);
+	font-weight: normal;
+	margin-right: 0.4em;
+}
+
+.script-editor-name {
+	font-family: Consolas, Menlo, Monaco, "Lucida Console", "DejaVu Sans Mono", "Courier New",
+		monospace;
+}
+
+/* Fills the body, so the code takes whatever height the fields leave. */
+.script-editor-content {
+	display: flex;
+	flex: 1 0 auto;
+	flex-direction: column;
+	padding: 0 1rem 1rem;
+}
+
+.script-editor .script-missing {
 	color: var(--body-color-muted);
 }
 
-.settings-script-edit .script-head,
-.settings-script-edit .script-meta {
+.script-editor .script-fields {
 	display: flex;
 	flex-wrap: wrap;
 	align-items: flex-end;
 	gap: 0 1rem;
 }
 
-.settings-script-edit .script-field {
+.script-editor .script-field {
 	display: flex;
 	flex-direction: column;
 	gap: 0.25rem;
@@ -175,37 +285,69 @@
 	font-size: 0.875em;
 }
 
-.settings-script-edit .script-field .input {
+.script-editor .script-field .input {
 	font-size: 1rem;
 	margin-bottom: 0.75rem;
 }
 
-.settings-script-edit .script-name-field,
-.settings-script-edit .script-desc-field {
-	flex: 1 1 14rem;
+.script-editor .script-name-field {
+	flex: 1 1 12rem;
 }
 
-.settings-script-edit .script-name {
+.script-editor .script-folder-field {
+	flex: 1 1 10rem;
+}
+
+.script-editor .script-desc-field {
+	flex: 3 1 16rem;
+}
+
+.script-editor .script-name {
 	font-family: Consolas, Menlo, Monaco, "Lucida Console", "DejaVu Sans Mono", "Courier New",
 		monospace;
 	font-weight: bold;
 }
 
-.settings-script-edit .script-name.invalid {
+.script-editor .script-name.invalid {
 	border-color: #e74c3c;
 }
 
-.settings-script-edit .script-run {
+.script-editor .script-run {
 	padding-bottom: 1.1rem;
+	white-space: nowrap;
 }
 
-.settings-script-edit .script-error-line {
+.script-editor .script-error-line {
 	color: #e74c3c;
 	font-size: 0.875em;
 	margin-top: -0.5rem;
 }
 
-.settings-script-edit .script-banner {
+.script-editor .script-tools {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5rem;
+	margin-bottom: 0.75rem;
+}
+
+.script-editor .script-tools .btn {
+	margin: 0;
+}
+
+/* Away from the others: the one that cannot be taken back. */
+.script-editor .script-tools .script-delete {
+	margin-left: auto;
+	border-color: #e74c3c;
+	color: #e74c3c;
+}
+
+.script-editor .script-tools .script-delete:hover,
+.script-editor .script-tools .script-delete:focus {
+	background: #e74c3c;
+	color: #fff;
+}
+
+.script-editor .script-banner {
 	margin-bottom: 0.5rem;
 	padding: 0.4rem 0.6rem;
 	border-radius: 4px;
@@ -217,25 +359,21 @@
 	overflow-wrap: anywhere;
 }
 
-/* A fixed height the user can drag taller: the settings body scrolls, so
- * the editor must not try to fill it. */
-.settings-script-edit .script-code-wrap {
+.script-editor .script-code-wrap {
 	display: flex;
-	height: 20rem;
-	min-height: 8rem;
-	resize: vertical;
+	flex: 1 0 16rem;
 	overflow: hidden;
 	border: 1px solid rgb(128 128 128 / 30%);
 	border-radius: 4px;
 	background: var(--window-bg-color);
 }
 
-.settings-script-edit .script-code-wrap:focus-within {
+.script-editor .script-code-wrap:focus-within {
 	box-shadow: 0 0 0 3px rgb(132 206 136 / 50%);
 }
 
-.settings-script-edit .script-gutter,
-.settings-script-edit .script-code {
+.script-editor .script-gutter,
+.script-editor .script-code {
 	font-family: Consolas, Menlo, Monaco, "Lucida Console", "DejaVu Sans Mono", "Courier New",
 		monospace;
 	font-size: 0.875rem;
@@ -243,7 +381,7 @@
 	padding: 0.5rem;
 }
 
-.settings-script-edit .script-gutter {
+.script-editor .script-gutter {
 	flex: 0 0 auto;
 	min-width: 3ch;
 	overflow: hidden;
@@ -253,11 +391,11 @@
 	user-select: none;
 }
 
-.settings-script-edit .script-gutter span {
+.script-editor .script-gutter span {
 	display: block;
 }
 
-.settings-script-edit .script-code {
+.script-editor .script-code {
 	flex: 1 1 auto;
 	min-width: 0;
 	border: 0;
@@ -269,61 +407,45 @@
 	color: inherit;
 }
 
-.settings-script-edit .script-foot {
+.script-editor .script-foot {
 	margin: 0.25rem 0 0;
 	color: var(--body-color-muted);
 	font-size: 0.875em;
 }
 
-.settings-script-edit .script-tools {
-	display: flex;
-	flex-wrap: wrap;
-	align-items: center;
-	gap: 0.5rem;
+.script-editor .script-api {
+	margin-top: 1rem;
 }
 
-.settings-script-edit .script-status {
-	margin-left: auto;
-	color: var(--body-color-muted);
-	font-size: 0.875em;
-}
-
-.settings-script-edit .script-tools .btn {
-	margin: 0;
-}
-
-.settings-script-edit .script-tools .script-delete {
-	border-color: #e74c3c;
-	color: #e74c3c;
-}
-
-.settings-script-edit .script-tools .script-delete:hover,
-.settings-script-edit .script-tools .script-delete:focus {
-	background: #e74c3c;
-	color: #fff;
-}
-
-.settings-script-edit .script-api {
-	margin-top: 1.25rem;
-}
-
-.settings-script-edit .script-api summary {
+.script-editor .script-api summary {
 	cursor: pointer;
 	font-weight: bold;
 }
 
-.settings-script-edit .script-api dt {
+.script-editor .script-api dt {
 	margin-top: 0.5rem;
 }
 
-.settings-script-edit .script-api dd {
+.script-editor .script-api dd {
 	margin-left: 1rem;
 	color: var(--body-color-muted);
+}
+
+/* On a phone it is the whole screen, as the settings are. */
+@media (max-width: 768px) {
+	#script-editor-overlay {
+		padding: 0;
+	}
+
+	.script-editor.settings-modal {
+		width: 100%;
+		border-radius: 0;
+	}
 }
 </style>
 
 <script lang="ts">
-import {computed, defineComponent, onUnmounted, ref} from "vue";
+import {computed, defineComponent, onMounted, onUnmounted, ref} from "vue";
 import {useRoute} from "vue-router";
 import eventbus from "../../js/eventbus";
 import {navigate} from "../../js/router";
@@ -346,10 +468,13 @@ import type {Script} from "../../js/irc/scripting/types";
 import {scriptManager} from "../../js/irc/scripting/manager";
 
 /**
- * One script, edited in place and saved as it is typed (600 ms after the
- * last key). The sandbox reloads only when an edit is committed — the field
- * loses the caret, the switch flips, the page is left — so a script's
- * top-level code does not run again at every pause in the typing.
+ * One script, in an overlay over the settings (the route is a child of
+ * Settings → Scripts, whose list stays under it), edited in place and saved
+ * as it is typed (600 ms after the last key). The sandbox reloads only when
+ * an edit is committed — the field loses the caret, the switch flips, the
+ * editor closes — so a script's top-level code does not run again at every
+ * pause in the typing. Done, ✕, Escape and the backdrop all close it back
+ * to the list.
  */
 export default defineComponent({
 	name: "ScriptEdit",
@@ -360,6 +485,7 @@ export default defineComponent({
 		const nameDraft = ref(script.value?.name ?? "");
 		const statusMsg = ref("");
 		const saveError = ref("");
+		const pane = ref<HTMLElement>();
 		const codeArea = ref<HTMLTextAreaElement>();
 		const gutter = ref<HTMLElement>();
 		let saveTimer: ReturnType<typeof setTimeout> | undefined;
@@ -458,7 +584,30 @@ export default defineComponent({
 			}
 		};
 
+		// What is pending is saved first: the list re-reads the library as
+		// the route leaves the editor, before this unmounts and commits.
+		const close = () => {
+			if (saveTimer !== undefined) {
+				persistNow();
+			}
+
+			void navigate("Scripts");
+		};
+
+		const onEscape = (layer: string | null) => {
+			if (layer === "script-editor") {
+				close();
+			}
+		};
+
+		onMounted(() => {
+			eventbus.on("escapekey", onEscape);
+			// Into the dialog, not a field: a phone would raise its keyboard.
+			pane.value?.focus();
+		});
+
 		onUnmounted(() => {
+			eventbus.off("escapekey", onEscape);
 			clearTimeout(flashTimer);
 
 			if (saveTimer !== undefined || dirty) {
@@ -582,6 +731,7 @@ export default defineComponent({
 			saveError,
 			folders,
 			lineCount,
+			pane,
 			codeArea,
 			gutter,
 			defaultFolder: DEFAULT_FOLDER,
@@ -599,6 +749,7 @@ export default defineComponent({
 			exportScript,
 			onTab,
 			syncGutter,
+			close,
 		};
 	},
 });

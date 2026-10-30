@@ -292,16 +292,22 @@ seance.storage.set("last_seen", seance.current_channel)
      editor. An imported file arrives switched off, as a restored backup's
      scripts do.
    - **The editor** (`Settings/ScriptEdit.vue` at `/settings/scripts/<id>`,
-     a page of the tab as a network's edit form is of Networks, in a wider
-     column than the other tabs; only while scripting is on): name, Run
-     this script, folder, description, the code with line numbers (Tab
-     indents, Shift+Tab leaves the field), and Check syntax (compiles
-     without running), Duplicate (the copy arrives off), Export .lua and
-     Delete. A name the library would drop on its next load — invalid, or
+     a child route of the tab, only while scripting is on) is one more
+     overlay over the settings modal, teleported into `#viewport` at
+     z-index 30 (the settings are 20, the confirm dialog and menus 999 and
+     up, so Delete's question shows over it): the window less a margin,
+     the whole screen on a phone, in the settings' frame — a header with
+     ✕, a body that scrolls, a footer with Done — with the list still
+     under it. Done, ✕, Escape and the backdrop close it back to the list,
+     which reads the library again. It holds name, folder, description,
+     Run this script, the code with line numbers filling the height the
+     fields leave (Tab indents, Shift+Tab leaves the field), and Check
+     syntax (compiles without running), Duplicate (the copy arrives off),
+     Export .lua and Delete. A name the library would drop on its next load — invalid, or
      another script's — is shown as an error and not saved
      (`irc/scripting/library.ts` `scriptNameError`). Edits save as they
      are typed; the sandbox reloads when an edit is committed (the field
-     loses the caret, the switch flips, the page is left), so a script's
+     loses the caret, the switch flips, the editor closes), so a script's
      top-level code does not run again at every pause in the typing. The
      error banner follows what the manager last recorded.
 

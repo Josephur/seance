@@ -1,8 +1,10 @@
 // Settings → Scripts, no IRC needed: the tab holds the Enable scripting
 // switch and, while it is on, the library; a script opens in the editor at
-// /settings/scripts/<id> (a page of the tab, as a network's edit form is of
-// Networks). There is no scripting icon in the sidebar footer, and the
-// Fengari chunk is fetched only once an enabled script exists.
+// /settings/scripts/<id>, an overlay one layer above the settings modal and
+// wider than it, closed by Done, ✕ or Escape back to the list (Escape
+// closes the editor alone, not the settings under it). There is no
+// scripting icon in the sidebar footer, and the Fengari chunk is fetched
+// only once an enabled script exists.
 //
 //   corepack yarn build && python3 -m http.server -d public 8022 &
 //   node tools/browser-drive.mjs tools/scenarios/scripting-editor.mjs
@@ -20,7 +22,7 @@ async function key(page, code, modifiers = 0) {
 			type,
 			key: code,
 			code,
-			windowsVirtualKeyCode: code === "Tab" ? 9 : 0,
+			windowsVirtualKeyCode: {Tab: 9, Escape: 27}[code] ?? 0,
 			modifiers,
 		});
 	}
@@ -84,7 +86,7 @@ export default async function run(page) {
 
 	// An example opens straight in the editor and loads the parser.
 	await page.click(".scripts-examples .btn", 0);
-	await page.waitFor(`!!document.querySelector(".settings-script-edit .script-code")`, {
+	await page.waitFor(`!!document.querySelector("#script-editor-overlay .script-code")`, {
 		label: "editor open",
 	});
 	const id = await page.evaluate(`${STORED}[0]?.id`);
@@ -96,14 +98,25 @@ export default async function run(page) {
 		"the Scripts tab stays active in the editor",
 		(await page.count(".settings-menu button.scripts.active")) === 1
 	);
+	const editorBox = await page.rect(".script-editor");
+	const settingsBox = await page.rect("#settings .settings-modal");
+	const innerWidth = await page.evaluate("innerWidth");
 	page.check(
-		"the editor's column is the wide one",
-		Math.abs(
-			(await page.rect(".settings-modal-body .container")).width -
-				(await page.evaluate(
-					`Math.min(48 * parseFloat(getComputedStyle(document.documentElement).fontSize), document.querySelector(".settings-modal-body").clientWidth)`
-				))
-		) < 1
+		"the editor is wider than the settings pane (or the whole screen)",
+		editorBox.width > settingsBox.width + 1 || editorBox.width >= innerWidth - 1
+	);
+	page.check(
+		"the editor is on top of the settings",
+		(await page.evaluate(
+			`!!document.elementFromPoint(${editorBox.x + editorBox.width / 2}, ${
+				editorBox.y + editorBox.height / 2
+			})?.closest(".script-editor")`
+		)) === true
+	);
+	page.check(
+		"focus is in the editor, not in a field",
+		(await page.evaluate(`document.activeElement?.classList.contains("script-editor")`)) ===
+			true
 	);
 	await page.waitFor(`${FENGARI_RESOURCES} > 0`, {label: "fengari loaded for enabled script"});
 	page.check("fengari loaded once an enabled script exists", true);
@@ -147,8 +160,18 @@ export default async function run(page) {
 		(await page.evaluate(`document.activeElement?.classList.contains("script-code")`)) === false
 	);
 
+	// Escape (outside a field) closes the editor and leaves the settings up.
+	await key(page, "Escape");
+	await page.waitFor(`!document.querySelector("#script-editor-overlay")`, {
+		label: "Escape closed the editor",
+	});
+	page.check(
+		"Escape closes the editor alone",
+		(await page.count("#settings")) === 1 &&
+			(await page.evaluate("location.hash")) === "#/settings/scripts"
+	);
+
 	// Back in the list: filed under its folder, and switched off from the row.
-	await page.click(".script-back");
 	await page.waitFor(`!!document.querySelector(".scripts-item")`, {label: "list again"});
 	page.check(
 		"listed under Automation",
@@ -169,6 +192,7 @@ export default async function run(page) {
 	// load fails with the limit's error, shown in the editor's banner.
 	await page.click(".scripts-summary");
 	await page.waitFor(`!!document.querySelector(".script-code")`, {label: "editor again"});
+	await page.screenshot("script-edit-pinger");
 	await page.click(".script-run input");
 	await page.waitFor(`${STORED}[0].enabled === true`, {label: "run switch saved"});
 	await page.fill(".script-code", `string.find(string.rep("a", 100000), ".-.-.-.-b")`);
@@ -195,11 +219,14 @@ export default async function run(page) {
 		(await page.evaluate("location.hash")) === `#/settings/scripts/${copy?.id}`
 	);
 
-	// Delete asks first, then goes back to the list.
+	// Delete asks first (the question over the editor), then goes back to
+	// the list.
 	await page.click(".script-delete");
-	await page.waitFor(`!!document.querySelector("#confirm-dialog .btn-danger")`, {
+	await page.waitFor(`!!document.querySelector("#confirm-dialog-overlay.opened")`, {
 		label: "confirm",
 	});
+	await page.sleep(300); // its fade
+	await page.screenshot("script-delete-confirm");
 	await page.click("#confirm-dialog .btn-danger");
 	await page.waitFor(`!!document.querySelector(".scripts-actions")`, {label: "back on list"});
 	page.check("the copy is deleted", (await page.evaluate(`${STORED}.length`)) === 1);
@@ -207,6 +234,21 @@ export default async function run(page) {
 		label: "confirm closed",
 	});
 	await page.sleep(400); // its fade
+
+	// Done closes the editor too, saving what was typed just before.
+	await page.click(".scripts-summary");
+	await page.waitFor(`!!document.querySelector(".script-code")`, {label: "editor for Done"});
+	await page.fill(".script-desc-field .input", "Answers !ping");
+	await page.click(".script-editor .settings-modal-done");
+	await page.waitFor(`!document.querySelector("#script-editor-overlay")`, {
+		label: "Done closed the editor",
+	});
+	page.check(
+		"Done saves and the list shows it",
+		(await page.evaluate(`${STORED}[0].description`)) === "Answers !ping" &&
+			(await page.evaluate(`document.querySelector(".scripts-desc")?.textContent`)) ===
+				"Answers !ping"
+	);
 
 	// Off again: the library hides, and the editor's URL leads to the tab.
 	await page.click('input[name="enableScripting"]');
@@ -216,11 +258,11 @@ export default async function run(page) {
 	page.check(
 		"the editor is not reachable while off",
 		(await page.evaluate("location.hash")) === "#/settings/scripts" &&
-			(await page.count(".script-code")) === 0
+			(await page.count("#script-editor-overlay")) === 0
 	);
 	await page.screenshot("scripts-off-again");
 
-	await page.click(".settings-modal-done");
+	await page.click("#settings .settings-modal-done");
 	await page.waitFor(`!document.querySelector("#settings")`, {label: "settings closed"});
 
 	// The step-limit test's own load failure is logged on purpose; nothing else may be.

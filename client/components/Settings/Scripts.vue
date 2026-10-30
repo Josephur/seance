@@ -85,6 +85,12 @@
 				</ul>
 			</template>
 		</template>
+
+		<!-- The editor (ScriptEdit.vue), an overlay above the settings. Keyed
+		     by the script, so Duplicate's jump to the copy mounts a fresh one. -->
+		<router-view v-slot:default="{Component, route: shown}">
+			<component :is="Component" :key="shown.params.id" />
+		</router-view>
 	</div>
 </template>
 
@@ -181,7 +187,8 @@
 </style>
 
 <script lang="ts">
-import {computed, defineComponent, ref} from "vue";
+import {computed, defineComponent, ref, watch} from "vue";
+import {useRoute} from "vue-router";
 import {useStore} from "../../js/store";
 import {navigate} from "../../js/router";
 import {
@@ -210,7 +217,19 @@ export default defineComponent({
 	name: "ScriptSettings",
 	setup() {
 		const store = useStore();
+		const route = useRoute();
 		const scripts = ref<Script[]>(loadScripts().sort(compareScripts));
+
+		// The editor saves straight to storage: read the library again as it
+		// closes (Done, ✕, Escape, Delete).
+		watch(
+			() => route.name,
+			(name) => {
+				if (name === "Scripts") {
+					scripts.value = loadScripts().sort(compareScripts);
+				}
+			}
+		);
 		const query = ref("");
 		const importError = ref("");
 		const importInput = ref<HTMLInputElement>();
