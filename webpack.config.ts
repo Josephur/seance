@@ -144,7 +144,8 @@ function brandManifest(content: string): string {
 // `@license` comment terser extracts by itself, but not its copyright line, and
 // flourite's build carries nothing at all — so state both, in a `/*!` banner
 // that ends up in the chunk's `.LICENSE.txt`. All are MIT; see
-// docs/projects/markdown-messages.md.
+// docs/projects/markdown-messages.md. CodeMirror is the script editor's
+// (client/js/helpers/luaEditor.ts).
 const chunkNotices: Record<string, string> = {
 	"js/highlighter.js":
 		"/*! prismjs 1.30.0 (and the js/prism-*.js grammar chunks) | MIT | " +
@@ -154,11 +155,15 @@ const chunkNotices: Record<string, string> = {
 		"Copyright (c) 2024 Teknologi Umum | https://github.com/teknologi-umum/flourite */\n",
 	"js/katex.js":
 		"/*! katex 0.16.22 | MIT | Copyright (c) 2013-2024 Khan Academy and other contributors | https://katex.org */\n",
+	"js/code-editor.js":
+		"/*! CodeMirror 6 (@codemirror/state, view, language, commands, legacy-modes, streamparser; @lezer/common, " +
+		"highlight, lr; style-mod, w3c-keyname, crelt, @marijn/find-cluster-break) | MIT | " +
+		"Copyright (C) 2016-2021 Marijn Haverbeke and others | https://codemirror.net */\n",
 };
 
 const noticePlugin = new webpack.BannerPlugin({
 	raw: true,
-	test: /^js\/(highlighter|flourite|katex)\.js$/,
+	test: /^js\/(highlighter|flourite|katex|code-editor)\.js$/,
 	banner: ({filename}) => chunkNotices[filename] ?? "",
 });
 
@@ -232,9 +237,22 @@ const config: webpack.Configuration = {
 	},
 	resolve: {
 		extensions: [".ts", ".js", ".vue"],
+		fallback: {
+			fs: false,
+			path: false,
+			os: false,
+			crypto: false,
+			readline: false,
+			child_process: false,
+		},
 	},
 	module: {
 		rules: [
+			{
+				// A step budget on Lua's pattern matcher (Josephur/seance#23).
+				test: /fengari[\\/]src[\\/]lstrlib\.js$/,
+				use: {loader: path.resolve(__dirname, "scripts/fengari-match-budget.js")},
+			},
 			{
 				test: /\.vue$/,
 				use: {
@@ -311,6 +329,7 @@ const config: webpack.Configuration = {
 			"process.env.SEANCE_RELEASE": JSON.stringify(buildIdentity.release),
 			"process.env.SEANCE_COMMIT": JSON.stringify(buildIdentity.commit ?? ""),
 			"process.env.SEANCE_BUILD": JSON.stringify(buildToken),
+			"process.env.FENGARICONF": "undefined",
 		}),
 		miniCssExtractPlugin,
 		new CopyPlugin({
@@ -406,7 +425,7 @@ const config: webpack.Configuration = {
 		}),
 		// socket.io uses debug, we don't need it
 		new webpack.NormalModuleReplacementPlugin(
-			/debug/,
+			/(^|[/\\])debug([/\\]|$)/,
 			path.resolve(__dirname, "scripts/noop.js")
 		),
 	],

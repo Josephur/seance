@@ -5,6 +5,7 @@
 import {MessageType} from "../../../../shared/types/msg";
 import {msgidOf} from "../message";
 import type {Handler} from "../types";
+import {scriptManager} from "../scripting/manager";
 
 const topicChange: Handler = (client, msg) => {
 	const [name, topic = ""] = msg.params;
@@ -27,6 +28,14 @@ const topicChange: Handler = (client, msg) => {
 	if (client.replaying) {
 		return; // history: the current topic came from 332
 	}
+
+	scriptManager.dispatchTopic({
+		network: client.name,
+		networkUuid: client.uuid,
+		channel: chan.name,
+		topic,
+		nick,
+	});
 
 	chan.shared.topic = topic;
 	client.dispatch("topic", {chan: chan.id, topic});

@@ -136,7 +136,10 @@
 		</div>
 		<div class="settings-backup">
 			<h2>Backup and restore</h2>
-			<p>Save your settings to a file. You can restore here or on another device.</p>
+			<p>
+				Save your settings to a file. You can restore here or on another device. Scripts in
+				an imported file arrive switched off, and so does scripting itself.
+			</p>
 			<label class="opt">
 				<input v-model="includePasswords" v-switch type="checkbox" />
 				Include network passwords

@@ -11,6 +11,7 @@
 			<SettingTabItem name="Appearance" class-name="appearance" to="appearance" />
 			<SettingTabItem name="Notifications" class-name="notifications" to="notifications" />
 			<SettingTabItem name="Aliases" class-name="aliases" to="aliases" />
+			<SettingTabItem name="Scripts" class-name="scripts" to="scripts" />
 		</ul>
 	</aside>
 </template>
@@ -91,6 +92,10 @@
 	content: "\f120"; /* https://fontawesome.com/icons/terminal */
 }
 
+.settings-menu .scripts::before {
+	content: "\f121"; /* https://fontawesome.com/icons/code */
+}
+
 .settings-menu button:hover,
 .settings-menu button.active {
 	color: var(--body-color);
@@ -101,9 +106,9 @@
 	cursor: default;
 }
 
-/* Five labelled tabs need roughly 40rem; below that the inactive ones are
+/* Six labelled tabs need roughly 45rem; below that the inactive ones are
  * icons alone (their names stay as aria-label and title). */
-@container settings (max-width: 41rem) {
+@container settings (max-width: 46rem) {
 	.settings-menu button:not(.active) .tab-label {
 		display: none;
 	}
