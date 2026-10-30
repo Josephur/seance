@@ -886,7 +886,7 @@ describe("service worker push notifications", function () {
 	});
 
 	it("drops every line of a batch the live page already saw, msgid on the first line only", async function () {
-		const sw = makeSW();
+		const sw = makeSW({clients: [makeClient()]}); // a window visible: no stub stands in
 		const T = "2026-09-02T19:59:00.000Z";
 		const line = (i: number, text: string) =>
 			`@batch=b4;${
@@ -1060,7 +1060,7 @@ describe("service worker push notifications", function () {
 	});
 
 	it("drops a push whose msgid the live page already saw", async function () {
-		const sw = makeSW();
+		const sw = makeSW({clients: [makeClient()]}); // a window of the app is visible
 		const msgid = "BjAAAaBjzZ0";
 
 		// The page recorded this message while it was alive (push-seen.ts).
@@ -1084,6 +1084,37 @@ describe("service worker push notifications", function () {
 		expect(sw.shown, "raw-line msgid not in the ring still shows").to.have.lengthOf(2);
 	});
 
+	it("a push the page took, with no window visible and nothing up, shows a brief blank stub on Chrome", async function () {
+		const sw = makeSW({fastTimers: true});
+		const msgid = "BjAAAaBjzZ0";
+
+		sw.kv.set("seen", [msgid]);
+		await firePush(sw, msgPayload("alice", "pushtest", "hello there", msgid));
+
+		// Not a silent push: a quiet stub under the message's own tag.
+		expect(sw.shown).to.have.lengthOf(1);
+		expect(sw.shown[0].tag).to.equal("push-net-1/alice");
+		expect(sw.shown[0].silent).to.equal(true);
+		expect(sw.shown[0].data.kind).to.equal("quiet");
+		expect(
+			((sw.kv.get("pushlog") as string[]) ?? []).some((l) => l.includes("dropped as seen"))
+		).to.equal(true);
+
+		await new Promise((r) => setTimeout(r, 80)); // BRIEF_READ_STUB_MS, a hundred times faster
+		expect(sw.records.filter((n) => !n.closed)).to.have.lengthOf(0);
+	});
+
+	it("a push the page took shows nothing while another notification is up on the registration", async function () {
+		const sw = makeSW();
+
+		await firePush(sw, msgPayload("bob", "pushtest", "earlier"));
+		sw.kv.set("seen", ["BjAAAaBjzZ0"]);
+		await firePush(sw, msgPayload("alice", "pushtest", "hello there", "BjAAAaBjzZ0"));
+
+		expect(sw.shown).to.have.lengthOf(1);
+		expect(sw.shown[0].data.target).to.equal("bob");
+	});
+
 	it("puts Mark read on the left and Reply on the right (thumb reach on a phone)", async function () {
 		const sw = makeSW();
 
@@ -1095,7 +1126,7 @@ describe("service worker push notifications", function () {
 	});
 
 	it("drops a push delivered twice (same msgid), even after its notification was closed", async function () {
-		const sw = makeSW();
+		const sw = makeSW({clients: [makeClient()]});
 		const raw = "@msgid=BjAAAaBjdup1 :alice!u@h PRIVMSG pushtest :hello";
 
 		await firePush(sw, raw);
@@ -1127,7 +1158,7 @@ describe("service worker push notifications", function () {
 	});
 
 	it("drops every line of a multiline message the live page took, whichever arrives first", async function () {
-		const sw = makeSW();
+		const sw = makeSW({clients: [makeClient()]});
 		const line = (i: number, text: string) => batchLine("b8", i, 3, 3, text);
 
 		// The page recorded the msgid from the BATCH opener (push-seen.ts);
@@ -1235,7 +1266,7 @@ describe("service worker push notifications under WebKit (every push shows)", fu
 	});
 
 	it("a Chromium worker still drops what the page saw (AppleWebKit with Chrome/ is not WebKit)", async function () {
-		const sw = makeSW({userAgent: CHROME_UA});
+		const sw = makeSW({userAgent: CHROME_UA, clients: [makeClient()]});
 		const msgid = "BjAAAaBjzZ0";
 
 		sw.kv.set("seen", [msgid]);
@@ -2334,14 +2365,18 @@ describe("service worker push log", function () {
 		expect(lines[0]).to.match(/^\d{4}-\d{2}-\d{2}T/);
 	});
 
-	it("records a push the lenient worker dropped as shown=0", async function () {
-		const sw = makeSW();
+	it("records a push the lenient worker dropped as shown=0, and why", async function () {
+		const sw = makeSW({clients: [makeClient()]});
 		const msgid = "BjAAAaBjzZ0";
 
 		sw.kv.set("seen", [msgid]);
 		await firePush(sw, msgPayload("alice", "pushtest", "hello there", msgid));
 
-		expect(log(sw)[0]).to.match(/ push message PRIVMSG alice bytes=\d+ strict=false shown=0$/);
+		const lines = log(sw);
+		expect(lines.some((l) => / dropped as seen push-net-1\/alice$/.test(l))).to.equal(true);
+		expect(
+			lines.some((l) => / push message PRIVMSG alice bytes=\d+ strict=false shown=0$/.test(l))
+		).to.equal(true);
 	});
 
 	it("records the worker's activation with its build and network", async function () {

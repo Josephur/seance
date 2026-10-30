@@ -1265,3 +1265,21 @@ sweeps what is due first (`sweepCloses`). Whichever runs first closes; the
 others find nothing. Where there is no Background Sync (WebKit, Firefox, the
 permission off) the timer and the next event are what there is. Tests:
 § closes that outlive the event (harness `deadTimers`, `fireSync`).
+
+**A push the page took is not a silent push either (2026-10-30).** Reported
+from a Windows desktop: Chrome's "This site has been updated in the
+background" with every push. The page records every pushable message it
+receives as seen (`push-seen.ts`), whether or not it shows a notification for
+it, and the worker dropped a seen push with nothing shown — on Chrome a
+silent push whenever no window of the app was visible and nothing was up on
+that registration: a muted conversation, do not disturb, a network whose
+notifications are off, or the page's own card landing on another
+registration. The drop now goes through `keepChromeCount(target, tag)`:
+nothing while a window is visible or a notification is up on the
+registration, else a blank silent stub under the message's own tag (the
+page's card under that tag replaces it), closed `BRIEF_READ_STUB_MS` later
+by a scheduled close that closes stubs only (`scheduleStubClose`; the Marked
+as read linger and the relay's brief stub use it too). The worker's log says
+`dropped as seen <tag>` before the push's own line, so the diagnostics
+report shows the case. Which page-side reason it was on that desktop is
+read from the report, not guessed.

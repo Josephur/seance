@@ -1644,14 +1644,18 @@ async function readRelay(target, ts, strict) {
  * scheduled close, scheduleClose). */
 const BRIEF_READ_STUB_MS = 4000;
 
-/** A read relay that found nothing to close on Chrome — the device that did
- * the reading, or whose page closed its copy already. Chrome waives the
- * rule while a window of the site is visible (the usual case on the reading
- * device: the app is open), and a notification for another conversation
- * still up is count enough. Only with neither does a silent "Marked as
- * read" take the count to one for the event's end, closed a few seconds
- * later (Chrome never refuses a close). */
-async function keepChromeCount(target) {
+/** A push event on Chrome that would end with nothing shown — a read relay
+ * that found nothing to close (the device that did the reading, or whose
+ * page closed its copy already), or a message the page already took.
+ * Chrome waives the rule while a window of the site is visible (the usual
+ * case on the reading device: the app is open), and a notification for
+ * another conversation still up is count enough. Only with neither does a
+ * silent stub take the count to one for the event's end — "Marked as read"
+ * for a relay, a blank quiet one under the message's own tag (`quietTag`)
+ * for a taken message, which the page's own card under that tag replaces —
+ * closed a few seconds later by a scheduled close (Chrome never refuses a
+ * close). */
+async function keepChromeCount(target, quietTag = undefined) {
 	const windows = await appWindows();
 
 	if (windows.some((c) => c.visibilityState === "visible")) {
@@ -1667,6 +1671,13 @@ async function keepChromeCount(target) {
 	}
 
 	const network = await networkOf();
+
+	if (quietTag) {
+		await showStub(quietTag, "quiet", target, network);
+		await scheduleStubClose(quietTag, BRIEF_READ_STUB_MS);
+		return;
+	}
+
 	const tag = tagFor(network, "read/" + foldName(target || ""));
 
 	await showSafely(appName, {
@@ -1677,7 +1688,7 @@ async function keepChromeCount(target) {
 		data: {kind: "read", target, network: network || undefined},
 	});
 
-	await scheduleClose(network, target, new Date().toISOString(), BRIEF_READ_STUB_MS);
+	await scheduleStubClose(tag, BRIEF_READ_STUB_MS);
 }
 
 /** How long a notification marked read from its own button lingers as
@@ -1722,13 +1733,10 @@ async function markedReadHere(data) {
 		});
 	}
 
-	if (mine.length > 0) {
-		await scheduleClose(
-			data.network || (await networkOf()),
-			data.target,
-			new Date().toISOString(),
-			MARKED_READ_LINGER_MS
-		);
+	for (const n of mine) {
+		if (!isStub(n)) {
+			await scheduleStubClose(n.tag, MARKED_READ_LINGER_MS);
+		}
 	}
 
 	await updateBadge();
@@ -1777,10 +1785,13 @@ async function showStub(tag, kind, target, network, fallback = false) {
 }
 
 async function closeStub(tag) {
+	let closed = 0;
+
 	try {
 		for (const n of await self.registration.getNotifications({tag})) {
 			if (isStub(n)) {
 				n.close();
+				closed++;
 			}
 		}
 
@@ -1788,6 +1799,8 @@ async function closeStub(tag) {
 	} catch (e) {
 		// the next message on the target, or the page's sweep, takes it
 	}
+
+	return closed;
 }
 
 /** Show a notification again exactly as it stands, silently: what WebKit
@@ -1885,9 +1898,18 @@ async function showMessage(P, parsed, checkSeen, mustShow = false, silent = fals
 			((msgid && seen.includes(msgid)) || seen.includes(seenId) || seen.includes(seenKey))
 		) {
 			// Under WebKit even this must show: quietly, never a second alert
-			// (the page took it, or the user already dismissed it).
+			// (the page took it, or the user already dismissed it). On Chrome
+			// a push that shows nothing is a silent push unless a window of
+			// the app is visible or a notification is up on this registration
+			// (keepChromeCount) — the page took the message but showed nothing
+			// for it (a muted conversation, do not disturb, the network's
+			// notifications off, or its own card on another registration).
+			void logPush("dropped as seen " + tag);
+
 			if (mustShow) {
 				await showQuiet(tag, replyTo, network);
+			} else {
+				await keepChromeCount(replyTo, tag);
 			}
 
 			return;
@@ -2190,22 +2212,32 @@ const CLOSES_POLL_MS = 1000;
  * comes first. One entry per target: the later cutoff and the earlier
  * moment win. */
 async function scheduleClose(network, target, ts, delayMs) {
-	const at = Date.now() + delayMs;
 	const key = foldName((network || "") + "/" + (target || ""));
+
+	await scheduleEntry(key, delayMs, (had) => ({
+		network: network || undefined,
+		target: target || undefined,
+		ts:
+			had && had.ts && (!ts || Date.parse(had.ts) > Date.parse(ts))
+				? had.ts
+				: ts || undefined,
+	}));
+}
+
+/** Close the stub under `tag` (and nothing else: a card the page shows
+ * under the tag meanwhile stays) once `delayMs` has passed, the same way. */
+async function scheduleStubClose(tag, delayMs) {
+	await scheduleEntry("tag:" + tag, delayMs, () => ({tag}));
+}
+
+async function scheduleEntry(key, delayMs, fields) {
+	const at = Date.now() + delayMs;
 
 	try {
 		const closes = (await idbGet(CLOSES_KEY)) || {};
 		const had = closes[key];
 
-		closes[key] = {
-			network: network || undefined,
-			target: target || undefined,
-			ts:
-				had && had.ts && (!ts || Date.parse(had.ts) > Date.parse(ts))
-					? had.ts
-					: ts || undefined,
-			at: had && had.at < at ? had.at : at,
-		};
+		closes[key] = {...fields(had), at: had && had.at < at ? had.at : at};
 		await idbSet(CLOSES_KEY, closes);
 	} catch (e) {
 		// no storage: the timer is what there is
@@ -2255,11 +2287,15 @@ async function sweepCloses(dueKey = null) {
 			continue;
 		}
 
-		const matched = await closeForTarget(entry.target, entry.ts);
+		const matched = entry.tag
+			? await closeStub(entry.tag)
+			: await closeForTarget(entry.target, entry.ts);
 
 		if (matched > 0) {
 			void logPush(
-				"closed " + matched + " after the read relay for " + (entry.target || "all")
+				entry.tag
+					? "closed the stub " + entry.tag
+					: "closed " + matched + " after the read relay for " + (entry.target || "all")
 			);
 		}
 
