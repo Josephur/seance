@@ -203,7 +203,7 @@ const ignoredKeys = {
 };
 
 document.addEventListener("keydown", (e) => {
-	// Escape leaves the help screen and the settings and oper modals. Not
+	// Escape leaves the help, release notes, settings and oper modals. Not
 	// `router.go(-1)`: the history is kept one deep (router.ts). Never from
 	// inside a form field — settings are full of them, and Escape there
 	// means "leave the field", not "throw me out of the page" — and never
@@ -215,6 +215,7 @@ document.addEventListener("keydown", (e) => {
 		!e.defaultPrevented &&
 		topEscapeLayer() === null &&
 		(router.currentRoute.value.name === "Help" ||
+			router.currentRoute.value.name === "Changelog" ||
 			router.currentRoute.value.path.startsWith("/settings") ||
 			router.currentRoute.value.name === "OperPanel") &&
 		!(
