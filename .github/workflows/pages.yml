@@ -138,7 +138,10 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: public
-          key: site-v2-${{ matrix.build.name }}-${{ matrix.build.sha }}
+          # The release is in the key: a develop or PR build says which
+          # release it follows, and a new release on the same commit has to
+          # build it again.
+          key: site-v2-${{ matrix.build.name }}-${{ matrix.build.sha }}-${{ needs.plan.outputs.release }}
 
       - uses: actions/checkout@v4
         if: steps.cached.outputs.cache-hit != 'true'
@@ -184,7 +187,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: public
-          key: site-v2-${{ matrix.build.name }}-${{ matrix.build.sha }}
+          key: site-v2-${{ matrix.build.name }}-${{ matrix.build.sha }}-${{ needs.plan.outputs.release }}
 
       - name: Hand the tree to assemble
         uses: actions/upload-artifact@v4
@@ -252,3 +255,9 @@ jobs:
       - name: Deploy
         id: deployment
         uses: actions/deploy-pages@v4
+        env:
+          # deploy-pages names the deployment after GITHUB_SHA, and Pages
+          # answers a second deployment of a name it has with the first one:
+          # a release published on the commit a merge had just deployed
+          # reported success and left the merge's site up. One name per run.
+          GITHUB_SHA: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
