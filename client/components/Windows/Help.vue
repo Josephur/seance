@@ -47,14 +47,31 @@
 							</button>
 						</div>
 
-						<template v-if="pastRelease">
-							<p>
-								{{ appName }} is built from
+						<p v-if="track.kind === 'release'" class="build-track">
+							This is the v{{ build.release }} release.
+						</p>
+						<p v-else-if="track.kind !== 'local' || pastRelease" class="build-track">
+							<template v-if="track.kind === 'pr'">
+								This is a preview of
+								<a :href="source.pullRequest" target="_blank" rel="noopener"
+									>pull request #{{ track.pr }}</a
+								>.
+							</template>
+							<template v-else-if="track.kind === 'develop'">
+								This is the build of the <code>develop</code> branch.
+							</template>
+							<template v-else-if="track.branch">
+								This is a local build of the <code>{{ track.branch }}</code> branch.
+							</template>
+							<template v-if="pastRelease">
+								{{ builtFrom }} built from
 								<a :href="source.commit" target="_blank" rel="noopener"
 									>commit <code>{{ build.gitCommit }}</code></a
 								>, after v{{ build.release }}.
-							</p>
+							</template>
+						</p>
 
+						<template v-if="pastRelease">
 							<ul>
 								<li>
 									Compare
@@ -968,7 +985,12 @@
 <script lang="ts">
 import {computed, defineComponent, ref} from "vue";
 import {useStore} from "../../js/store";
-import {buildIdentityOf, isPastRelease, sourceLinks} from "../../js/helpers/sourceLinks";
+import {
+	buildIdentityOf,
+	buildTrackOf,
+	isPastRelease,
+	sourceLinks,
+} from "../../js/helpers/sourceLinks";
 import {leavePage} from "../../js/router";
 
 export default defineComponent({
@@ -980,10 +1002,17 @@ export default defineComponent({
 		const appName = computed(() => store.state.branding.appName);
 		const links = computed(() => store.state.branding.links ?? {});
 
-		// What this build is (configuration.ts, filled in by webpack) and
-		// where it comes from (branding.links.source).
+		// What this build is (configuration.ts, filled in by webpack), which
+		// of the Pages site's builds it is, and where it comes from
+		// (branding.links.source).
 		const build = computed(() => buildIdentityOf(store.state.serverConfiguration));
+		const track = computed(() => buildTrackOf(build.value));
 		const pastRelease = computed(() => isPastRelease(build.value));
+		// "It is built from …" after a sentence that says which build this
+		// is; a local build that knows no branch has none.
+		const builtFrom = computed(() =>
+			track.value.kind === "local" && !track.value.branch ? `${appName.value} is` : "It is"
+		);
 		const source = computed(() => sourceLinks(links.value.source, build.value));
 
 		// Installed PWAs have no reload button; a newer build's worker flags
@@ -997,6 +1026,7 @@ export default defineComponent({
 		return {
 			appName,
 			build,
+			builtFrom,
 			close,
 			isApple,
 			isTouch,
@@ -1005,6 +1035,7 @@ export default defineComponent({
 			reloadForUpdate,
 			source,
 			store,
+			track,
 		};
 	},
 });

@@ -19,6 +19,13 @@ interface BuildIdentity {
 	/** Short sha of HEAD, or null outside a git checkout. */
 	commit: string | null;
 	/**
+	 * Which build this is, as the Pages workflow names it: `release`,
+	 * `develop` or `pr<N>`. Empty for a build made anywhere else.
+	 */
+	track: string;
+	/** The branch a build made anywhere else was made from; null when detached. */
+	branch: string | null;
+	/**
 	 * The build token: `?v=` on the asset URLs, the service worker's cache
 	 * name, `process.env.SEANCE_BUILD` in the bundle. Two builds of different
 	 * commits never share one, which is what makes a deploy detectable — the
@@ -44,21 +51,26 @@ function resolveBuild(): BuildIdentity {
 
 	const commit = git("rev-parse", "--short=8", "HEAD");
 	const dirty = commit !== null && git("status", "--porcelain", "--untracked-files=no") !== "";
-	// The release workflow names the build after the tag it checks out;
+	// The Pages workflow names the build (SEANCE_VERSION: `5.0.2`,
+	// `5.0.2-e5ed5af2`, `5.0.2-pr142.e5ed5af`) and the release it is or
+	// follows (SEANCE_RELEASE), since its shallow checkout has no tags;
 	// otherwise the nearest tag names the release the build follows. The tag
 	// is the only source of a version — package.json carries none — so a
 	// checkout without tags (a shallow clone, no git) is "dev" plus its
 	// commit.
-	const releaseVersion = process.env.SEANCE_VERSION?.trim().replace(/^v/, "");
+	const env = (name: string) => process.env[name]?.trim().replace(/^v/, "") || "";
+	const releaseVersion = env("SEANCE_VERSION");
 	const nearestTag = git("describe", "--tags", "--abbrev=0")?.replace(/^v/, "");
-	const release = releaseVersion || nearestTag || "dev";
+	const release = env("SEANCE_RELEASE") || releaseVersion || nearestTag || "dev";
 	const version = releaseVersion || (commit ? `${release}-${commit}` : release);
 	const identity = commit
 		? `${version}@${commit}${dirty ? `+${Date.now()}` : ""}`
 		: `${version}@${Date.now()}`;
 	const build = createHash("sha256").update(identity).digest("hex").substring(0, 10);
+	const track = process.env.SEANCE_TRACK?.trim() || "";
+	const branch = track ? null : git("symbolic-ref", "--short", "-q", "HEAD") || null;
 
-	return {version, release, commit, build};
+	return {version, release, commit, track, branch, build};
 }
 
 const buildIdentity = resolveBuild();
@@ -328,6 +340,8 @@ const config: webpack.Configuration = {
 			"process.env.SEANCE_VERSION": JSON.stringify(version),
 			"process.env.SEANCE_RELEASE": JSON.stringify(buildIdentity.release),
 			"process.env.SEANCE_COMMIT": JSON.stringify(buildIdentity.commit ?? ""),
+			"process.env.SEANCE_TRACK": JSON.stringify(buildIdentity.track),
+			"process.env.SEANCE_BRANCH": JSON.stringify(buildIdentity.branch ?? ""),
 			"process.env.SEANCE_BUILD": JSON.stringify(buildToken),
 			"process.env.FENGARICONF": "undefined",
 		}),
