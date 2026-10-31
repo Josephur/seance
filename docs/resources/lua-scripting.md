@@ -2,6 +2,9 @@
 
 Seance includes an embedded, sandboxed Lua scripting runtime powered by [Fengari](https://fengari.io/) (Lua 5.3 in pure JavaScript). It allows users to write custom client-side automation, slash commands, auto-responders, and event hooks directly inside the browser.
 
+This page is how it is built. How to write scripts — the API, examples,
+limits and pitfalls, for users — is [`docs/areas/scripting/`](../areas/scripting/README.md).
+
 ---
 
 ## Architecture & Sandboxing
@@ -99,6 +102,8 @@ password, bouncer token or query log), only the `seance.*` table. How
   patched source beside it and runs the pathological pattern,
   `test/tests/build.ts` checks the built chunk carries the patch, and
   `tools/scenarios/scripting-editor.mjs` runs one in the browser.
+- **Integers are 32-bit** in Fengari (`math.maxinteger` is 2^31 − 1 and
+  integer arithmetic wraps), not 64-bit as in standard Lua 5.3.
 - **Memory** is not bounded by Fengari. `string.rep` refuses results over
   1 MiB (its count is checked after the same number conversion `string.rep`
   does, so `"500000000"` counts too); repeated concatenation can still build large strings within the
@@ -151,7 +156,7 @@ end)
 
 ```lua
 seance.on("send", function(data)
-    -- data.line:   Raw or outgoing line
+    -- data.line:   The message text sent (not a raw line; no network fields)
     -- data.target: Target channel or nick
 end)
 ```
